@@ -1,5 +1,6 @@
 # Project rules
 
+- Default to macOS-only development, builds, validation, and releases. Keep existing Windows sources intact; work on or validate Windows only when the user explicitly requests it. Do not let Windows checks delay a macOS-only delivery.
 - Preserve all inherited user-facing features unless the task explicitly removes one.
 - Keep Next isolated: bundle, executable, profiles, support, cache, defaults, hotkey, update source, logs, and temporary files must not reuse legacy namespaces.
 - Never log, render, fixture, or commit auth tokens, webhook URLs, raw account email, prompt/response bodies, or private local paths.
