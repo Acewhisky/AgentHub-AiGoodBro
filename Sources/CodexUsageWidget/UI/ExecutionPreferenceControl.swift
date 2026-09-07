@@ -5,6 +5,7 @@ struct ExecutionPreferenceControl: View {
     let preference: CodexExecutionPreference
     var allowsApplyToAll = true
     var expanded = false
+    var compact = false
     var inlineEditor = false
     let onSave: (CodexExecutionPreference, Bool) -> Void
 
@@ -17,12 +18,14 @@ struct ExecutionPreferenceControl: View {
         preference: CodexExecutionPreference,
         allowsApplyToAll: Bool = true,
         expanded: Bool = false,
+        compact: Bool = false,
         inlineEditor: Bool = false,
         onSave: @escaping (CodexExecutionPreference, Bool) -> Void
     ) {
         self.preference = preference
         self.allowsApplyToAll = allowsApplyToAll
         self.expanded = expanded
+        self.compact = compact
         self.inlineEditor = inlineEditor
         self.onSave = onSave
         _draft = State(initialValue: preference)
@@ -43,27 +46,35 @@ struct ExecutionPreferenceControl: View {
             draft = preference
             isPresented = true
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: compact ? 6 : 10) {
                 Image(systemName: preference.serviceTier == .fast ? "bolt.fill" : "bolt")
                     .font(.system(size: expanded ? 22 : 16, weight: .medium))
                     .foregroundStyle(executionGradient)
                     .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
+                if compact {
                     Text(preference.model.displayName)
-                        .font(.system(size: expanded ? 19 : 13, weight: .semibold))
+                        .font(.caption.weight(.semibold))
                     Text("\(preference.reasoningEffort.displayName) · \(speedTitle)")
-                        .font(.system(size: expanded ? 12 : 11, weight: .medium))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(preference.model.displayName)
+                            .font(.system(size: expanded ? 19 : 13, weight: .semibold))
+                        Text("\(preference.reasoningEffort.displayName) · \(speedTitle)")
+                            .font(.system(size: expanded ? 12 : 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .lineLimit(1)
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
+            .lineLimit(1)
             .foregroundStyle(.primary)
-            .padding(.horizontal, expanded ? 18 : 12)
-            .padding(.vertical, expanded ? 16 : 9)
+            .padding(.horizontal, compact ? 8 : expanded ? 18 : 12)
+            .padding(.vertical, compact ? 4 : expanded ? 16 : 9)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(executionGradient.opacity(colorScheme == .dark ? 0.16 : 0.08), in: RoundedRectangle(cornerRadius: expanded ? 18 : 12))
             .overlay {

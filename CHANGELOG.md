@@ -1,5 +1,23 @@
 # Changelog
 
+## 9.5.6 / 0907v2 - 2026-09-07
+
+- 相比 0907v1，主界面新增可记忆的「列表 / 卡片」选择，默认保留垂直列表；柔和渐变卡片以大字突出 5 小时额度，随窗口宽度排列多列，全部账号功能和顺序共用。
+- 点击「编辑」后显示账号右上角三条横杠，支持列表纵向、卡片横向拖动排序和 180ms 过渡；松手后保存一次，区域外松手或 Esc 取消，保留右键与辅助功能上移/下移，遵循系统“减少动态效果”。
+- 列表使用统一对齐列：账号在左、两条额度上下排列居中、模型与操作在右顶对齐、红色重置提醒在左下；终端改为纯图标，保留分组间距。
+- 顶部统计收为可展开摘要；完整账号资料、更新时刻、会员信息与历史暖号保留在“详情”，临近会员到期和其他异常仍在主行可见。
+- “7 天额度不足”、登录失效、暖号失败等关键字标红加重，其余文字保持中性；仅从摘要中合并已在额度栏显示的相同暖号时间，不隐藏不同的预约时间或未知状态。
+- 增加两种布局、三宽度、浅深色九账号视口与完整截图回归，以及布局保存、拖动草稿、顺序落盘、重复时间、正常日期颜色与关键字测试；操作安全门禁不变。
+- 本轮由主线程直接实现与复核，不派发其他账号；仅更新源码，不安装、不切号、不部署 Hub 或发布安装包。
+
+### English
+
+- Kept vertical account rows as the default and added a persistent, optional card grid with shared account actions and order.
+- Added edit-only three-line drag handles, cancellable single-save reordering, a short Reduce Motion-aware transition and accessible Move Up/Down actions.
+- Aligned list identity, stacked quotas and top-right controls, kept spacing between groups and made the terminal button icon-only.
+- Collapsed statistics and read-only account history behind native disclosure and detail controls, while keeping actionable warnings visible.
+- Highlighted critical status phrases in red and bold; deduplicated only warm-up dates already shown as official reset dates. Added compact-layout and text-presentation regression coverage without changing scheduling or account policies.
+
 ## 9.5.5 / 0907v1 - 2026-09-07
 
 - 相比 0905v4，主窗口默认缩至 980 × 700；账号身份、额度和操作分组对齐，压缩卡片与概览高度，保留原有功能位置和窄窗换行。

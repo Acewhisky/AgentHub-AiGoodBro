@@ -15,8 +15,81 @@ enum WorkspaceScreenshotSelfTest {
         func expect(_ condition: Bool, _ message: String) {
             if !condition { failures.append(message) }
         }
+        let status = "5 小时已暂停 · 7 天额度不足 · 下次暖号 7 天 9月10日 09:30 · 7 天额度不足"
+        let highlighted = WarmUpStatusText.attributed(status)
+        expect(String(highlighted.characters) == status, "highlighting must preserve the exact status text")
+        expect(highlighted.runs.filter { $0.foregroundColor == .red }.count == 2, "every critical phrase occurrence must be red")
+        if let dateRange = highlighted.range(of: "9月10日 09:30") {
+            expect(highlighted[dateRange].foregroundColor == nil, "ordinary schedule dates must keep their neutral color")
+        }
+        for neutral in ["", "最近暖号成功 9月7日 09:00", "智能暖号已关闭"] {
+            expect(WarmUpStatusText.attributed(neutral).runs.allSatisfy { $0.foregroundColor == nil }, "neutral status must not become an alert")
+        }
+        for phrase in WarmUpStatusText.criticalPhrases {
+            let text = WarmUpStatusText.attributed(phrase)
+            expect(text.foregroundColor == .red, "each supported blocking status must be red")
+            expect(text.font == .caption2.weight(.semibold), "blocking status must also use stronger weight")
+        }
+        let reset = Date(timeIntervalSince1970: 1_800_000_000)
+        let resetText = reset.formatted(.dateTime.month().day().hour().minute())
+        let duplicate = "最近暖号成功 9月7日 09:00 · 下次暖号 5 小时 \(resetText) · 下次暖号 7 天 \(resetText)"
+        expect(WarmUpStatusText.summary(duplicate, fiveHourReset: reset, sevenDayReset: reset) == nil, "repeated reset times and successful history belong in details only")
+        let unique = "5 小时已暂停 · 7 天额度不足 · 下次暖号 7 天 \(resetText)"
+        expect(WarmUpStatusText.summary(unique, fiveHourReset: nil, sevenDayReset: reset) == "5 小时已暂停 · 7 天额度不足", "deduplication must keep the reason for a pause")
+        let differentSchedule = "下次暖号 7 天 \(resetText)"
+        expect(
+            WarmUpStatusText.summary(differentSchedule, fiveHourReset: nil, sevenDayReset: reset.addingTimeInterval(3_600)) == differentSchedule,
+            "a warm-up time different from official reset must remain visible")
+        let unknown = "下次暖号 7 天 未知；请点刷新检查"
+        expect(WarmUpStatusText.summary(unknown, fiveHourReset: nil, sevenDayReset: nil) == unknown, "unknown and actionable schedules must remain visible")
+        expect(AccountWorkspaceLayout.storedOrDefault(defaults: defaults) == .rows, "the original vertical layout must remain the default")
+        let layoutSettings = AppSettings(defaults: defaults)
+        layoutSettings.accountWorkspaceLayout = .cards
+        expect(AppSettings(defaults: defaults).accountWorkspaceLayout == .cards, "a card choice must survive settings reload")
+        layoutSettings.accountWorkspaceLayout = .rows
+        expect(AppSettings(defaults: defaults).accountWorkspaceLayout == .rows, "users must be able to return to the original layout")
+        defaults.set("future-layout", forKey: AccountWorkspaceLayout.storageKey)
+        expect(AccountWorkspaceLayout.storedOrDefault(defaults: defaults) == .rows, "unknown stored layouts must fall back to the original")
+        defaults.removeObject(forKey: AccountWorkspaceLayout.storageKey)
+        expect(AccountCardGridLayout.columnCount(width: 784, itemCount: 9) == 2, "the minimum window must fit two cards")
+        expect(AccountCardGridLayout.columnCount(width: 944, itemCount: 9) == 3, "the default window must fit three cards")
+        expect(AccountCardGridLayout.columnCount(width: 1_244, itemCount: 9) == 4, "a wide window must fit four cards")
+        expect(AccountCardGridLayout.columnCount(width: .infinity, itemCount: 9) == 1, "nonfinite probes must be safe")
+        expect(ProfileReorderMotion.animation(reduceMotion: true) == nil, "reordering must respect reduced motion")
+        let originalOrder = ["one", "two", "three", "four"]
+        expect(ProfileReorderSession(sourceID: "missing", order: originalOrder) == nil, "unknown drag sources must be rejected")
+        expect(ProfileReorderSession(sourceID: "one", order: ["one", "one"]) == nil, "duplicate identifiers must be rejected")
+        if var drag = ProfileReorderSession(sourceID: "one", order: originalOrder) {
+            drag.move(over: "three")
+            expect(drag.order == ["two", "three", "one", "four"], "downward and grid-crossing drag previews must use stable identifiers")
+            expect(drag.originalOrder == originalOrder, "hovering must not mutate the original order")
+            let destination = drag.destination(currentOrder: originalOrder)
+            expect(destination?.targetID == "four" && destination?.before == true, "a successful drop must resolve one final insertion")
+            expect(drag.destination(currentOrder: ["two", "one", "three", "four"]) == nil, "a concurrent reorder must invalidate a stale drag")
+            drag.move(over: "four")
+            expect(drag.destination(currentOrder: originalOrder)?.before == false, "dropping at the end must insert after the final peer")
+            drag.move(over: "two")
+            expect(drag.order == originalOrder && drag.destination(currentOrder: originalOrder) == nil, "returning to the start must not write storage")
+            drag.move(over: "missing")
+            expect(drag.order == originalOrder, "external or removed targets must not reorder accounts")
+        } else {
+            failures.append("a valid drag must be accepted")
+        }
         do {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let reorderRoot = root.appendingPathComponent("reorder-save")
+            let reorderStore = WorkspacePreviewRenderer.fixtureStore(accountCount: 4, root: reorderRoot)
+            let firstID = reorderStore.profiles[0].id
+            let lastID = reorderStore.profiles[3].id
+            let originalIDs = reorderStore.profiles.map(\.id)
+            reorderStore.moveProfile(firstID, relativeTo: lastID, before: false)
+            let reloadedOrder = CodexProfileStore(
+                homeDirectory: reorderRoot.appendingPathComponent("home"),
+                applicationSupportDirectory: reorderRoot.appendingPathComponent("support")
+            )
+            expect(reorderStore.profiles.map(\.id) == Array(originalIDs.dropFirst()) + [firstID], "drop commits must preserve all account identities")
+            expect(reloadedOrder.profiles.map(\.id) == reorderStore.profiles.map(\.id), "the committed order must survive disk reload")
+            expect(reorderStore.selectedMonitorProfileID == firstID && reorderStore.selectedLaunchProfileID == firstID, "sorting must not switch the monitored or launch account")
             let retina = try WorkspaceScreenshotExporter.RasterPlan(size: CGSize(width: 980, height: 1_400))
             expect(retina.scale == 2 && retina.pixelsWide == 1_960 && retina.pixelsHigh == 2_800, "normal export must be 2x")
             let long = try WorkspaceScreenshotExporter.RasterPlan(size: CGSize(width: 980, height: 12_000))
@@ -82,7 +155,10 @@ enum WorkspaceScreenshotSelfTest {
                 )
                 let view = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog)
                 let captured = try WorkspaceScreenshotExporter.render(view.screenshotContent, width: 980, scheme: .light)
-                expect(captured.plan.size.height > previousHeight, "each synthetic account row through nine must increase export height")
+                // The single-account dashboard intentionally has a different, expanded overview.
+                if count > 2 {
+                    expect(captured.plan.size.height > previousHeight, "each added account in the multi-account layout must increase export height")
+                }
                 previousHeight = captured.plan.size.height
             }
             for scheme in [ColorScheme.light, .dark] {
@@ -110,8 +186,20 @@ enum WorkspaceScreenshotSelfTest {
                         captured.plan.size.height > eightAccountCapture.plan.size.height,
                         "the ninth account row must increase the complete export height at every layout"
                     )
+                    let rowHeight = captured.plan.size.height - eightAccountCapture.plan.size.height
+                    expect(rowHeight <= 118, "each comfortably spaced compact row must remain under 118 points including its gap at all supported widths")
+                    print("Compact layout: width=\(Int(width)), scheme=\(scheme), row=\(Int(rowHeight))pt")
                     expect(NSBitmapImageRep(data: captured.png)?.pixelsHigh == captured.plan.pixelsHigh, "long PNG must retain its full planned height")
                     expect(store.isPreview && store.profiles.count == 9, "export must retain all nine fixture accounts")
+                    settings.accountWorkspaceLayout = .cards
+                    let sixAccountStore = WorkspacePreviewRenderer.fixtureStore(accountCount: 6, root: root.appendingPathComponent(UUID().uuidString))
+                    let sixAccountView = CodexAccountManagerView(store: sixAccountStore, settings: settings, paletteCatalog: catalog)
+                    let sixCardCapture = try WorkspaceScreenshotExporter.render(sixAccountView.screenshotContent, width: width, scheme: scheme)
+                    let cardCapture = try WorkspaceScreenshotExporter.render(view.screenshotContent, width: width, scheme: scheme)
+                    expect(cardCapture.plan.size.height > sixCardCapture.plan.size.height, "card screenshots must include rows beyond the viewport")
+                    expect(NSBitmapImageRep(data: cardCapture.png)?.pixelsHigh == cardCapture.plan.pixelsHigh, "all card rows must survive PNG encoding")
+                    print("Card layout: width=\(Int(width)), scheme=\(scheme), height=\(Int(cardCapture.plan.size.height))pt")
+                    settings.accountWorkspaceLayout = .rows
                 }
             }
         } catch {

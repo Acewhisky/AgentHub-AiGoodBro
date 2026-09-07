@@ -3147,10 +3147,11 @@ final class UsageStore: ObservableObject {
 
     private func syncProfiles() {
         profiles = profileStore.profiles
-        officialAccountsLifetimeTokens = Self.persistedHighWater(
-            forKey: Self.officialLifetimeHighWaterKey,
-            observed: Self.observedOfficialLifetimeTokens(in: profiles)
-        )
+        let observed = Self.observedOfficialLifetimeTokens(in: profiles)
+        officialAccountsLifetimeTokens =
+            isPreview
+            ? observed
+            : Self.persistedHighWater(forKey: Self.officialLifetimeHighWaterKey, observed: observed)
         selectedMonitorProfileID = profileStore.selectedMonitorProfileID
         selectedLaunchProfileID = profileStore.selectedLaunchProfileID
     }

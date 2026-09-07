@@ -3,6 +3,14 @@ import SwiftUI
 
 /// Render the production SwiftUI views at 2x using synthetic accounts only.
 enum WorkspacePreviewRenderer {
+    private struct FixtureState: Encodable {
+        let schemaVersion = 1
+        let profiles: [CodexProfile]
+        let selectedMonitorProfileID: String
+        let selectedLaunchProfileID: String
+        let resetBackfillCheckedAt: Date
+    }
+
     static func fixtureStore(accountCount: Int, root: URL) -> UsageStore {
         let now = Date()
         let fiveHour = RateWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: now.addingTimeInterval(10_800))
@@ -12,7 +20,9 @@ enum WorkspacePreviewRenderer {
                 id: accountCount == 0 ? "system" : "preview-\(index)",
                 name: accountCount == 0 ? "当前 Codex" : "合成账号 \(index + 1)",
                 remark: accountCount == 0 ? "当前 Codex" : "合成账号 \(index + 1) · 用于验证窄窗长备注省略时不溢出操作区",
-                codexHomePath: root.appendingPathComponent("profile-\(index)").path,
+                codexHomePath: root.appendingPathComponent(
+                    accountCount == 0 ? "home/.codex" : "home/.codex-account-manager-next/profiles/preview-\(index)"
+                ).path,
                 isSystemProfile: accountCount == 0, createdAt: now,
                 lastSnapshot: CodexAccountSnapshot(
                     accountType: "chatgpt", planType: "plus", email: "preview-\(index)@example.invalid",
@@ -28,6 +38,19 @@ enum WorkspacePreviewRenderer {
                 ),
                 executionPreference: accountCount == 0 ? nil : .init(model: .astra, reasoningEffort: .max, serviceTier: .standard)
             )
+        }
+        // Seed the real persistence path in the fixture sandbox, so drag/drop tests
+        // exercise the same reorder/save/reload operation as the production app.
+        let support = root.appendingPathComponent("support").appendingPathComponent(DispatchParticipationPaths.supportDirectoryName)
+        do {
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let selectedID = profiles[0].id
+            let state = FixtureState(
+                profiles: profiles, selectedMonitorProfileID: selectedID, selectedLaunchProfileID: selectedID, resetBackfillCheckedAt: now
+            )
+            try JSONEncoder().encode(state).write(to: support.appendingPathComponent(DispatchParticipationPaths.snapshotFileName), options: .atomic)
+        } catch {
+            preconditionFailure("Could not create isolated workspace fixtures")
         }
         return UsageStore(
             previewProfiles: profiles,
@@ -99,6 +122,34 @@ enum WorkspacePreviewRenderer {
                     to: directory.appendingPathComponent("workspace-nine-\(theme).png"),
                     options: .atomic
                 )
+                for size in [CGSize(width: 820, height: 600), CGSize(width: 980, height: 700), CGSize(width: 1280, height: 900)] {
+                    try renderView(
+                        nineAccountView.frame(width: size.width, height: size.height),
+                        size: size,
+                        scheme: scheme,
+                        to: directory.appendingPathComponent("nine-accounts-\(theme)-\(Int(size.width))x\(Int(size.height)).png")
+                    )
+                }
+                settings.accountWorkspaceLayout = .cards
+                let cardCapture = try WorkspaceScreenshotExporter.render(nineAccountView.screenshotContent, width: 980, scheme: scheme)
+                try cardCapture.png.write(to: directory.appendingPathComponent("workspace-nine-cards-\(theme).png"), options: .atomic)
+                for size in [CGSize(width: 820, height: 600), CGSize(width: 980, height: 700), CGSize(width: 1280, height: 900)] {
+                    try renderView(
+                        nineAccountView.frame(width: size.width, height: size.height),
+                        size: size,
+                        scheme: scheme,
+                        to: directory.appendingPathComponent("nine-cards-\(theme)-\(Int(size.width))x\(Int(size.height)).png")
+                    )
+                }
+                settings.accountWorkspaceLayout = .rows
+                let statusExample = Text(WarmUpStatusText.attributed("5 小时已暂停 · 7 天额度不足 · 下次暖号 7 天 9月10日 09:30"))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
+                    .environment(\.colorScheme, scheme)
+                try renderView(statusExample, size: CGSize(width: 520, height: 56), scheme: scheme, to: directory.appendingPathComponent("warmup-status-\(theme).png"))
                 let toolbar = TitlebarToolbarView(settings: settings, onOpenSettings: {}, onSaveScreenshot: {})
                     .background(FixedVisualPalette.windowScrim(scheme))
                 try renderView(toolbar, size: CGSize(width: 320, height: 44), scheme: scheme, to: directory.appendingPathComponent("toolbar-\(theme).png"))

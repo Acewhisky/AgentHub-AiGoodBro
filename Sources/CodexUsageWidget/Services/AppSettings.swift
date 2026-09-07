@@ -123,6 +123,17 @@ enum PaletteSelectionResult: Equatable {
     case unavailable
 }
 
+enum AccountWorkspaceLayout: String, CaseIterable {
+    case rows
+    case cards
+
+    static let storageKey = "CodexManagerNext.accountWorkspaceLayout"
+
+    static func storedOrDefault(defaults: UserDefaults) -> Self {
+        defaults.string(forKey: storageKey).flatMap(Self.init(rawValue:)) ?? .rows
+    }
+}
+
 struct PaletteFallbackNotice: Equatable {
     let unavailableID: String
 }
@@ -167,6 +178,10 @@ final class AppSettings: ObservableObject {
         didSet {
             accountMenuTransparency.persist(defaults: defaults)
         }
+    }
+
+    @Published var accountWorkspaceLayout: AccountWorkspaceLayout {
+        didSet { defaults.set(accountWorkspaceLayout.rawValue, forKey: AccountWorkspaceLayout.storageKey) }
     }
 
     @Published private(set) var paletteID: String
@@ -229,6 +244,7 @@ final class AppSettings: ObservableObject {
         particleAnimationMode = ParticleAnimationMode.storedOrDefault(defaults: defaults)
         usageTrendWindow = UsageTrendWindow.storedOrDefault(defaults: defaults)
         accountMenuTransparency = AccountMenuTransparency.storedOrDefault(defaults: defaults)
+        accountWorkspaceLayout = AccountWorkspaceLayout.storedOrDefault(defaults: defaults)
         keepMainWindowOnTop = defaults.bool(forKey: Self.keepMainWindowOnTopKey)
         if defaults.object(forKey: Self.keepRunningWhenMainWindowClosedKey) == nil {
             keepRunningWhenMainWindowClosed = true

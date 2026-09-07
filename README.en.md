@@ -4,12 +4,14 @@
 
 [![CI](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-![Version 0907v1](https://img.shields.io/badge/version-0907v1-6C4DFF)
+![Version 0907v2](https://img.shields.io/badge/version-0907v2-6C4DFF)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Next is a local-first macOS workspace for one or multiple Codex accounts, maintained under its own product identity, interface and release channel. Inspect official quota, opt into warm-up, choose GPT-6 Astra or another task model, and pass model, reasoning effort and Standard/Fast speed to an isolated CLI. Multiple accounts retain occupancy monitoring and isolated account homes.
 
-Current source version: `0907v1` · `9.5.5 (17)`. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+Current source version: `0907v2` · `9.5.6 (18)`. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+
+0907v2 versus 0907v1: choose List or Cards in the main window. Vertical rows remain the default, the choice persists, and the new softly tinted grid shares every account action and the same order. In Edit mode, drag the three-line handle at the top right of an account to reorder it with a short transition. List rows keep stacked quota windows, top-aligned controls, lower-left reset warnings and an icon-only terminal button; statistics expand and full account details remain accessible. Dispatch and warm-up policies are unchanged. See the [0907v2 notes](docs/release-notes-v9.5.6.md).
 
 0907v1 versus 0905v4: a smaller workspace and account cards, a top-right full-workspace screenshot action, monotonic quota observations, and stronger current-identity, mirror-consistency and concurrent-recovery checks for dispatch synchronization. Nine-account exports have synthetic coverage. This update publishes source only, without an installer; see the [0907v1 notes](docs/release-notes-v9.5.5.md).
 
@@ -50,7 +52,9 @@ The full window is a unified workspace, without a duplicate Inspection page or p
 
 ## Full-workspace screenshots
 
-The top-right screenshot action uses native SwiftUI/AppKit to render the workspace with its current expanded sections, including accounts below the viewport. It excludes other windows and the system title bar. A system save panel writes a local PNG; nothing is uploaded and screen-recording permission is not required. The default window is 980 × 700. Account cards retain their functional groups, reflow in narrow windows, and may truncate long remarks to one line.
+The top-right screenshot action uses native SwiftUI/AppKit to render the current layout and expanded sections, including offscreen accounts in both List and Cards. It excludes other windows, temporary popovers and the system title bar. A system save panel writes a local PNG; nothing is uploaded and screen-recording permission is not required. The default window is 980 × 700. List rows align identity, quota and actions; the card grid adapts its column count to the window. Long remarks may truncate to one line, with full information in Details. Warnings can grow vertically and are not forcibly clipped.
+
+Reorder handles appear only in Edit mode. Dropping within an account saves once; dropping outside the account area or pressing Escape cancels. The handle's context menu retains Move Up/Down, and Reduce Motion disables the transition. Changing layouts does not change account identity, monitoring, the launch account or dispatch participation.
 
 Synthetic tests cover nine accounts at 820/980/1280 points in both appearances. Exports normally use 2× resolution and fall back to 1× for larger content. More than 32 million pixels or a dimension above 32768 pixels is rejected with a prompt to collapse sections, never silently cropped. This is a raster budget, not a total-process memory limit.
 

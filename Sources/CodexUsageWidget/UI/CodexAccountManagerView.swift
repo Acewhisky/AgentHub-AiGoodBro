@@ -11,6 +11,8 @@ struct CodexAccountManagerView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isEditingProfiles = false
+    @State private var profileReorder: ProfileReorderSession?
+    @State private var profileFrames: [String: CGRect] = [:]
     @State private var isAddingCustomTokenSource = false
     @State private var customSourceNameDraft = ""
     @State private var customSourceTokensDraft = ""
@@ -57,7 +59,12 @@ struct CodexAccountManagerView: View {
         .preferredColorScheme(settings.themeMode.preferredColorScheme)
         .onReceive(screenshotRequests) { saveLongScreenshot(for: $0) }
         .onAppear { if !store.isPreview { hubTaskStatusModel.startPolling() } }
-        .onDisappear { hubTaskStatusModel.stopPolling() }
+        .onDisappear {
+            hubTaskStatusModel.stopPolling()
+            profileReorder = nil
+        }
+        .onChange(of: presentedProfiles.map(\.id)) { _ in profileReorder = nil }
+        .onChange(of: settings.accountWorkspaceLayout) { _ in profileReorder = nil }
         .sheet(isPresented: $isAutomationCenterPresented) {
             AccountAutomationCenterView(store: store)
         }
@@ -83,11 +90,11 @@ struct CodexAccountManagerView: View {
 
     private var workspaceContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            workspaceBranding
+            if presentation.isSingleAccount { workspaceBranding }
             workspace
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 16)
+        .padding(.vertical, 12)
     }
 
     /// Share the exact content tree with the screen, without its viewport or polling hooks.
@@ -177,10 +184,26 @@ struct CodexAccountManagerView: View {
                 .padding(16)
                 .sectionBackground()
             } else {
-                HStack(alignment: .top, spacing: 14) {
-                    quotaOverview
-                    tokenTotalPanel.frame(width: 270)
+                DisclosureGroup(isExpanded: $isUsageDetailsExpanded) {
+                    HStack(alignment: .top, spacing: 14) {
+                        quotaOverview
+                        tokenTotalPanel.frame(width: 270)
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    HStack(spacing: 16) {
+                        Label("当前监控 · \(selectedAccountName)", systemImage: "eye")
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Text("总消耗 \(TokenFormatter.formatChineseTotal(combinedTokensTotal)) Token")
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                    }
+                    .font(.caption.weight(.medium))
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .sectionBackground()
                 profilesPanel
                 agentBreakdownPanel
                 automationPanel
@@ -305,10 +328,12 @@ struct CodexAccountManagerView: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(presentation.isSingleAccount ? "你的工作台" : "账号工作台")
-                    .font(.system(size: 24, weight: .semibold))
-                Text(presentation.isSingleAccount ? "看清额度，专注下一次任务。" : "额度一目了然，任务各就其位。")
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: presentation.isSingleAccount ? 24 : 20, weight: .semibold))
+                if presentation.isSingleAccount {
+                    Text("看清额度，专注下一次任务。")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 16)
             Button {
@@ -597,7 +622,49 @@ struct CodexAccountManagerView: View {
         }
     }
 
+    private var orderedProfiles: [CodexProfile] {
+        let current = presentedProfiles
+        guard let profileReorder, profileReorder.originalOrder == current.map(\.id) else { return current }
+        let profilesByID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        return profileReorder.order.compactMap { profilesByID[$0] }
+    }
+
+    private var profilesLayout: AnyLayout {
+        settings.accountWorkspaceLayout == .cards
+            ? AnyLayout(AccountCardGridLayout())
+            : AnyLayout(VStackLayout(spacing: 8))
+    }
+
+    private var canReorderProfiles: Bool {
+        isEditingProfiles && !store.isLaunchingCodex && !store.isRefreshing && !store.isLoggingIn && !isSavingScreenshot
+    }
+
+    private func beginProfileReorder(_ id: String) -> Bool {
+        guard canReorderProfiles else { return false }
+        profileReorder = ProfileReorderSession(sourceID: id, order: presentedProfiles.map(\.id))
+        return profileReorder != nil
+    }
+
+    private func previewProfileReorder(at point: CGPoint) {
+        guard canReorderProfiles, var draft = profileReorder,
+            draft.originalOrder == presentedProfiles.map(\.id),
+            let id = profileFrames.first(where: { $0.key != draft.sourceID && $0.value.contains(point) })?.key
+        else { return }
+        draft.move(over: id)
+        withAnimation(ProfileReorderMotion.animation(reduceMotion: reduceMotion)) { profileReorder = draft }
+    }
+
+    private func finishProfileReorder(at point: CGPoint) {
+        defer { profileReorder = nil }
+        guard canReorderProfiles, let draft = profileReorder,
+            profileFrames.values.contains(where: { $0.contains(point) }),
+            let destination = draft.destination(currentOrder: presentedProfiles.map(\.id))
+        else { return }
+        store.moveProfile(draft.sourceID, relativeTo: destination.targetID, before: destination.before)
+    }
+
     private func movePresentedProfile(_ id: String, offset: Int) {
+        guard canReorderProfiles else { return }
         let current = presentedProfiles
         guard let index = current.firstIndex(where: { $0.id == id }),
             current.indices.contains(index + offset)
@@ -633,22 +700,34 @@ struct CodexAccountManagerView: View {
     }
 
     private var profilesPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Label(presentation.isSingleAccount ? "账号设置" : "账号与任务", systemImage: "person.2")
                         .font(.headline)
-                    Text(presentation.isSingleAccount ? "登录、暖号与高级设置" : "查看工作状态，空闲后再派单；刷新不触发暖号")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if presentation.isSingleAccount {
+                        Text("登录、暖号与高级设置")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .help("查看工作状态，空闲后再派单；刷新不触发暖号")
                 Spacer()
                 Text("\(presentation.accountCount) 个账号")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                Picker("账号显示方式", selection: $settings.accountWorkspaceLayout) {
+                    Text("列表").tag(AccountWorkspaceLayout.rows)
+                    Text("卡片").tag(AccountWorkspaceLayout.cards)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 136)
+                .help("列表适合连续查看；卡片适合横向比较。两种视图共用账号顺序与全部功能。")
                 Button(isEditingProfiles ? "完成" : "编辑") {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
                         isEditingProfiles.toggle()
+                        profileReorder = nil
                     }
                 }
                 .buttonStyle(.bordered)
@@ -699,8 +778,8 @@ struct CodexAccountManagerView: View {
             }
 
             TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                VStack(spacing: 9) {
-                    ForEach(Array(presentedProfiles.enumerated()), id: \.element.id) { index, profile in
+                profilesLayout {
+                    ForEach(Array(orderedProfiles.enumerated()), id: \.element.id) { index, profile in
                         let linkedProfile = linkedManagedProfile(for: profile)
                         ProfileRow(
                             profile: profile,
@@ -718,6 +797,7 @@ struct CodexAccountManagerView: View {
                             participatesInAutomaticSwitch: store.automaticSwitchParticipation(for: profile),
                             prioritizesDispatch: store.dispatchPriority(for: profile),
                             isEditing: isEditingProfiles,
+                            layout: settings.accountWorkspaceLayout,
                             isLoggingIn: store.isLoggingIn,
                             isLaunching: store.isLaunchingCodex || store.isRefreshing,
                             isRefreshingProfile: store.refreshingProfileIDs.contains(profile.id),
@@ -768,10 +848,28 @@ struct CodexAccountManagerView: View {
                             onMoveDown: {
                                 movePresentedProfile(profile.id, offset: 1)
                             },
+                            onBeginReorder: { beginProfileReorder(profile.id) },
+                            onMoveReorder: previewProfileReorder,
+                            onDropReorder: finishProfileReorder,
+                            onEndReorder: {
+                                withAnimation(ProfileReorderMotion.animation(reduceMotion: reduceMotion)) { profileReorder = nil }
+                            },
                             onDelete: { store.deleteProfile(profile.id) },
                             onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) }
                         )
+                        .opacity(profileReorder?.sourceID == profile.id ? 0.55 : 1)
+                        .background {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: ProfileFramePreferenceKey.self,
+                                    value: isEditingProfiles ? [profile.id: geometry.frame(in: .global)] : [:]
+                                )
+                            }
+                        }
                     }
+                }
+                .onPreferenceChange(ProfileFramePreferenceKey.self) { frames in
+                    if profileFrames != frames { profileFrames = frames }
                 }
             }
 
@@ -2300,6 +2398,38 @@ private struct QuotaProgressTrack: View {
     }
 }
 
+/// Presentation only: retain the full status in details; omit dates already shown below the quota bars.
+enum WarmUpStatusText {
+    static let criticalPhrases = [
+        "7 天额度不足", "额度读取失败", "登录已失效", "暖号失败", "请求超时", "网络失败",
+        "登录失效", "无权访问", "频率受限", "官方服务异常", "官方返回失败", "响应未完成",
+    ]
+
+    static func attributed(_ status: String) -> AttributedString {
+        var text = AttributedString(status)
+        for phrase in criticalPhrases {
+            var start = text.startIndex
+            while let range = text[start...].range(of: phrase) {
+                text[range].foregroundColor = .red
+                text[range].font = .caption2.weight(.semibold)
+                start = range.upperBound
+            }
+        }
+        return text
+    }
+
+    static func summary(_ status: String, fiveHourReset: Date?, sevenDayReset: Date?) -> String? {
+        let duplicateSchedules = [("5 小时", fiveHourReset), ("7 天", sevenDayReset)].compactMap { label, date in
+            date.map { "下次暖号 \(label) " + $0.formatted(.dateTime.month().day().hour().minute()) }
+        }
+        let parts = status.components(separatedBy: " · ").filter {
+            !$0.hasPrefix("最近暖号成功 ") && !duplicateSchedules.contains($0)
+        }
+        let summary = parts.joined(separator: " · ")
+        return summary.isEmpty ? nil : summary
+    }
+}
+
 private struct ProfileRow: View {
     let profile: CodexProfile
     let allProfiles: [CodexProfile]
@@ -2314,6 +2444,7 @@ private struct ProfileRow: View {
     let participatesInAutomaticSwitch: Bool
     let prioritizesDispatch: Bool
     let isEditing: Bool
+    let layout: AccountWorkspaceLayout
     let isLoggingIn: Bool
     let isLaunching: Bool
     let isRefreshingProfile: Bool
@@ -2346,11 +2477,18 @@ private struct ProfileRow: View {
     let onSetChromeProfile: (ChromeProfileBinding?) -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
+    let onBeginReorder: () -> Bool
+    let onMoveReorder: (CGPoint) -> Void
+    let onDropReorder: (CGPoint) -> Void
+    let onEndReorder: () -> Void
     let onDelete: () -> Void
     let onAdjustResetCount: (Int) -> Void
     @State private var isEditingRemark = false
     @State private var isConfirmingDelete = false
     @State private var remarkDraft = ""
+    @State private var isShowingDetails = false
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private static let resetExpiryFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -2360,26 +2498,29 @@ private struct ProfileRow: View {
         return formatter
     }()
 
+    private static let quotaResetFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "M/d HH:mm"
+        return formatter
+    }()
+
     var body: some View {
         let resetReminder = SevenDayResetReminder.message(resetsAt: resetsAt, now: currentDate)
-        VStack(alignment: .leading, spacing: 10) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 14) {
-                    profileAvatar
+        VStack(alignment: .leading, spacing: 8) {
+            if layout == .cards {
+                identitySummary
+                quotaSummary.padding(.vertical, 4)
+                Spacer(minLength: 2)
+                Divider().opacity(0.4)
+                primaryControls
+            } else {
+                HStack(alignment: .top, spacing: 16) {
                     identitySummary
-                        .frame(minWidth: 190, maxWidth: .infinity, alignment: .leading)
-                    quotaSummary.frame(width: 170, alignment: .leading)
-                    primaryControls.frame(width: 250, alignment: .trailing)
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .top, spacing: 12) {
-                        profileAvatar
-                        identitySummary.frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    HStack(alignment: .top, spacing: 24) {
-                        quotaSummary.frame(maxWidth: .infinity, alignment: .leading)
-                        primaryControls.frame(width: 250, alignment: .trailing)
-                    }
+                        .frame(minWidth: 170, maxWidth: .infinity, alignment: .leading)
+                    quotaSummary.frame(width: 168, alignment: .leading)
+                    primaryControls.frame(width: 290, alignment: .trailing)
                 }
             }
             if isEditing {
@@ -2387,13 +2528,25 @@ private struct ProfileRow: View {
                 ScrollView(.horizontal, showsIndicators: true) { editControls }
             }
         }
-        .padding(14)
-        .cardBackground(cornerRadius: 18, elevated: isMonitoring)
+        .padding(.horizontal, 12)
+        .padding(.vertical, layout == .cards ? 14 : 10)
+        .background {
+            if layout == .cards {
+                LinearGradient(
+                    colors: [cardTint.opacity(colorScheme == .dark ? 0.15 : 0.12), Color.accentColor.opacity(0.04)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+                .opacity(reduceTransparency ? 0.5 : 1)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+        }
+        .cardBackground(cornerRadius: layout == .cards ? 20 : 12, elevated: isMonitoring)
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(resetReminder == nil ? Color.clear : Color.red, lineWidth: 2)
+            RoundedRectangle(cornerRadius: layout == .cards ? 20 : 12, style: .continuous)
+                .strokeBorder(resetReminder == nil ? Color.clear : Color.red, lineWidth: 1.5)
                 .allowsHitTesting(false)
         )
+        .accessibilityElement(children: .contain)
         .alert("修改账号备注", isPresented: $isEditingRemark) {
             TextField("例如：工作账号", text: $remarkDraft)
             Button("取消", role: .cancel) {}
@@ -2405,21 +2558,23 @@ private struct ProfileRow: View {
 
     private var profileAvatar: some View {
         Image(systemName: profile.isSystemProfile ? "house.fill" : "person.crop.circle")
-            .font(.system(size: 21, weight: .medium))
-            .frame(width: 30, height: 30)
+            .font(.system(size: 16, weight: .medium))
+            .frame(width: 20, height: 20)
             .foregroundStyle(isMonitoring ? Color.accentColor : Color.secondary)
             .accessibilityHidden(true)
     }
 
     private var identitySummary: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
+                profileAvatar
                 if let dispatchCode {
                     DispatchCodeBadge(code: dispatchCode)
                 }
                 Text(AccountDisplay.profileName(profile, allProfiles: allProfiles))
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
+                    .help(AccountDisplay.profileName(profile, allProfiles: allProfiles))
                 Label(planBadge.name, systemImage: planBadge.icon)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(Color.accentColor)
@@ -2429,11 +2584,13 @@ private struct ProfileRow: View {
                     .accessibilityLabel("\(planBadge.name) 套餐")
                 Spacer(minLength: 0)
                 if isEditing { identityEditButtons }
+                if isEditing && layout == .cards { reorderHandle }
             }
             HStack(spacing: 5) {
-                if isMonitoring { Text("监控中").profileBadge() }
-                if isLaunchProfile { Text("启动账号").profileBadge() }
+                if isMonitoring { Text("监控").profileBadge().help("正在监控此账号") }
+                if isLaunchProfile { Text("启动").profileBadge().help("当前选定的 Desktop 启动账号") }
                 HubCLITaskStatusBadge(status: cliTaskStatus)
+                    .fixedSize()
                 if linkedAccountName != nil {
                     Text("待独立登录")
                         .profileBadge()
@@ -2445,34 +2602,32 @@ private struct ProfileRow: View {
                         .profileBadge()
                         .help("这个 CODEX_HOME 与列表中的另一个入口登录了同一账号")
                 }
+                Button("详情") { isShowingDetails = true }
+                    .buttonStyle(.plain)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                    .accessibilityLabel("账号资料与暖号详情")
+                    .popover(isPresented: $isShowingDetails) { accountDetails }
             }
-            Text(
-                linkedAccountName.map { "本机 Codex 当前登录 \($0)；此卡尚未独立登录" } ?? profile.lastSnapshot.map {
-                    "更新于 " + Self.resetExpiryFormatter.string(from: $0.fetchedAt)
-                } ?? "等待账号验证"
-            )
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
             ProfileSnapshotNotice(profile: profile)
-            if linkedAccountName == nil, let official = profile.officialProfile {
-                Text(officialAccountDetail(official))
+            if linkedAccountName == nil, let activeUntil = profile.officialProfile?.subscriptionActiveUntil,
+                membershipRemainingDays(activeUntil) <= 7
+            {
+                Text(membershipDetail(activeUntil))
+                    .font(.caption2)
+                    .foregroundStyle(membershipTint(activeUntil))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let warmUpStatus,
+                let summary = WarmUpStatusText.summary(warmUpStatus, fiveHourReset: fiveHourResetsAt, sevenDayReset: resetsAt)
+            {
+                Text(WarmUpStatusText.attributed(summary))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if let activeUntil = official.subscriptionActiveUntil {
-                    Text(membershipDetail(activeUntil))
-                        .font(.caption2)
-                        .foregroundStyle(membershipTint(activeUntil))
-                        .lineLimit(1)
-                }
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if let warmUpStatus {
-                Text(warmUpStatus)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
+            resetCreditSummary
             if let resetReminder = SevenDayResetReminder.message(resetsAt: resetsAt, now: currentDate) {
                 Label(resetReminder, systemImage: "exclamationmark.circle.fill")
                     .font(.caption2.weight(.bold))
@@ -2481,6 +2636,35 @@ private struct ProfileRow: View {
                     .accessibilityLabel(resetReminder)
             }
         }
+    }
+
+    private var accountDetails: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(AccountDisplay.profileName(profile, allProfiles: allProfiles))
+                .font(.headline)
+            Text(
+                linkedAccountName.map { "本机 Codex 当前登录 \($0)；此卡尚未独立登录" } ?? profile.lastSnapshot.map {
+                    "更新于 " + Self.resetExpiryFormatter.string(from: $0.fetchedAt)
+                } ?? "等待账号验证"
+            )
+            ProfileSnapshotNotice(profile: profile)
+            if linkedAccountName == nil, let official = profile.officialProfile {
+                Text(officialAccountDetail(official))
+                if let activeUntil = official.subscriptionActiveUntil {
+                    Text(membershipDetail(activeUntil))
+                        .foregroundStyle(membershipTint(activeUntil))
+                }
+            }
+            if let warmUpStatus {
+                Divider()
+                Text(WarmUpStatusText.attributed(warmUpStatus))
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(16)
+        .frame(width: 360, alignment: .leading)
     }
 
     private var identityEditButtons: some View {
@@ -2524,12 +2708,13 @@ private struct ProfileRow: View {
     }
 
     private var quotaSummary: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: layout == .cards ? 12 : 8) {
             quotaWindow(
                 title: "5 小时剩余",
                 remainingPercent: fiveHourRemainingPercent,
                 resetsAt: fiveHourResetsAt,
-                officialReadSucceeded: quotaReadSucceeded
+                officialReadSucceeded: quotaReadSucceeded,
+                prominent: layout == .cards
             )
             quotaWindow(
                 title: "7 天剩余",
@@ -2537,6 +2722,11 @@ private struct ProfileRow: View {
                 resetsAt: resetsAt,
                 officialReadSucceeded: quotaReadSucceeded
             )
+        }
+    }
+
+    private var resetCreditSummary: some View {
+        HStack(spacing: 8) {
             Label(
                 availableResetCredits.map { "可用重置 \($0) 次" }
                     ?? (quotaReadSucceeded ? "可用重置 官方未返回" : "可用重置 暂无"),
@@ -2552,10 +2742,11 @@ private struct ProfileRow: View {
             if (availableResetCredits ?? 0) > 0,
                 let expiry = resetCreditExpiries.first
             {
-                Text("最近到期 " + Self.resetExpiryFormatter.string(from: expiry))
+                Text("到期 " + Self.quotaResetFormatter.string(from: expiry))
                     .font(.caption2)
-                    .foregroundStyle(expiry <= Date() ? Color.red : Color.secondary)
+                    .foregroundStyle(expiry <= currentDate ? Color.red : Color.secondary)
                     .lineLimit(1)
+                    .help("重置卡最近到期 " + Self.resetExpiryFormatter.string(from: expiry))
             }
         }
     }
@@ -2564,10 +2755,11 @@ private struct ProfileRow: View {
         title: String,
         remainingPercent: Double?,
         resetsAt: Date?,
-        officialReadSucceeded: Bool
+        officialReadSucceeded: Bool,
+        prominent: Bool = false
     ) -> some View {
         let windowUnavailable = remainingPercent == nil && resetsAt == nil
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title)
                     .font(.caption.weight(.semibold))
@@ -2576,164 +2768,217 @@ private struct ProfileRow: View {
                     remainingPercent.map { "\(Int($0.rounded()))%" }
                         ?? (officialReadSucceeded ? "官方未返回" : "暂无")
                 )
-                .font(.subheadline.weight(.bold).monospacedDigit())
+                .font(prominent ? .system(size: 40, weight: .medium, design: .rounded).monospacedDigit() : .subheadline.weight(.bold).monospacedDigit())
             }
             QuotaProgressTrack(percent: remainingPercent)
             Text(
                 resetsAt.map {
-                    "官方重置 " + Self.resetExpiryFormatter.string(from: $0)
+                    "重置 " + Self.quotaResetFormatter.string(from: $0)
                 } ?? (officialReadSucceeded && windowUnavailable ? "此窗口未由官方返回" : "官方重置时间未知")
             )
             .font(.caption2)
             .foregroundStyle(.secondary)
             .lineLimit(1)
+            .help(resetsAt.map { "官方重置 " + Self.resetExpiryFormatter.string(from: $0) } ?? "官方重置时间未知")
         }
     }
 
     private var primaryControls: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            if !profile.isSystemProfile {
-                ExecutionPreferenceControl(
-                    preference: executionPreference,
-                    allowsApplyToAll: WorkspacePresentation(profiles: allProfiles, selectedProfileID: profile.id).managedAccountCount > 1,
-                    onSave: onSetExecutionPreference
-                )
-            }
-
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Button(action: onRefresh) {
-                    HStack(spacing: 4) {
-                        if isRefreshingProfile {
-                            ProgressView()
-                                .controlSize(.mini)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        Text("刷新")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .disabled(isRefreshingProfile || isWarmingProfile || isLoggingIn || isLaunching)
-                .help("只刷新这个账号的额度、重置时间和快照")
-                .accessibilityLabel(isRefreshingProfile ? "正在刷新此账号" : "刷新此账号")
-
-                Button(action: onWarmUp) {
-                    HStack(spacing: 4) {
-                        if isWarmingProfile {
-                            ProgressView()
-                                .controlSize(.mini)
-                        } else {
-                            Image(systemName: "bolt")
-                        }
-                        Text("暖号")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .disabled(isRefreshingProfile || isWarmingProfile || isLoggingIn || isLaunching)
-                .help("只为这个账号发送一次最小请求，完成后刷新额度")
-                .accessibilityLabel(isWarmingProfile ? "正在暖号此账号" : "暖号此账号")
-            }
-
-            HStack(spacing: 14) {
-                Toggle(
-                    isOn: Binding(
-                        get: { participatesInAutomaticSwitch },
-                        set: onSetAutomaticSwitchParticipation
+                if !profile.isSystemProfile {
+                    ExecutionPreferenceControl(
+                        preference: executionPreference,
+                        allowsApplyToAll: WorkspacePresentation(profiles: allProfiles, selectedProfileID: profile.id).managedAccountCount > 1,
+                        compact: true,
+                        onSave: onSetExecutionPreference
                     )
-                ) {
-                    Text("参与调度")
-                        .font(.caption.weight(.medium))
                 }
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .accessibilityValue(participatesInAutomaticSwitch ? "已加入" : "已排除")
-                .help("同步 Next 调度范围、Hub 配置和账号编号（Hub 重载后生效）；开启后参与低额度推荐与 5 小时暖号，关闭仍保留 7 天暖号")
-                .frame(maxWidth: .infinity)
-                Toggle(
-                    isOn: Binding(
-                        get: { prioritizesDispatch },
-                        set: onSetDispatchPriority
-                    )
-                ) {
-                    Text("优先派活")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(prioritizesDispatch ? Color.red : Color.secondary)
-                }
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .tint(prioritizesDispatch ? .red : .accentColor)
-                .accessibilityLabel("优先派活")
-                .accessibilityValue(prioritizesDispatch ? "已开启" : "已关闭")
-                .help("开启时同步加入调度、分配编号并保存优先偏好；取消优先保留参与设置。当前 Hub 尚未消费优先标记，需 Hub 后续支持后才会影响选号")
-                .frame(maxWidth: .infinity)
+                Spacer(minLength: 0)
+                if isEditing && layout == .rows { reorderHandle }
             }
-
             HStack(spacing: 8) {
-                Button {
-                    onOpenTerminal(nil)
-                } label: {
-                    Label("在终端中使用", systemImage: "terminal")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(linkedAccountName != nil || profile.isSystemProfile || cliTaskStatus.blocksLocalCLI)
-                .help(cliTaskStatus.blocksLocalCLI ? "缺少可信映射、Hub 概览不新鲜或同账号有活跃任务" : "在终端中使用此账号")
-                Menu {
-                    Button("以该账号打开 CLI（选择目录…）") { chooseDirectoryAndOpenTerminal() }
-                    Button("复制一句话 CLI 调用命令") { onCopyTerminalCommand() }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .controlSize(.small)
-                .disabled(profile.isSystemProfile || cliTaskStatus.blocksLocalCLI)
-                .help(cliTaskStatus.blocksLocalCLI ? "缺少可信映射、Hub 概览不新鲜或同账号有活跃任务" : "更多 CLI 入口")
+                refreshAndWarmUpControls
+                terminalControls
+                    .fixedSize()
+                monitorAndDesktopControls
             }
-
-            HStack(spacing: 8) {
-                if linkedAccountName != nil {
-                    Button {
-                        guard !cliTaskStatus.blocksLocalCLI else { return }
-                        onRelogin()
-                    } label: {
-                        Label(isLoggingIn ? "登录中…" : "登录", systemImage: "person.badge.key")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isLoggingIn || isLaunching || cliTaskStatus.blocksLocalCLI)
-                    .help(
-                        cliTaskStatus.blocksLocalCLI
-                            ? "Hub 状态未确认或同账号有活跃任务，暂不能登录"
-                            : "登录为独立账号，不修改当前 Codex 登录")
-                } else {
-                    Button {
-                        onMonitor()
-                    } label: {
-                        Label(isMonitoring ? "已监控" : "监控", systemImage: isMonitoring ? "checkmark.circle.fill" : "eye")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isMonitoring)
-                }
-
-                Button {
-                    guard !cliTaskStatus.blocksLocalCLI else { return }
-                    onLaunch()
-                } label: {
-                    Label(isCurrentCodexAccount ? "当前账号" : "切换桌面", systemImage: "macwindow")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .disabled(isLaunching || linkedAccountName != nil || isCurrentCodexAccount || cliTaskStatus.blocksLocalCLI)
-                .help(
-                    cliTaskStatus.blocksLocalCLI
-                        ? "Hub 状态未确认或同账号有活跃任务，暂不能切换 Desktop"
-                        : "切换 Desktop 到此账号")
-            }
+            dispatchControls
         }
         .controlSize(.small)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var cardTint: Color {
+        guard let remaining = [fiveHourRemainingPercent, remainingPercent].compactMap({ $0 }).min() else { return .gray }
+        if remaining <= 10 { return .red }
+        if remaining <= 35 { return .orange }
+        return .blue
+    }
+
+    private var reorderHandle: some View {
+        ProfileReorderHandle(
+            isEnabled: !isLaunching && !isLoggingIn && (canMoveUp || canMoveDown),
+            onBegin: onBeginReorder,
+            onMove: onMoveReorder,
+            onDrop: onDropReorder,
+            onCancel: onEndReorder
+        )
+        .frame(width: 28, height: 24)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+        .contextMenu {
+            Button("上移账号", action: onMoveUp).disabled(!canMoveUp || isLaunching || isLoggingIn)
+            Button("下移账号", action: onMoveDown).disabled(!canMoveDown || isLaunching || isLoggingIn)
+        }
+        .accessibilityAction(named: Text("上移账号")) {
+            if canMoveUp && !isLaunching && !isLoggingIn { onMoveUp() }
+        }
+        .accessibilityAction(named: Text("下移账号")) {
+            if canMoveDown && !isLaunching && !isLoggingIn { onMoveDown() }
+        }
+    }
+
+    private var refreshAndWarmUpControls: some View {
+        HStack(spacing: 6) {
+            Button(action: onRefresh) {
+                HStack(spacing: 4) {
+                    if isRefreshingProfile {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isRefreshingProfile || isWarmingProfile || isLoggingIn || isLaunching)
+            .help("只刷新这个账号的额度、重置时间和快照")
+            .accessibilityLabel(isRefreshingProfile ? "正在刷新此账号" : "刷新此账号")
+
+            Button(action: onWarmUp) {
+                HStack(spacing: 4) {
+                    if isWarmingProfile {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(systemName: "bolt")
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isRefreshingProfile || isWarmingProfile || isLoggingIn || isLaunching)
+            .help("只为这个账号发送一次最小请求，完成后刷新额度")
+            .accessibilityLabel(isWarmingProfile ? "正在暖号此账号" : "暖号此账号")
+        }
+    }
+
+    private var dispatchControls: some View {
+        HStack(spacing: 14) {
+            Toggle(
+                isOn: Binding(
+                    get: { participatesInAutomaticSwitch },
+                    set: onSetAutomaticSwitchParticipation
+                )
+            ) {
+                Text("参与调度")
+                    .font(.caption.weight(.medium))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .accessibilityValue(participatesInAutomaticSwitch ? "已加入" : "已排除")
+            .help("同步 Next 调度范围、Hub 配置和账号编号（Hub 重载后生效）；开启后参与低额度推荐与 5 小时暖号，关闭仍保留 7 天暖号")
+            .frame(maxWidth: .infinity)
+            Toggle(
+                isOn: Binding(
+                    get: { prioritizesDispatch },
+                    set: onSetDispatchPriority
+                )
+            ) {
+                Text("优先派活")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(prioritizesDispatch ? Color.red : Color.secondary)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .tint(prioritizesDispatch ? .red : .accentColor)
+            .accessibilityLabel("优先派活")
+            .accessibilityValue(prioritizesDispatch ? "已开启" : "已关闭")
+            .help("开启时同步加入调度、分配编号并保存优先偏好；取消优先保留参与设置。当前 Hub 尚未消费优先标记，需 Hub 后续支持后才会影响选号")
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var terminalControls: some View {
+        HStack(spacing: 4) {
+            Button {
+                onOpenTerminal(nil)
+            } label: {
+                Label("终端", systemImage: "terminal")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .labelStyle(.iconOnly)
+            .accessibilityLabel("在终端中使用此账号")
+            .disabled(linkedAccountName != nil || profile.isSystemProfile || cliTaskStatus.blocksLocalCLI)
+            .help(cliTaskStatus.blocksLocalCLI ? "缺少可信映射、Hub 概览不新鲜或同账号有活跃任务" : "在终端中使用此账号")
+            Menu {
+                Button("以该账号打开 CLI（选择目录…）") { chooseDirectoryAndOpenTerminal() }
+                Button("复制一句话 CLI 调用命令") { onCopyTerminalCommand() }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .controlSize(.small)
+            .disabled(profile.isSystemProfile || cliTaskStatus.blocksLocalCLI)
+            .help(cliTaskStatus.blocksLocalCLI ? "缺少可信映射、Hub 概览不新鲜或同账号有活跃任务" : "更多 CLI 入口")
+            .accessibilityLabel("更多 CLI 入口")
+        }
+    }
+
+    private var monitorAndDesktopControls: some View {
+        HStack(spacing: 4) {
+            if linkedAccountName != nil {
+                Button {
+                    guard !cliTaskStatus.blocksLocalCLI else { return }
+                    onRelogin()
+                } label: {
+                    Label(isLoggingIn ? "登录中…" : "登录", systemImage: "person.badge.key")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isLoggingIn || isLaunching || cliTaskStatus.blocksLocalCLI)
+                .help(
+                    cliTaskStatus.blocksLocalCLI
+                        ? "Hub 状态未确认或同账号有活跃任务，暂不能登录"
+                        : "登录为独立账号，不修改当前 Codex 登录")
+            } else {
+                Button {
+                    onMonitor()
+                } label: {
+                    Label(isMonitoring ? "已监控" : "监控", systemImage: isMonitoring ? "checkmark.circle.fill" : "eye")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isMonitoring)
+                .help(isMonitoring ? "正在监控此账号" : "监控此账号")
+            }
+
+            Button {
+                guard !cliTaskStatus.blocksLocalCLI else { return }
+                onLaunch()
+            } label: {
+                Label(isCurrentCodexAccount ? "当前账号" : "切换桌面", systemImage: "macwindow")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isLaunching || linkedAccountName != nil || isCurrentCodexAccount || cliTaskStatus.blocksLocalCLI)
+            .help(
+                cliTaskStatus.blocksLocalCLI
+                    ? "Hub 状态未确认或同账号有活跃任务，暂不能切换 Desktop"
+                    : "切换 Desktop 到此账号")
+        }
+        .labelStyle(.iconOnly)
     }
 
     private func chooseDirectoryAndOpenTerminal() {
@@ -2814,17 +3059,6 @@ private struct ProfileRow: View {
             .help("本地历史次数加一；不影响官方可用重置")
             .accessibilityLabel("本地历史次数加一")
 
-            Spacer(minLength: 8)
-            Button(action: onMoveUp) { Image(systemName: "arrow.up") }
-                .buttonStyle(.bordered)
-                .help("上移账号")
-                .accessibilityLabel("上移账号")
-                .disabled(!canMoveUp || isLaunching)
-            Button(action: onMoveDown) { Image(systemName: "arrow.down") }
-                .buttonStyle(.bordered)
-                .help("下移账号")
-                .accessibilityLabel("下移账号")
-                .disabled(!canMoveDown || isLaunching)
         }
         .controlSize(.small)
     }
