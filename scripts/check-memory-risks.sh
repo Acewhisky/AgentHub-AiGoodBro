@@ -124,6 +124,22 @@ require_literal Sources/CodexUsageWidget/Services/CodexAppServerTaskClient.swift
   'threadListTimeoutSeconds' 'thread/list 缺少超时回收'
 require_swift_literal 'private static let memorySessionUsageCacheLimit' 'session 内存缓存缺少独立数量上限'
 require_swift_literal 'private static let maximumPersistentCacheBytes' '持久缓存读取缺少字节上限'
+require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
+  'static let maximumConfigurationBytes' '调度配置读取缺少明确的字节上限'
+require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
+  'while result.count <= maximumBytes {' '调度配置读取缺少运行中总量限制'
+require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
+  'read(upToCount: min(64 * 1_024, remaining))' '调度配置读取缺少有界分块读取'
+require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
+  'result.count <= maximumBytes,' '调度配置读取缺少读取后的总量门禁'
+require_literal Sources/CodexUsageWidget/UI/CodexAccountManagerView.swift \
+  'private static let maximumCatalogBytes' '调度编号静态缓存缺少独立的小文件读取上限'
+require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
+  'static let maximumCatalogEntries' '调度编号缓存缺少条目数量上限'
+require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
+  'static let maximumCatalogFieldBytes' '调度编号缓存缺少标识字段长度上限'
+require_literal Sources/CodexUsageWidget/Services/WorkspaceScreenshotExporter.swift \
+  'static let maximumRGBABytes' '长截图渲染缺少明确的 RGBA 工作集上限'
 require_swift_literal 'releaseSessionUsageWorkingSet()' '完成聚合后没有释放 session 工作集'
 forbid_regex 'let parsedSessions:.*SessionUsageCacheEntry' '发现全量保留 SessionUsageCacheEntry；session 聚合必须依赖有界缓存并逐项处理'
 require_swift_literal 'let sourceByThreadId = Dictionary(' '分支去重缺少轻量 source 索引，可能退化为全量保留 session entry'
@@ -162,6 +178,7 @@ parent_traversal_count="$(count_regex 'deletingLastPathComponent\(\)')"
   printf -- '- 重复 Timer 强引用：已扫描\n'
   printf -- '- app-server 缓冲、请求并发与超时上限：已扫描\n'
   printf -- '- session/性能缓存上限与工作集释放：已扫描\n'
+  printf -- '- 调度配置有界分块读取、运行中总量与编号静态缓存上限：已扫描\n'
   printf -- '- session 聚合全量 entry 保留：已扫描\n'
   printf -- '- 文件系统父路径上溯终止与循环去重：已扫描\n'
   printf -- '- Notification/KVO/Event monitor 清理路径：已扫描\n\n'

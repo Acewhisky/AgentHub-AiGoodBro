@@ -1,5 +1,37 @@
 # Changelog
 
+## 9.5.5 / 0907v1 - 2026-09-07
+
+- 相比 0905v4，主窗口默认缩至 980 × 700；账号身份、额度和操作分组对齐，压缩卡片与概览高度，保留原有功能位置和窄窗换行。
+- 右上角新增原生 PNG 长截图，包含完整滚动内容并保持当前展开状态；九账号、三宽度、浅深色和保存/取消/失败分支均有合成测试，超限拒绝而非静默裁切。
+- 旧额度响应不再覆盖新状态；同刻响应仅补全字段，成功优先于失败，避免 Reset 历史回退或重复计数。
+- 调度同步在写入前核对当前身份、新鲜成功快照与同账号镜像；校验和备份三份配置，逐文件原子替换并检测竞争写入，保留未知或不可读的恢复数据。69 项离线同步测试纳入 `make test`。
+- 保留 0905v4 的暖号与默认关闭的飞书提醒；额度桶标识缺失时只建立基线，不误报恢复或 Reset 卡增加。
+- “优先派活”只保存偏好，当前 Hub 尚不消费此标记；本次不修改或重启 Hub，仅推送源码，不发布安装包。
+
+### English
+
+- Reduced the default workspace and card density while preserving feature placement and narrow-window reflow; added native, bounded full-workspace PNG export with nine-account coverage.
+- Made quota observations monotonic, merged equal-time evidence without erasing known values, and preserved reset-count idempotency.
+- Strengthened current credential and mirror validation, per-file atomic synchronization and recovery-data preservation; added 69 offline synchronization tests to `make test`.
+- Retained opt-in warm-up and Feishu behavior, rejected unknown quota-bucket comparisons, and clarified that Hub does not yet consume priority preferences. Source-only update; no installer or Hub deployment.
+
+## 9.5.4 / 0905v4 - 2026-09-05
+
+- 相比 0905v3，飞书新增「额度重置提醒」和「获得 Reset 卡提醒」两个独立选项，默认关闭；启用后约每分钟读取官方额度。
+- 仅在可信身份的新鲜官方数据确认窗口滚动、额度恢复或 Reset 可用次数增加时发送脱敏通知；首次同步、字段缺失、乱序响应和重复账号入口不会冒充新事件。本地 Reset 历史调整不触发通知，也不自动使用重置卡。
+- 沿用官方重置时间后 8 秒的暖号预约与 Hub 空闲门禁，到期刷新和暖号后确认改用纯额度路径，避免等待本地用量统计。
+- 到期时若遇到刷新、登录或账号操作重叠，保留待处理定时器并在 5 秒后重新检查，避免丢失本次到期刷新；不跳过原有暖号检查。
+- 保留低额度提醒、Keychain、Webhook 允许列表、重定向禁用、原有账号隔离与手动切换路径。
+- 本轮为本地源码迭代，未安装、未进行真实暖号或飞书发送、未创建 GitHub Release。
+
+### English
+
+- Added separate, disabled-by-default Feishu/Lark alerts for official quota restoration and increases in available reset credits, with minute-level quota polling when enabled.
+- Baseline-only startup, verified identity, fresh observations and account-level deduplication prevent historical or duplicate alerts. Local counter edits never trigger a grant alert or redeem a credit.
+- Reset-time warm-up and post-request verification now use quota-only reads, retaining the existing eight-second grace period and idle-state checks.
+- A deadline overlapping a refresh or account operation remains pending for another check after five seconds, without bypassing warm-up validation.
+
 ## 9.5.3 / 0905v3 - 2026-09-05
 
 - 重新设计设置界面：Next 品牌页头、五个一级分区与轻量页脚，取代继承的长表单和层叠卡片。

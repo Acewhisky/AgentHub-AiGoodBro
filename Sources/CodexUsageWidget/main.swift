@@ -137,6 +137,11 @@ struct CodexAccountManagerNextMain {
             )
         }
 
+        if CommandLine.arguments.contains("--self-test-workspace-screenshot") {
+            _ = NSApplication.shared
+            exit(WorkspaceScreenshotSelfTest.run() ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-account-inspection") {
             // Preserve the test CLI contract after merging inspection into account cards.
             exit(AccountTaskStatusSelfTest.run() ? 0 : 1)

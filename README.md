@@ -4,12 +4,16 @@
 
 [![CI](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-![Version 0905v3](https://img.shields.io/badge/version-0905v3-6C4DFF)
+![Version 0907v1](https://img.shields.io/badge/version-0907v1-6C4DFF)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Next 是面向 macOS 的本地优先 Codex 工作台，以独立产品名称、界面与发布渠道维护。一个账号也能清楚查看额度、按需自动暖号、选择任务模型；多个账号可以集中管理隔离环境、监控任务占用。支持 GPT-6 Astra，模型、思考强度和 Standard/Fast 速度会一起传给后续 CLI。
 
-当前版本：`0905v3` · `9.5.3 (15)`。项目非 OpenAI 官方产品，不提供账号、不增加额度，也不绕过登录、MFA 或平台限制。
+当前源码版本：`0907v1` · `9.5.5 (17)`。项目非 OpenAI 官方产品，不提供账号、不增加额度，也不绕过登录、MFA 或平台限制。
+
+0907v1 相比 0905v4：缩小主窗口与账号卡，右上角新增完整工作台长截图；修复额度快照乱序，并加强调度同步的当前身份、镜像一致性和并发恢复保护。九账号长图已用合成数据验证。本次仅推送源码，未发布安装包，详见 [0907v1 更新说明](docs/release-notes-v9.5.5.md)。
+
+0905v4 优化重置后的暖号时机，并新增可独立开启的飞书额度重置和 Reset 卡增加提醒。到期时优先刷新官方额度，遇到刷新或账号操作重叠会保留待处理定时器；身份与任务空闲检查继续生效。本版尚未发布安装包，详见 [0905v4 更新说明](docs/release-notes-v9.5.4.md)。
 
 0905v3 重新设计设置界面：外观、菜单栏、自动化、工作区、关于五个分区直接切换；可点击主题预览和分段选择取代长表单。原有设置、账号数据和自动化规则不变。详见 [0905v3 更新说明](docs/release-notes-v9.5.3.md)。
 
@@ -36,13 +40,19 @@ Next 是面向 macOS 的本地优先 Codex 工作台，以独立产品名称、�
 
 | 区域 | 当前可用能力 |
 |---|---|
-| 工作台 | 当前监控账号、5 小时/7 天额度、重置时间、官方累计 Token、本机全 Agent Token 与费用估算 |
+| 工作台 | 当前监控账号、5 小时/7 天额度、重置时间、官方累计 Token、本机全 Agent Token 与费用估算、完整 PNG 长截图 |
 | 账号卡 | 刷新、暖号、参与调度、执行偏好、独立 CLI、监控、重新登录、Chrome 会话、显式 Desktop 切换 |
 | 就地状态提示 | Hub 任务状态、快照过期、刷新失败、低额度颜色与参与调度开关 |
 | 自动化中心 | 低额度账号推荐、飞书通知、安全门禁与最近审计事件 |
 | 菜单栏与设置 | 额度环、密度、语言、主题、配色、快捷键、置顶、后台驻留与更新检查 |
 
 当前完整窗口统一为工作台，不再提供重复的巡检页或页面切换导航。Windows 工作区与历史统计模型不代表 macOS 已提供对应页面。
+
+## 主界面长截图
+
+右上角截图按钮使用原生 SwiftUI/AppKit 渲染当前展开状态下的完整工作台，包含滚动区外的账号，不截其他窗口或系统标题栏。通过系统保存面板写入本机 PNG，不会上传，也不需要录屏权限。默认窗口为 980 × 700；账号卡保持原有功能分区，窄窗自动换行，长备注允许单行省略。
+
+合成测试覆盖九账号、820/980/1280 三种宽度与浅深色。图片通常以 2× 导出，较大内容会降为 1×；超过 3200 万像素或单边 32768 像素时拒绝导出并提示收起栏目，不静默裁切。此限制是栅格预算，不是整个进程的内存上限。
 
 ## 一个账号也能使用
 
@@ -104,9 +114,9 @@ Next 从本机 `http://127.0.0.1:8787/api/overview` 读取 Hub 概览，以账�
 
 ### Hub 集成前置配置
 
-当前 Hub 联动是由外部中枢预配置的集成，应用内还没有映射编辑器。公开源码不会自动发现账号别名，也不会自行创建这些配置。外部派单器若使用模型白名单，也必须加入 `gpt-6-astra` 与六档强度；只更新 Next 不会自动部署另一套 Hub 服务。
+当前 Hub 联动需要外部中枢预配置账号，应用内还没有映射编辑器。「参与调度」通过 Next 快照中的账号目录唯一匹配已有 Hub 账号，再同步参与状态与编号；找不到账号或映射有冲突时停止写入。外部派单器若使用模型白名单，也必须加入 `gpt-6-astra` 与六档强度；只更新 Next 不会自动部署另一套 Hub 服务。
 
-账号卡的调度编号与 Hub 别名在应用启动前写入：
+账号卡的调度编号与 Hub 别名保存在下列文件；可以预配置，也可以通过「参与调度」开启时创建编号：
 
 ```text
 ~/Library/Application Support/CodexAccountManagerNext/dispatch-codes-v1.json
@@ -125,7 +135,15 @@ Next 从本机 `http://127.0.0.1:8787/api/overview` 读取 Hub 概览，以账�
 }
 ```
 
-`code` 必须是唯一的单个 `A`–`Z` 字母，`alias` 与 `profileId` 不能为空。该文件在进程启动时读取一次，修改后需要重启 Next。
+`code` 必须是唯一的单个 `A`–`Z` 字母，`alias` 与 `profileId` 不能为空。开启「参与调度」会保留已有编号，缺少编号时分配当前最大字母的下一个（空表从 A 开始），`profileId` 取匹配 Hub 目录的 Next profile；关闭时移除该账号编号。同步成功后立即刷新编号缓存与账号卡，外部手动修改该文件仍需重启 Next。
+
+一次 UI 操作同时更新 Next 快照的 `automaticSwitchParticipation`、Hub `config.json` 中取反的 `dispatchDisabled`，以及上述编号文件。普通快照保存、启动和后台刷新不会触发这项三源同步。`build/` 下的应用默认定位到 Next 仓库同级的 `agent-remote-control-0828v1/config.json`；其他安装位置需在 Next 启动环境中通过 `CAMNEXT_HUB_CONFIG_PATH` 提供配置的绝对路径。
+
+三份配置校验通过并备份后，才逐个用临时文件与原子 swap/rename 替换；swap 后还会核对被置换的原内容，以发现最终检查与替换之间的竞争写入。检测到并发变化时会尽力保留该变化并回滚本次写入。备份位于 Next 应用支持目录的 `dispatch-participation-backups/<事务编号>/`，内含原文件及标明编号文件原先是否缺失的 `manifest.json`。单个文件替换是原子的；未共同遵循 Next 锁的外部写入者仍无法获得跨进程、跨三文件的绝对事务保证，进程崩溃或断电时也不保证全部回滚。回滚未完成时会显示脱敏错误并保留备份；操作开关时不要同时手工编辑这些文件。Hub 在启动时缓存 `dispatchDisabled`，须重新加载配置后才采用新值；Next 不会操作 Hub 进程。
+
+「优先派活」目前只保存 Next 的优先偏好，并确保参与状态和编号同步。当前 Hub 尚无 `prioritizeDispatch` 消费逻辑，打开该开关不会改变 Hub 的选号顺序，也不代表 Next 已部署 Hub 侧能力。
+
+本功能的源码检查与离线自检可运行 `python3 scripts/test-dispatch-participation.py`（可单选 `--typecheck-only` 或 `--tests-only`）。脚本只做完整 Swift 源码 typecheck，并解释执行临时目录中的合成数据测试，不构建或启动 Next，也不访问真实账号配置。
 
 独立巡检页已移除，`inspection-config-v1.json` / `CAMNEXT_INSPECTION_CONFIG` 不再由 Next 使用；已有本地配置文件不会被删除。账号卡继续依赖 `dispatch-codes-v1.json` 与新鲜 Hub 概览进行占用保护。
 
@@ -263,7 +281,7 @@ Next 读取官方 `windowDurationMins` 与 `resetsAt`。前者是窗口分钟数
 
 ## 安装
 
-当前仓库未发布 `0905v3 / 9.5.3` GitHub Release 安装包，也未提供经过 Apple Developer ID 签名与公证的该版安装包。当前安装方式是从源码在目标 Mac 本机构建；不要把 Actions 产物当成已公证发行版。
+当前仓库未发布 `0907v1 / 9.5.5` GitHub Release 安装包，也未提供经过 Apple Developer ID 签名与公证的该版安装包。当前安装方式是从源码在目标 Mac 本机构建；不要把 Actions 产物当成已公证发行版。
 
 ```bash
 xcode-select --install
@@ -401,9 +419,9 @@ git diff --check
 
 ## 版本与许可
 
-- 版本名称：`0905v3`
-- Marketing Version：`9.5.3`
-- Build：`15`
+- 版本名称：`0907v1`
+- Marketing Version：`9.5.5`
+- Build：`17`
 - 产品设计：[docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)
 - 架构与边界：[BLUEPRINT.md](BLUEPRINT.md)
 - 安全边界：[SECURITY.md](SECURITY.md)

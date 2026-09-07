@@ -34,6 +34,8 @@ final class UsageStore: ObservableObject {
     }
 
     private static let feishuNotificationsEnabledKey = "CodexManagerNext.feishuNotifications.enabled"
+    private static let feishuQuotaResetEnabledKey = "CodexManagerNext.feishuNotifications.quotaReset"
+    private static let feishuResetCreditEnabledKey = "CodexManagerNext.feishuNotifications.resetCredit"
     private static let officialLifetimeHighWaterKey = "CodexManagerNext.tokens.officialLifetimeHighWater"
     private static let localLifetimeHighWaterKey = "CodexManagerNext.tokens.localLifetimeHighWater"
     private static let dispatchQuotaRefreshNotification = Notification.Name(
@@ -68,6 +70,8 @@ final class UsageStore: ObservableObject {
     @Published private(set) var warmUpSelection: CodexWarmUpSelection
     @Published private(set) var automaticAccountSwitchEnabled: Bool
     @Published private(set) var feishuNotificationsEnabled: Bool
+    @Published private(set) var feishuQuotaResetEnabled = false
+    @Published private(set) var feishuResetCreditEnabled = false
     @Published private(set) var feishuWebhookConfigured = false
     @Published private(set) var feishuNotificationMessage: String?
     @Published private(set) var automationEvents: [AccountAutomationEvent]
@@ -77,6 +81,7 @@ final class UsageStore: ObservableObject {
     private var fullTimer: Timer?
     private var statisticsRolloverTimer: Timer?
     private var warmUpTimer: Timer?
+    private var quotaEventTracker = CodexQuotaEventTracker()
     private var warmUpMaintenanceTimer: Timer?
     private var systemTimeZoneObserver: NSObjectProtocol?
     private var powerStateObserver: NSObjectProtocol?
@@ -132,6 +137,8 @@ final class UsageStore: ObservableObject {
         warmUpSelection = CodexWarmUpSelection.load()
         automaticAccountSwitchEnabled = UserDefaults.standard.bool(forKey: CodexAutomaticSwitchPolicy.enabledDefaultsKey)
         feishuNotificationsEnabled = UserDefaults.standard.bool(forKey: Self.feishuNotificationsEnabledKey)
+        feishuQuotaResetEnabled = UserDefaults.standard.bool(forKey: Self.feishuQuotaResetEnabledKey)
+        feishuResetCreditEnabled = UserDefaults.standard.bool(forKey: Self.feishuResetCreditEnabledKey)
         let profileStore = CodexProfileStore()
         try? profileStore.discardUnverifiedManagedProfiles()
         self.profileStore = profileStore
@@ -445,21 +452,52 @@ final class UsageStore: ObservableObject {
         automaticSwitchParticipation(for: profile.id)
     }
 
+    func dispatchPriority(for profile: CodexProfile) -> Bool {
+        CodexProfile.prioritizesDispatch(profile.id, among: profiles)
+    }
+
     private func automaticSwitchParticipation(for profileID: String) -> Bool {
         CodexProfile.participatesInAutomaticSwitch(profileID, among: profiles)
     }
 
     func setAutomaticSwitchParticipation(_ enabled: Bool, for id: String) {
+        guard !isPreview else { return }
         do {
-            try profileStore.setAutomaticSwitchParticipation(enabled, for: id)
+            try profileStore.setDispatchParticipationFromUI(enabled, for: id)
+            DispatchCodeCatalog.reload()
             syncProfiles()
             accountManagerMessage =
                 enabled
-                ? "该账号已加入低额度调度范围"
-                : "该账号已排除低额度调度；仅保留 7 天与官方随机重置暖号"
+                ? "该账号已加入调度；Next、Hub 配置与编号已同步（Hub 重载后生效）"
+                : "该账号已排除调度并移除编号；保留 7 天与官方随机重置暖号（Hub 重载后生效）"
+            debugLog("dispatch participation: three-source sync succeeded")
             refreshWarmUpProfilesThenSchedule()
         } catch {
-            accountManagerMessage = "低额度调度范围保存失败：\(error.localizedDescription)"
+            let message =
+                (error as? DispatchParticipationError)?.localizedDescription
+                ?? "参与调度同步失败，请检查配置与备份"
+            accountManagerMessage = message
+            debugLog("dispatch participation: \(message)")
+            syncProfiles()
+        }
+    }
+
+    func setDispatchPriority(_ enabled: Bool, for id: String) {
+        guard !isPreview else { return }
+        do {
+            try profileStore.setDispatchPriorityFromUI(enabled, for: id)
+            DispatchCodeCatalog.reload()
+            syncProfiles()
+            accountManagerMessage =
+                enabled
+                ? "已加入调度并保存优先偏好；三源已同步（当前 Hub 尚未消费优先标记）"
+                : "已取消优先偏好，保留原参与设置；三源已同步"
+            refreshWarmUpProfilesThenSchedule()
+        } catch {
+            accountManagerMessage =
+                (error as? DispatchParticipationError)?.localizedDescription
+                ?? "优先派活同步失败，请检查配置与备份"
+            syncProfiles()
         }
     }
 
@@ -1473,7 +1511,30 @@ final class UsageStore: ObservableObject {
         }
         feishuNotificationsEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.feishuNotificationsEnabledKey)
-        feishuNotificationMessage = enabled ? "低额度提醒将推送到飞书" : "飞书推送已关闭"
+        quotaEventTracker.reset()
+        scheduleWarmUpMaintenanceTimer()
+        feishuNotificationMessage = enabled ? "已开启飞书通知；可分别选择额度重置和 Reset 卡提醒" : "飞书推送已关闭"
+    }
+
+    func setFeishuQuotaResetEnabled(_ enabled: Bool) {
+        guard !enabled || (feishuNotificationsEnabled && feishuWebhookConfigured) else { return }
+        feishuQuotaResetEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.feishuQuotaResetEnabledKey)
+        quotaEventTracker.reset()
+        scheduleWarmUpMaintenanceTimer()
+    }
+
+    func setFeishuResetCreditEnabled(_ enabled: Bool) {
+        guard !enabled || (feishuNotificationsEnabled && feishuWebhookConfigured) else { return }
+        feishuResetCreditEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.feishuResetCreditEnabledKey)
+        quotaEventTracker.reset()
+        scheduleWarmUpMaintenanceTimer()
+    }
+
+    private var observesOfficialQuotaEvents: Bool {
+        feishuNotificationsEnabled && feishuWebhookConfigured
+            && (feishuQuotaResetEnabled || feishuResetCreditEnabled)
     }
 
     @discardableResult
@@ -1495,6 +1556,8 @@ final class UsageStore: ObservableObject {
             feishuWebhookConfigured = false
             feishuNotificationsEnabled = false
             UserDefaults.standard.set(false, forKey: Self.feishuNotificationsEnabledKey)
+            quotaEventTracker.reset()
+            scheduleWarmUpMaintenanceTimer()
             feishuNotificationMessage = "飞书 Webhook 已移除"
         } catch {
             feishuNotificationMessage = error.localizedDescription
@@ -1675,13 +1738,13 @@ final class UsageStore: ObservableObject {
                 sevenDayRemainingPercent: quota.sevenDayRemaining.map { Int($0.rounded()) },
                 eventID: eventID
             )
-            feishuNotificationMessage = isTest ? "正在发送飞书测试通知…" : "正在推送自动切换结果…"
+            feishuNotificationMessage = isTest ? "正在发送飞书测试通知…" : "正在推送飞书通知…"
             feishuWebhookService.send(notification) { [weak self] result in
                 DispatchQueue.main.async {
                     guard let self else { return }
                     switch result {
                     case .success:
-                        self.feishuNotificationMessage = isTest ? "飞书测试通知已送达" : "自动切换结果已推送到飞书"
+                        self.feishuNotificationMessage = isTest ? "飞书测试通知已送达" : "通知已推送到飞书"
                     case .failure(let error):
                         self.feishuNotificationMessage = error.localizedDescription
                         self.recordAutomationEvent(
@@ -1702,6 +1765,39 @@ final class UsageStore: ObservableObject {
         let safeFirst = first.unicodeScalars.allSatisfy(CharacterSet.alphanumerics.contains) ? first : "c"
         let suffix = String(profile.id.filter { $0.isLetter || $0.isNumber }.prefix(4))
         return try? FeishuMaskedAccount("\(safeFirst)***-\(suffix.isEmpty ? "acct" : suffix)")
+    }
+
+    private func observeOfficialQuotaChanges(_ current: UsageSnapshot, profileID: String) {
+        guard !isPreview, observesOfficialQuotaEvents, current.quotaReadSucceeded,
+            let profile = profileStore.profiles.first(where: { $0.id == profileID }),
+            let saved = profile.lastSnapshot, saved.fetchedAt == current.refreshedAt,
+            let accountID = saved.accountID, !accountID.isEmpty,
+            let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL),
+            identity.accountID == accountID,
+            profile.matchesRecordedCredential(identity),
+            profile.matchesRecordedAccount(email: current.account?.email),
+            let source = maskedAccount(for: profile)
+        else { return }
+        let observation = CodexQuotaEventTracker.Observation(
+            capturedAt: current.refreshedAt,
+            limitID: current.limitId,
+            fiveHour: current.fiveHourQuota,
+            sevenDay: current.sevenDayQuota,
+            resetCredits: current.credits?.resetCredits
+        )
+        let changes = quotaEventTracker.observe(observation, verifiedAccountID: accountID)
+        for change in changes {
+            let enabled: Bool
+            switch change {
+            case .quotaReset: enabled = feishuQuotaResetEnabled
+            case .resetCreditsAdded: enabled = feishuResetCreditEnabled
+            }
+            guard enabled else { continue }
+            sendFeishuNotification(
+                event: .quotaChange(change), source: source, target: nil,
+                quota: AutomaticSwitchQuotaState(snapshot: current), eventID: UUID()
+            )
+        }
     }
 
     private func recordAutomationEvent(
@@ -1841,7 +1937,8 @@ final class UsageStore: ObservableObject {
     private func scheduleWarmUpMaintenanceTimer() {
         guard hasStarted else { return }
         let interval = CodexWarmUpPolicy.maintenanceRefreshInterval(
-            warmUpEnabled: warmUpSelection.isEnabled
+            warmUpEnabled: warmUpSelection.isEnabled,
+            quotaNotificationsEnabled: observesOfficialQuotaEvents
         )
         if let timer = warmUpMaintenanceTimer,
             timer.isValid,
@@ -1878,7 +1975,7 @@ final class UsageStore: ObservableObject {
                 retryQuotaReadOnce: true
             )
         }
-        timer.tolerance = 30
+        timer.tolerance = observesOfficialQuotaEvents ? 5 : 30
         RunLoop.main.add(timer, forMode: .common)
         warmUpMaintenanceTimer = timer
     }
@@ -2124,10 +2221,16 @@ final class UsageStore: ObservableObject {
             return
         }
         guard let fireAt = nextScheduledWarmUp() else { return }
+        scheduleWarmUpRefresh(at: fireAt)
+    }
+
+    private func scheduleWarmUpRefresh(at fireAt: Date) {
+        guard hasStarted, warmUpSelection.isEnabled, warmingProfileID == nil else { return }
+        warmUpTimer?.invalidate()
         let timer = Timer(fire: fireAt, interval: 0, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.warmUpTimer = nil
-            self.refreshWarmUpProfilesThenSchedule()
+            self.refreshWarmUpProfilesThenSchedule(quotaOnly: true)
         }
         timer.tolerance = fireAt.timeIntervalSinceNow < 30 ? 1 : 2
         RunLoop.main.add(timer, forMode: .common)
@@ -2221,9 +2324,14 @@ final class UsageStore: ObservableObject {
                 statisticsPreference: preference,
                 codexHomeDirectory: profile.codexHomeURL
             )
-            let snapshot = CodexUsageReader().load(context: context)
+            let snapshot = CodexUsageReader().load(context: context, quotaOnly: true)
             DispatchQueue.main.async {
-                try? self.profileStore.record(snapshot, for: profile.id)
+                do {
+                    try self.profileStore.record(snapshot, for: profile.id)
+                    self.observeOfficialQuotaChanges(snapshot, profileID: profile.id)
+                } catch {
+                    // Preserve the existing refresh failure path; no event is sent.
+                }
                 self.syncProfiles()
                 let updated = self.profiles.first { $0.id == profile.id } ?? profile
                 if manual {
@@ -2281,7 +2389,14 @@ final class UsageStore: ObservableObject {
             !isLoggingIn,
             !isLaunchingCodex,
             !isAccountSwitchTransactionActive
-        else { return }
+        else {
+            // A reset deadline can overlap a refresh or account operation. Keep
+            // the deadline pending; the next attempt still runs every warm-up gate.
+            if performWarmUpAfterRefresh {
+                scheduleWarmUpRefresh(at: Date().addingTimeInterval(5))
+            }
+            return
+        }
         let profiles = profileIDs.map { ids in self.profiles.filter { ids.contains($0.id) } } ?? self.profiles
         guard !profiles.isEmpty else { return }
         let refreshingIDs = Set(profiles.map(\.id))
@@ -2350,7 +2465,12 @@ final class UsageStore: ObservableObject {
                     {
                         self.noteUnexpectedWarmUpResets(previous: previous, current: snapshot)
                     }
-                    try? self.profileStore.record(snapshot, for: profileID)
+                    do {
+                        try self.profileStore.record(snapshot, for: profileID)
+                        self.observeOfficialQuotaChanges(snapshot, profileID: profileID)
+                    } catch {
+                        // A failed save must not produce a notification.
+                    }
                 }
                 self.syncProfiles()
                 completion?(snapshots.contains { $0.1.quotaReadSucceeded })
@@ -3010,6 +3130,7 @@ final class UsageStore: ObservableObject {
                 noteUnexpectedWarmUpResets(previous: profile, current: snapshot)
             }
             try profileStore.record(snapshot, for: selectedMonitorProfileID)
+            observeOfficialQuotaChanges(snapshot, profileID: selectedMonitorProfileID)
             if let effectiveHome,
                 let systemHome = profiles.first(where: \.isSystemProfile)?.codexHomeURL,
                 effectiveHome.standardizedFileURL == systemHome.standardizedFileURL

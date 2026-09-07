@@ -63,6 +63,7 @@ struct FeishuSwitchNotification {
     enum Event {
         case test
         case lowQuotaDetected
+        case quotaChange(CodexQuotaEvent)
         case switchSucceeded
         case switchFailed(FailureReason)
     }
@@ -114,6 +115,14 @@ struct FeishuSwitchNotification {
         }
         if case .switchSucceeded = event, targetAccount == nil {
             throw FeishuWebhookError.invalidNotification
+        }
+        if case .quotaChange(let change) = event {
+            switch change {
+            case .quotaReset(let fiveHour, let sevenDay):
+                guard fiveHour || sevenDay else { throw FeishuWebhookError.invalidNotification }
+            case .resetCreditsAdded(let added, let available):
+                guard added > 0, available >= added else { throw FeishuWebhookError.invalidNotification }
+            }
         }
         self.event = event
         self.sourceAccount = sourceAccount
@@ -303,8 +312,21 @@ final class FeishuWebhookService {
         var lines = [
             "**结果**：\(presentation.result)",
             "**原账号**：`\(notification.sourceAccount.value)`",
-            "**触发规则**：5 小时 ≤ 5%；7 天 < \(notification.triggerThresholdPercent)%",
         ]
+        if case .quotaChange(let change) = notification.event {
+            switch change {
+            case .quotaReset(let fiveHour, let sevenDay):
+                let windows = [(fiveHour, "5 小时"), (sevenDay, "7 天")].filter(\.0).map(\.1)
+                lines.append("**重置窗口**：\(windows.joined(separator: "、"))")
+                lines.append("已读取官方新状态；暖号仍需已启用且账号身份与空闲检查通过。")
+            case .resetCreditsAdded(let added, let available):
+                lines.append("**新增 Reset 卡**：\(added) 次")
+                lines.append("**官方可用次数**：\(available) 次")
+                lines.append("仅报告官方可用次数增加，不会自动使用 Reset 卡。")
+            }
+        } else {
+            lines.append("**触发规则**：5 小时 ≤ 5%；7 天 < \(notification.triggerThresholdPercent)%")
+        }
         if let target = notification.targetAccount {
             lines.append("**目标账号**：`\(target.value)`")
         }
@@ -404,6 +426,10 @@ final class FeishuWebhookService {
             return ("Codex 自动化测试通知", "配置可用", "blue")
         case .lowQuotaDetected:
             return ("Codex 额度低于阈值", "已检测到低额度", "orange")
+        case .quotaChange(.quotaReset):
+            return ("Codex 额度已重置", "检测到官方额度恢复或新窗口", "green")
+        case .quotaChange(.resetCreditsAdded):
+            return ("Codex 获得 Reset 卡", "官方可用 Reset 次数增加", "blue")
         case .switchSucceeded:
             return ("Codex 账号已自动切换", "切换成功", "green")
         case .switchFailed(let reason):
@@ -422,6 +448,7 @@ final class FeishuWebhookService {
 enum FeishuWebhookServiceSelfTest {
     static func run() -> Bool {
         var failures: [String] = []
+        if !CodexQuotaEventTrackerSelfTest.run() { failures.append("quota event policy failed") }
         func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
             if !condition() { failures.append(message) }
         }
@@ -481,6 +508,36 @@ enum FeishuWebhookServiceSelfTest {
                 String(data: testPayload, encoding: .utf8)?.contains("Codex 自动化测试通知") == true,
                 "test notification mislabeled"
             )
+            for change in [
+                CodexQuotaEvent.quotaReset(fiveHour: true, sevenDay: true),
+                .resetCreditsAdded(added: 2, available: 3),
+            ] {
+                let event = try FeishuSwitchNotification(
+                    event: .quotaChange(change), sourceAccount: source,
+                    triggerThresholdPercent: 10, fiveHourRemainingPercent: 100, sevenDayRemainingPercent: 80
+                )
+                let body = String(data: try FeishuWebhookService.payloadData(for: event), encoding: .utf8) ?? ""
+                expect(body.contains("p***-source"), "quota event missing masked account")
+                expect(!body.contains("触发规则"), "quota event inherited low-quota rule")
+                expect(!body.contains("目标账号"), "quota event suggests switching")
+                switch change {
+                case .quotaReset:
+                    expect(body.contains("重置窗口") && body.contains("5 小时、7 天"), "reset windows missing")
+                case .resetCreditsAdded:
+                    expect(body.contains("新增 Reset 卡") && body.contains("3 次"), "official credit count missing")
+                }
+            }
+            for invalidChange in [
+                CodexQuotaEvent.quotaReset(fiveHour: false, sevenDay: false),
+                .resetCreditsAdded(added: 0, available: 1),
+                .resetCreditsAdded(added: 3, available: 2),
+            ] {
+                expect(
+                    (try? FeishuSwitchNotification(
+                        event: .quotaChange(invalidChange), sourceAccount: source,
+                        triggerThresholdPercent: 10, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil
+                    )) == nil, "invalid quota event accepted")
+            }
         } catch {
             failures.append("payload construction failed")
         }

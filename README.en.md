@@ -4,12 +4,16 @@
 
 [![CI](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-![Version 0905v3](https://img.shields.io/badge/version-0905v3-6C4DFF)
+![Version 0907v1](https://img.shields.io/badge/version-0907v1-6C4DFF)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Next is a local-first macOS workspace for one or multiple Codex accounts, maintained under its own product identity, interface and release channel. Inspect official quota, opt into warm-up, choose GPT-6 Astra or another task model, and pass model, reasoning effort and Standard/Fast speed to an isolated CLI. Multiple accounts retain occupancy monitoring and isolated account homes.
 
-Current version: `0905v3` · `9.5.3 (15)`. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+Current source version: `0907v1` · `9.5.5 (17)`. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+
+0907v1 versus 0905v4: a smaller workspace and account cards, a top-right full-workspace screenshot action, monotonic quota observations, and stronger current-identity, mirror-consistency and concurrent-recovery checks for dispatch synchronization. Nine-account exports have synthetic coverage. This update publishes source only, without an installer; see the [0907v1 notes](docs/release-notes-v9.5.5.md).
+
+0905v4 improves warm-up timing after resets and adds separate opt-in Feishu notifications for quota resets and increases in available Reset credits. Deadline refreshes prioritize official quota reads, and remain pending when a refresh or account operation overlaps. Identity and idle-task checks still apply. No installer has been released for this version; see the [0905v4 notes](docs/release-notes-v9.5.4.md).
 
 0905v3 rebuilds Settings into five direct sections: Look, Menu Bar, Automation, Workspace and About. Clickable appearance previews and segmented choices replace the long form while retaining existing preferences, account data and automation rules. See the [0905v3 notes](docs/release-notes-v9.5.3.md).
 
@@ -36,13 +40,19 @@ Using one account or several? Join the [next-version feedback discussion](docs/f
 
 | Area | Available now |
 |---|---|
-| Workbench | Monitored account, 5-hour/7-day quota, reset times, official lifetime tokens, local all-agent tokens, and cost estimate |
+| Workbench | Monitored account, 5-hour/7-day quota, reset times, official lifetime tokens, local all-agent tokens, cost estimate, and full-workspace PNG export |
 | Account card | Refresh, Warm Up, dispatch participation, execution preference, isolated CLI, monitoring, re-login, Chrome session, and explicit Desktop switch |
 | Inline health | Hub task state, stale snapshots, failed refreshes, quota colors and dispatch participation |
 | Automation Center | Low-quota account recommendations, Feishu notifications, safety gates, and recent audit events |
 | Menu bar and Settings | Quota ring, density, language, theme, palettes, shortcut, always-on-top, background residency, and update checks |
 
 The full window is a unified workspace, without a duplicate Inspection page or page-switching navigation. The Windows workspace and historical analytics models do not imply additional macOS pages.
+
+## Full-workspace screenshots
+
+The top-right screenshot action uses native SwiftUI/AppKit to render the workspace with its current expanded sections, including accounts below the viewport. It excludes other windows and the system title bar. A system save panel writes a local PNG; nothing is uploaded and screen-recording permission is not required. The default window is 980 × 700. Account cards retain their functional groups, reflow in narrow windows, and may truncate long remarks to one line.
+
+Synthetic tests cover nine accounts at 820/980/1280 points in both appearances. Exports normally use 2× resolution and fall back to 1× for larger content. More than 32 million pixels or a dimension above 32768 pixels is rejected with a prompt to collapse sections, never silently cropped. This is a raster budget, not a total-process memory limit.
 
 ## Using one account
 
@@ -104,9 +114,9 @@ This is account occupancy coordination and status feedback, not an in-app remote
 
 ### Hub integration prerequisites
 
-Hub coordination is externally provisioned. There is no mapping editor in the app, and a public source build does not discover account aliases or create these files automatically. External dispatchers with model allowlists must also add `gpt-6-astra` and its six effort levels. Updating Next does not deploy a separate Hub service.
+Hub accounts are externally provisioned. There is no mapping editor in the app. The dispatch participation toggle matches a snapshot account home to one existing Hub account, then synchronizes participation and its code; missing or conflicting mappings block writes. External dispatchers with model allowlists must also add `gpt-6-astra` and its six effort levels. Updating Next does not deploy a separate Hub service.
 
-Provision the account-card dispatch code and Hub alias before the app starts:
+Account-card dispatch codes and Hub aliases are stored here. Entries can be provisioned in advance or created by enabling dispatch participation:
 
 ```text
 ~/Library/Application Support/CodexAccountManagerNext/dispatch-codes-v1.json
@@ -125,7 +135,15 @@ Provision the account-card dispatch code and Hub alias before the app starts:
 }
 ```
 
-`code` must be a unique single letter from `A` through `Z`; `alias` and `profileId` must be nonempty. The process reads this file once at startup, so restart Next after changing it.
+`code` must be a unique single letter from `A` through `Z`; `alias` and `profileId` must be nonempty. Enabling participation preserves an existing code or assigns the letter after the current maximum (A for an empty catalog), using the Next profile matching the Hub home. Disabling removes that account's entry. Successful synchronization immediately refreshes the code cache and account cards; external edits still require restarting Next.
+
+The UI action updates snapshot `automaticSwitchParticipation`, the inverse Hub `config.json` flag `dispatchDisabled`, and the code catalog together. Ordinary snapshot saves, startup, and background refreshes do not invoke this synchronization. An app in `build/` resolves `agent-remote-control-0828v1/config.json` beside the Next checkout; other installation locations require an absolute `CAMNEXT_HUB_CONFIG_PATH` in the Next launch environment.
+
+All three configurations are validated and backed up before replacement using temporary files and atomic swap/rename. After a swap, Next verifies the displaced original to detect a competing write between the final check and replacement; detected changes are preserved where possible while this transaction rolls back. Originals are retained under `dispatch-participation-backups/<transaction-id>/` in the Next application support directory, with a `manifest.json` recording whether the code file was originally absent. Each file replacement is atomic. An external writer that does not honor Next's lock still cannot receive an absolute cross-process, three-file transaction guarantee, and a process crash or power loss may prevent complete rollback. Incomplete rollback produces a redacted error and retains backups; do not edit these files manually while changing the toggle. Hub caches `dispatchDisabled` at startup and must reload configuration to adopt changes; Next does not operate the Hub process.
+
+“Priority dispatch” currently stores a Next preference and ensures participation and code synchronization only. Hub does not yet consume `prioritizeDispatch`, so enabling it does not change Hub account selection and does not mean that Next deployed Hub-side support.
+
+Run `python3 scripts/test-dispatch-participation.py` for full Swift source typechecking and isolated offline tests, or select `--typecheck-only` / `--tests-only`. The script interprets Swift tests with generated temporary fixtures, without building or launching Next or accessing real account configuration.
 
 The standalone Inspection page has been removed. Next no longer reads `inspection-config-v1.json` / `CAMNEXT_INSPECTION_CONFIG`; existing local files are left untouched. Account cards still use `dispatch-codes-v1.json` and a fresh Hub overview for occupancy protection.
 
@@ -259,7 +277,7 @@ The settings captures render production SwiftUI at 760 × 1220 px, native 2×, w
 
 ## Installation
 
-The repository currently has no `0905v3 / 9.5.3` GitHub Release installer, and no Apple Developer ID-signed and notarized installer for this version. Install from a local source build on the target Mac. Do not treat an Actions artifact as a notarized distribution.
+The repository currently has no `0907v1 / 9.5.5` GitHub Release installer, and no Apple Developer ID-signed and notarized installer for this version. Install from a local source build on the target Mac. Do not treat an Actions artifact as a notarized distribution.
 
 ```bash
 xcode-select --install
@@ -397,9 +415,9 @@ git diff --check
 
 ## Version and license
 
-- Version name: `0905v3`
-- Marketing version: `9.5.3`
-- Build: `15`
+- Version name: `0907v1`
+- Marketing version: `9.5.5`
+- Build: `17`
 - Product design: [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)
 - Architecture and boundaries: [BLUEPRINT.md](BLUEPRINT.md)
 - Security boundary: [SECURITY.md](SECURITY.md)

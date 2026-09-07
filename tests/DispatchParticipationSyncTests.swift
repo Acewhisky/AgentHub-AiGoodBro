@@ -1,0 +1,731 @@
+import Darwin
+import Foundation
+
+// Executed only by scripts/test-dispatch-participation.py, with generated
+// identities and homes beneath its temporary directory. Never reads live state.
+private enum DispatchTestFailure: Error { case assertion, injected }
+
+private func require(_ condition: @autoclosure () throws -> Bool) throws {
+    guard try condition() else { throw DispatchTestFailure.assertion }
+}
+
+private func expectError(_ expected: DispatchParticipationError, _ action: () throws -> Void) throws {
+    do {
+        try action()
+        throw DispatchTestFailure.assertion
+    } catch let error as DispatchParticipationError {
+        try require(error.errorDescription == expected.errorDescription)
+    }
+}
+
+private func json(_ value: [String: Any]) throws -> Data {
+    try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+}
+
+private func object(_ url: URL) throws -> [String: Any] {
+    guard let value = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+        throw DispatchTestFailure.assertion
+    }
+    return value
+}
+
+private func mutate(_ url: URL, _ change: (inout [String: Any]) -> Void) throws {
+    var value = try object(url)
+    change(&value)
+    try json(value).write(to: url)
+}
+
+private final class DispatchFixture {
+    let root: URL
+    let paths: DispatchParticipationPaths
+    let identity: DispatchParticipationSync.Identity
+    var sync: DispatchParticipationSync { DispatchParticipationSync(paths: paths) }
+    var urls: [URL] { [paths.snapshot, paths.hubConfig, paths.codes] }
+
+    init(catalogExists: Bool = true) throws {
+        guard let testRoot = ProcessInfo.processInfo.environment["CAMNEXT_DISPATCH_TEST_ROOT"] else {
+            throw DispatchTestFailure.assertion
+        }
+        root = URL(fileURLWithPath: testRoot).appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let support = root.appendingPathComponent(DispatchParticipationPaths.supportDirectoryName, isDirectory: true)
+        let hub = root.appendingPathComponent("hub", isDirectory: true)
+        paths = DispatchParticipationPaths(
+            snapshot: support.appendingPathComponent(DispatchParticipationPaths.snapshotFileName),
+            hubConfig: hub.appendingPathComponent(DispatchParticipationPaths.hubConfigFileName),
+            codes: support.appendingPathComponent(DispatchParticipationPaths.codesFileName)
+        )
+        identity = .init(
+            profileID: "profile-primary", homePath: root.appendingPathComponent("primary-home").path,
+            email: "fixture-primary", accountID: "account-primary")
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: hub, withIntermediateDirectories: true)
+        let profiles: [[String: Any]] = [
+            [
+                "id": identity.profileID, "codexHomePath": identity.homePath,
+                "lastSnapshot": ["email": " Fixture-Primary ", "accountID": identity.accountID],
+                "automaticSwitchParticipation": false,
+                "futureProfileField": ["retained": true],
+            ],
+            [
+                "id": "system", "codexHomePath": root.appendingPathComponent("system-home").path,
+                "isSystemProfile": true,
+                "lastSnapshot": ["email": "fixture-primary", "accountID": identity.accountID],
+                "automaticSwitchParticipation": false,
+            ],
+            [
+                "id": "profile-other", "codexHomePath": root.appendingPathComponent("other-home").path,
+                "lastSnapshot": ["email": "fixture-other", "accountID": "account-other"],
+                "automaticSwitchParticipation": true,
+            ],
+        ]
+        try json(["schemaVersion": 1, "profiles": profiles, "futureSnapshotField": ["retained": [1, 2, 3]]])
+            .write(to: paths.snapshot)
+        try json([
+            "accounts": [
+                ["alias": "fixture-primary", "home": identity.homePath, "futureHubField": ["retained": true]],
+                ["alias": "fixture-other", "home": profiles[2]["codexHomePath"]!, "dispatchDisabled": false],
+            ], "futureRootField": "retained",
+        ]).write(to: paths.hubConfig)
+        if catalogExists {
+            try json([
+                "schemaVersion": 1,
+                "accounts": [
+                    ["code": "C", "alias": "fixture-other", "profileId": "profile-other", "futureEntryField": true]
+                ], "futureCatalogField": ["retained": true],
+            ]).write(to: paths.codes)
+        }
+    }
+
+    deinit { try? FileManager.default.removeItem(at: root) }
+
+    func contents() throws -> [Data?] {
+        try urls.map { FileManager.default.fileExists(atPath: $0.path) ? try Data(contentsOf: $0) : nil }
+    }
+
+    func checkState(enabled: Bool, code: String?) throws {
+        let profiles = try object(paths.snapshot)["profiles"] as! [[String: Any]]
+        try require(profiles[0]["automaticSwitchParticipation"] as? Bool == enabled)
+        try require(profiles[1]["automaticSwitchParticipation"] as? Bool == enabled)
+        try require(profiles[2]["automaticSwitchParticipation"] as? Bool == true)
+        let accounts = try object(paths.hubConfig)["accounts"] as! [[String: Any]]
+        try require(accounts[0]["dispatchDisabled"] as? Bool == !enabled)
+        try require(accounts[1]["dispatchDisabled"] as? Bool == false)
+        let entries = try DispatchParticipationSync.validatedEntries(object(paths.codes))
+        let matched = entries.filter { $0["alias"] as? String == "fixture-primary" }
+        try require(matched.count == (code == nil ? 0 : 1))
+        if let code {
+            try require(matched[0]["code"] as? String == code)
+            try require(matched[0]["profileId"] as? String == identity.profileID)
+            try require(matched[0]["email"] == nil)
+        }
+    }
+
+    func checkBackups(_ originals: [Data?]) throws {
+        let directory = paths.snapshot.deletingLastPathComponent()
+            .appendingPathComponent(DispatchParticipationPaths.backupDirectoryName)
+        let runs = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        try require(runs.count == 1)
+        let names = ["snapshot.json", "hub-config.json", "dispatch-codes.json"]
+        for index in names.indices {
+            let backup = runs[0].appendingPathComponent(names[index])
+            if let original = originals[index] {
+                try require(Data(contentsOf: backup) == original)
+                let attributes = try FileManager.default.attributesOfItem(atPath: backup.path)
+                try require((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+            } else {
+                try require(!FileManager.default.fileExists(atPath: backup.path))
+            }
+        }
+        let manifest = try object(runs[0].appendingPathComponent("manifest.json"))
+        try require(manifest["codesOriginallyMissing"] as? Bool == (originals[2] == nil))
+        let attributes = try FileManager.default.attributesOfItem(atPath: runs[0].path)
+        try require((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+    }
+
+    func checkNoTemporaryFiles() throws {
+        guard let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
+            throw DispatchTestFailure.assertion
+        }
+        for case let url as URL in files {
+            try require(!url.lastPathComponent.hasPrefix(".camnext-dispatch-"))
+        }
+    }
+
+    func temporaryFiles(suffix: String) throws -> [URL] {
+        let directory = paths.snapshot.deletingLastPathComponent()
+        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".camnext-dispatch-") && $0.lastPathComponent.hasSuffix(suffix) }
+    }
+}
+
+private var passed = 0
+private func test(_ name: String, _ body: () throws -> Void) {
+    do {
+        try body()
+        passed += 1
+        print("PASS: \(name)")
+    } catch {
+        // Error descriptions and fixture data may contain paths; emit the fixed test label only.
+        print("FAIL: \(name)")
+        exit(1)
+    }
+}
+
+test("enable, preserve unknown fields, then disable and re-enable") {
+    let f = try DispatchFixture()
+    let originals = try f.contents()
+    let result = try f.sync.setParticipation(true, identity: f.identity)
+    try require(result == Data(contentsOf: f.paths.snapshot))
+    try f.checkState(enabled: true, code: "D")
+    try f.checkBackups(originals)
+    let next = try object(f.paths.snapshot)
+    let profiles = next["profiles"] as! [[String: Any]]
+    try require(next["schemaVersion"] as? Int == 1)
+    try require((next["futureSnapshotField"] as? NSDictionary) == ["retained": [1, 2, 3]] as NSDictionary)
+    try require((profiles[0]["futureProfileField"] as? NSDictionary) == ["retained": true] as NSDictionary)
+    let hub = try object(f.paths.hubConfig)
+    try require(hub["futureRootField"] as? String == "retained")
+    try require(((hub["accounts"] as! [[String: Any]])[0]["futureHubField"] as? NSDictionary) == ["retained": true] as NSDictionary)
+    let catalog = try object(f.paths.codes)
+    try require((catalog["futureCatalogField"] as? NSDictionary) == ["retained": true] as NSDictionary)
+    try require((catalog["accounts"] as! [[String: Any]])[0]["futureEntryField"] as? Bool == true)
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    try f.checkState(enabled: true, code: "D")
+    _ = try f.sync.setParticipation(false, identity: f.identity)
+    try f.checkState(enabled: false, code: nil)
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    try f.checkState(enabled: true, code: "D")
+    try f.checkNoTemporaryFiles()
+}
+
+test("missing catalog starts at A; disabling an unnumbered account is supported") {
+    let f = try DispatchFixture(catalogExists: false)
+    let originals = try f.contents()
+    _ = try f.sync.setParticipation(false, identity: f.identity)
+    try f.checkState(enabled: false, code: nil)
+    try f.checkBackups(originals)
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    try f.checkState(enabled: true, code: "A")
+}
+
+test("system mirror uses the managed profile from the matching hub home") {
+    let f = try DispatchFixture()
+    let identity = DispatchParticipationSync.Identity(
+        profileID: "system",
+        homePath: f.root.appendingPathComponent("system-home").path,
+        email: "FIXTURE-PRIMARY",
+        accountID: f.identity.accountID
+    )
+    _ = try f.sync.setParticipation(true, identity: identity)
+    try f.checkState(enabled: true, code: "D")
+}
+
+test("existing code and entry extensions survive a profile mapping repair") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.codes) { catalog in
+        var entries = catalog["accounts"] as! [[String: Any]]
+        entries.append(["code": "A", "alias": "fixture-primary", "profileId": "system", "futureEntryField": true])
+        catalog["accounts"] = entries
+    }
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    try f.checkState(enabled: true, code: "A")
+    try require((object(f.paths.codes)["accounts"] as! [[String: Any]])[1]["futureEntryField"] as? Bool == true)
+}
+
+test("priority opts into all three sources; removing it preserves participation and code") {
+    let f = try DispatchFixture()
+    _ = try f.sync.apply(.priority(true), identity: f.identity)
+    try f.checkState(enabled: true, code: "D")
+    var profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+    try require(profiles[0]["prioritizeDispatch"] as? Bool == true)
+    try require(profiles[1]["prioritizeDispatch"] as? Bool == true)
+    try require(profiles[2]["prioritizeDispatch"] == nil)
+    _ = try f.sync.apply(.priority(false), identity: f.identity)
+    try f.checkState(enabled: true, code: "D")
+    profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+    try require(profiles[0]["prioritizeDispatch"] as? Bool == false)
+    try require(profiles[1]["prioritizeDispatch"] as? Bool == false)
+}
+
+test("removing priority from an excluded account does not opt it into dispatch") {
+    let f = try DispatchFixture()
+    _ = try f.sync.apply(.priority(false), identity: f.identity)
+    try f.checkState(enabled: false, code: nil)
+}
+
+test("disabling participation clears priority across account mirrors") {
+    let f = try DispatchFixture()
+    _ = try f.sync.apply(.priority(true), identity: f.identity)
+    _ = try f.sync.setParticipation(false, identity: f.identity)
+    try f.checkState(enabled: false, code: nil)
+    let profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+    try require(profiles[0]["prioritizeDispatch"] as? Bool == false)
+    try require(profiles[1]["prioritizeDispatch"] as? Bool == false)
+}
+
+for enabled in [false, true] {
+    for index in 0..<3 {
+        test("priority change rollback after rename \(index), enabled=\(enabled)") {
+            let f = try DispatchFixture()
+            if !enabled { _ = try f.sync.apply(.priority(true), identity: f.identity) }
+            let originals = try f.contents()
+            var sync = f.sync
+            sync.checkpoint = {
+                if case .afterReplace(let value) = $0, value == index {
+                    throw DispatchTestFailure.injected
+                }
+            }
+            try expectError(.rolledBack) { _ = try sync.apply(.priority(enabled), identity: f.identity) }
+            try require(f.contents() == originals)
+            try f.checkNoTemporaryFiles()
+        }
+    }
+}
+
+for field in ["automaticSwitchParticipation", "prioritizeDispatch"] {
+    test("invalid saved dispatch flag fails closed: \(field)") {
+        let f = try DispatchFixture()
+        try mutate(f.paths.snapshot) { snapshot in
+            var profiles = snapshot["profiles"] as! [[String: Any]]
+            profiles[0][field] = 1
+            snapshot["profiles"] = profiles
+        }
+        let originals = try f.contents()
+        try expectError(.invalidSnapshot) { _ = try f.sync.apply(.priority(true), identity: f.identity) }
+        try require(f.contents() == originals)
+    }
+}
+
+for field in ["automaticSwitchParticipation", "prioritizeDispatch"] {
+    test("mixed account mirror state fails closed: \(field)") {
+        let f = try DispatchFixture()
+        try mutate(f.paths.snapshot) { snapshot in
+            var profiles = snapshot["profiles"] as! [[String: Any]]
+            profiles[1][field] = true
+            profiles[0][field] = false
+            snapshot["profiles"] = profiles
+        }
+        let originals = try f.contents()
+        try expectError(.invalidSnapshot) {
+            _ = try f.sync.apply(.priority(false), identity: f.identity)
+        }
+        try require(f.contents() == originals)
+    }
+}
+
+for missing in [false, true] {
+    for stage in ["backup", "before-rename", "after-rename"] {
+        for index in 0..<3 {
+            test("\(stage) failure at \(index), catalog missing=\(missing)") {
+                let f = try DispatchFixture(catalogExists: !missing)
+                let originals = try f.contents()
+                var sync = f.sync
+                sync.checkpoint = { point in
+                    switch point {
+                    case .beforeBackup(let value) where stage == "backup" && value == index,
+                        .beforeReplace(let value) where stage == "before-rename" && value == index,
+                        .afterReplace(let value) where stage == "after-rename" && value == index:
+                        throw DispatchTestFailure.injected
+                    default: break
+                    }
+                }
+                let expected: DispatchParticipationError =
+                    stage == "backup" || (stage == "before-rename" && index == 0)
+                    ? .writeFailed : .rolledBack
+                try expectError(expected) { _ = try sync.setParticipation(true, identity: f.identity) }
+                try require(f.contents() == originals)
+                if stage != "backup" { try f.checkBackups(originals) }
+                try f.checkNoTemporaryFiles()
+            }
+        }
+    }
+}
+
+test("disable rollback restores removed code byte-for-byte") {
+    let f = try DispatchFixture()
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    let originals = try f.contents()
+    var sync = f.sync
+    sync.checkpoint = { if case .afterReplace(2) = $0 { throw DispatchTestFailure.injected } }
+    try expectError(.rolledBack) { _ = try sync.setParticipation(false, identity: f.identity) }
+    try require(f.contents() == originals)
+}
+
+test("concurrent edit before the first rename is preserved") {
+    let f = try DispatchFixture()
+    let originals = try f.contents()
+    var sync = f.sync
+    sync.checkpoint = { if case .beforeReplace(0) = $0 { try mutate(f.paths.hubConfig) { $0["externalEdit"] = true } } }
+    try expectError(.concurrentChange) { _ = try sync.setParticipation(true, identity: f.identity) }
+    let after = try f.contents()
+    try require(after[0] == originals[0] && after[2] == originals[2])
+    try require(object(f.paths.hubConfig)["externalEdit"] as? Bool == true)
+}
+
+test("concurrent edit after the outer preflight is preserved by the helper check") {
+    let f = try DispatchFixture()
+    let originals = try f.contents()
+    var sync = f.sync
+    sync.checkpoint = {
+        if case .afterPreflight(0) = $0 {
+            try mutate(f.paths.snapshot) { $0["externalEdit"] = true }
+        }
+    }
+    try expectError(.concurrentChange) {
+        _ = try sync.setParticipation(true, identity: f.identity)
+    }
+    let after = try f.contents()
+    try require(after[1] == originals[1] && after[2] == originals[2])
+    try require(object(f.paths.snapshot)["externalEdit"] as? Bool == true)
+}
+
+test("concurrent edit after the helper final read and before swap is restored") {
+    let f = try DispatchFixture()
+    let originals = try f.contents()
+    var sync = f.sync
+    sync.checkpoint = {
+        if case .beforeAtomicSwap(0) = $0 {
+            try mutate(f.paths.snapshot) { $0["externalFinalReadEdit"] = true }
+        }
+    }
+    try expectError(.concurrentChange) {
+        _ = try sync.setParticipation(true, identity: f.identity)
+    }
+    let after = try f.contents()
+    try require(after[1] == originals[1] && after[2] == originals[2])
+    try require(object(f.paths.snapshot)["externalFinalReadEdit"] as? Bool == true)
+    try f.checkNoTemporaryFiles()
+}
+
+test("mismatch restore preserves a second writer found in the recovery file") {
+    let f = try DispatchFixture()
+    let firstWriter = try json(["writer": "first"])
+    let secondWriter = try json(["writer": "second"])
+    var sync = f.sync
+    sync.checkpoint = {
+        switch $0 {
+        case .beforeAtomicSwap(0):
+            try firstWriter.write(to: f.paths.snapshot)
+        case .beforeMismatchRestore(0):
+            try secondWriter.write(to: f.paths.snapshot)
+        default:
+            break
+        }
+    }
+    try expectError(.rollbackFailed) {
+        _ = try sync.setParticipation(true, identity: f.identity)
+    }
+    try require(try Data(contentsOf: f.paths.snapshot) == firstWriter)
+    let recovery = try f.temporaryFiles(suffix: ".tmp")
+    try require(recovery.count == 1 && (try Data(contentsOf: recovery[0])) == secondWriter)
+}
+
+test("mismatch restore rechecks ownership before temporary cleanup") {
+    let f = try DispatchFixture()
+    let displacedWriter = try json(["writer": "displaced"])
+    let recoveryWriter = try json(["writer": "recovery"])
+    var sync = f.sync
+    sync.checkpoint = {
+        switch $0 {
+        case .beforeAtomicSwap(0):
+            try displacedWriter.write(to: f.paths.snapshot)
+        case .afterMismatchRestore(0):
+            let recovery = try f.temporaryFiles(suffix: ".tmp")
+            try require(recovery.count == 1)
+            try recoveryWriter.write(to: recovery[0])
+        default:
+            break
+        }
+    }
+    try expectError(.rollbackFailed) {
+        _ = try sync.setParticipation(true, identity: f.identity)
+    }
+    try require(try Data(contentsOf: f.paths.snapshot) == displacedWriter)
+    let recovery = try f.temporaryFiles(suffix: ".tmp")
+    try require(recovery.count == 1 && (try Data(contentsOf: recovery[0])) == recoveryWriter)
+}
+
+test("concurrent edit after the first rename rolls back only our snapshot") {
+    let f = try DispatchFixture()
+    let originals = try f.contents()
+    var sync = f.sync
+    sync.checkpoint = { if case .afterReplace(0) = $0 { try mutate(f.paths.hubConfig) { $0["externalEdit"] = true } } }
+    try expectError(.rolledBack) { _ = try sync.setParticipation(true, identity: f.identity) }
+    let after = try f.contents()
+    try require(after[0] == originals[0] && after[2] == originals[2])
+    try require(object(f.paths.hubConfig)["externalEdit"] as? Bool == true)
+}
+
+test("rollback does not overwrite another writer's edit to a replaced file") {
+    let f = try DispatchFixture()
+    let originals = try f.contents()
+    var sync = f.sync
+    sync.checkpoint = { if case .afterReplace(1) = $0 { try mutate(f.paths.hubConfig) { $0["externalEdit"] = true } } }
+    try expectError(.rollbackFailed) { _ = try sync.setParticipation(true, identity: f.identity) }
+    let after = try f.contents()
+    try require(after[0] == originals[0] && after[2] == originals[2])
+    try require(object(f.paths.hubConfig)["externalEdit"] as? Bool == true)
+    try f.checkBackups(originals)
+}
+
+test("rollback failure retains recoverable originals") {
+    let f = try DispatchFixture()
+    let originals = try f.contents()
+    var sync = f.sync
+    sync.checkpoint = {
+        switch $0 {
+        case .afterReplace(1), .beforeRollback(0): throw DispatchTestFailure.injected
+        default: break
+        }
+    }
+    try expectError(.rollbackFailed) { _ = try sync.setParticipation(true, identity: f.identity) }
+    let after = try f.contents()
+    try require(after[0] != originals[0] && after[1] == originals[1] && after[2] == originals[2])
+    try f.checkBackups(originals)
+}
+
+test("unreadable displaced removal data is retained when restore is occupied") {
+    let f = try DispatchFixture(catalogExists: false)
+    let originals = try f.contents()
+    let competingWriter = try json(["writer": "competing"])
+    var createdCodes: Data?
+    var sync = f.sync
+    sync.checkpoint = {
+        switch $0 {
+        case .afterReplace(2):
+            createdCodes = try Data(contentsOf: f.paths.codes)
+            throw DispatchTestFailure.injected
+        case .afterRemovalMove(2):
+            let recovery = try f.temporaryFiles(suffix: ".remove")
+            try require(recovery.count == 1)
+            try require(Darwin.chmod(recovery[0].path, 0) == 0)
+            try competingWriter.write(to: f.paths.codes)
+        default:
+            break
+        }
+    }
+    try expectError(.rollbackFailed) {
+        _ = try sync.setParticipation(true, identity: f.identity)
+    }
+    let recovery = try f.temporaryFiles(suffix: ".remove")
+    try require(recovery.count == 1)
+    try require(Darwin.chmod(recovery[0].path, 0o600) == 0)
+    try require(createdCodes != nil && (try Data(contentsOf: recovery[0])) == createdCodes)
+    try require(try Data(contentsOf: f.paths.codes) == competingWriter)
+    let after = try f.contents()
+    try require(after[0] == originals[0] && after[1] == originals[1])
+}
+
+for index in 0..<3 {
+    test("malformed JSON source \(index) prevents every target write") {
+        let f = try DispatchFixture()
+        try Data("{".utf8).write(to: f.urls[index])
+        let originals = try f.contents()
+        try expectError([.invalidSnapshot, .invalidHub, .invalidCodes][index]) {
+            _ = try f.sync.setParticipation(true, identity: f.identity)
+        }
+        try require(f.contents() == originals)
+    }
+}
+
+for field in ["code", "alias", "profileId"] {
+    test("duplicate catalog \(field) fails closed") {
+        let f = try DispatchFixture()
+        try mutate(f.paths.codes) { catalog in
+            let first = (catalog["accounts"] as! [[String: Any]])[0]
+            var second: [String: Any] = ["code": "A", "alias": "fixture-primary", "profileId": "profile-primary"]
+            second[field] = first[field]
+            catalog["accounts"] = [first, second]
+        }
+        let originals = try f.contents()
+        try expectError(.invalidCodes) { _ = try f.sync.setParticipation(true, identity: f.identity) }
+        try require(f.contents() == originals)
+    }
+}
+
+for field in ["alias", "profileId"] {
+    test("oversized catalog \(field) fails closed") {
+        let f = try DispatchFixture()
+        try mutate(f.paths.codes) { catalog in
+            var entries = catalog["accounts"] as! [[String: Any]]
+            entries[0][field] = String(repeating: "x", count: DispatchParticipationSync.maximumCatalogFieldBytes + 1)
+            catalog["accounts"] = entries
+        }
+        let originals = try f.contents()
+        try expectError(.invalidCodes) {
+            _ = try f.sync.setParticipation(true, identity: f.identity)
+        }
+        try require(f.contents() == originals)
+    }
+}
+
+test("conflicting alias and profile mapping fails closed") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.codes) { $0["accounts"] = [["code": "A", "alias": "fixture-primary", "profileId": "profile-other"]] }
+    let originals = try f.contents()
+    try expectError(.ambiguousAccount) { _ = try f.sync.setParticipation(true, identity: f.identity) }
+    try require(f.contents() == originals)
+}
+
+test("multiple hub homes for one account fail closed") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.hubConfig) { hub in
+        var accounts = hub["accounts"] as! [[String: Any]]
+        accounts.append(["alias": "fixture-mirror", "home": f.root.appendingPathComponent("system-home").path])
+        hub["accounts"] = accounts
+    }
+    let originals = try f.contents()
+    try expectError(.ambiguousAccount) { _ = try f.sync.setParticipation(true, identity: f.identity) }
+    try require(f.contents() == originals)
+}
+
+test("mismatched account ID in an email mirror fails closed") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.snapshot) { snapshot in
+        var profiles = snapshot["profiles"] as! [[String: Any]]
+        var mirror = profiles[1]["lastSnapshot"] as! [String: Any]
+        mirror["accountID"] = "account-stale-mirror"
+        profiles[1]["lastSnapshot"] = mirror
+        snapshot["profiles"] = profiles
+    }
+    let originals = try f.contents()
+    try expectError(.identityMismatch) {
+        _ = try f.sync.setParticipation(true, identity: f.identity)
+    }
+    try require(f.contents() == originals)
+}
+
+test("missing hub account fails closed") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.hubConfig) { $0["accounts"] = [(($0["accounts"] as! [[String: Any]])[1])] }
+    let originals = try f.contents()
+    try expectError(.ambiguousAccount) { _ = try f.sync.setParticipation(true, identity: f.identity) }
+    try require(f.contents() == originals)
+}
+
+for identityKind in ["email", "home", "account-id", "missing-email"] {
+    test("stale or missing identity: \(identityKind)") {
+        let f = try DispatchFixture()
+        let identity = DispatchParticipationSync.Identity(
+            profileID: f.identity.profileID,
+            homePath: identityKind == "home" ? f.root.appendingPathComponent("changed-home").path : f.identity.homePath,
+            email: identityKind == "missing-email" ? nil : identityKind == "email" ? "fixture-changed" : f.identity.email,
+            accountID: identityKind == "account-id" ? "account-changed" : f.identity.accountID
+        )
+        let originals = try f.contents()
+        try expectError(.identityMismatch) { _ = try f.sync.setParticipation(true, identity: identity) }
+        try require(f.contents() == originals)
+    }
+}
+
+test("snapshot validator rejects before any target write") {
+    let f = try DispatchFixture()
+    let originals = try f.contents()
+    var validations = 0
+    try expectError(.invalidSnapshot) {
+        _ = try f.sync.setParticipation(true, identity: f.identity) { _ in
+            validations += 1
+            if validations == 2 { throw DispatchParticipationError.invalidSnapshot }
+        }
+    }
+    try require(validations == 2 && f.contents() == originals)
+}
+
+test("non-boolean hub flag is rejected") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.hubConfig) { hub in
+        var accounts = hub["accounts"] as! [[String: Any]]
+        accounts[0]["dispatchDisabled"] = 1
+        hub["accounts"] = accounts
+    }
+    let originals = try f.contents()
+    try expectError(.invalidHub) { _ = try f.sync.setParticipation(true, identity: f.identity) }
+    try require(f.contents() == originals)
+}
+
+test("A-Z exhaustion prevents snapshot and hub updates") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.codes) { $0["accounts"] = [["code": "Z", "alias": "fixture-other", "profileId": "profile-other"]] }
+    let originals = try f.contents()
+    try expectError(.codeExhausted) { _ = try f.sync.setParticipation(true, identity: f.identity) }
+    try require(f.contents() == originals)
+}
+
+test("symlink target is rejected without modifying its destination") {
+    let f = try DispatchFixture()
+    let originals = try f.contents()
+    let actual = f.root.appendingPathComponent("redirected.json")
+    try FileManager.default.moveItem(at: f.paths.hubConfig, to: actual)
+    try FileManager.default.createSymbolicLink(at: f.paths.hubConfig, withDestinationURL: actual)
+    try expectError(.fileAccess) { _ = try f.sync.setParticipation(true, identity: f.identity) }
+    try require(f.contents() == originals)
+}
+
+test("bounded configuration reader rejects a sparse oversized regular file") {
+    let f = try DispatchFixture()
+    let oversized = f.root.appendingPathComponent("oversized.json")
+    try Data().write(to: oversized)
+    let handle = try FileHandle(forWritingTo: oversized)
+    try handle.truncate(atOffset: UInt64(DispatchParticipationSync.maximumConfigurationBytes + 1))
+    try handle.close()
+    try expectError(.fileAccess) {
+        _ = try DispatchParticipationSync.readBoundedRegularFile(oversized)
+    }
+    try expectError(.fileAccess) {
+        _ = try DispatchParticipationSync.readBoundedRegularFile(
+            f.paths.snapshot,
+            maximumBytes: 8
+        )
+    }
+}
+
+test("process lock rejects reentrant synchronization") {
+    let f = try DispatchFixture()
+    var sync = f.sync
+    sync.checkpoint = {
+        if case .beforeBackup(0) = $0 {
+            try expectError(.busy) { _ = try f.sync.setParticipation(false, identity: f.identity) }
+        }
+    }
+    _ = try sync.setParticipation(true, identity: f.identity)
+    try f.checkState(enabled: true, code: "D")
+}
+
+test("file lock rejects another synchronization owner") {
+    let f = try DispatchFixture()
+    let lock = f.paths.snapshot.deletingLastPathComponent().appendingPathComponent(DispatchParticipationPaths.lockFileName)
+    let descriptor = lock.path.withCString { Darwin.open($0, O_RDWR | O_CREAT, 0o600) }
+    try require(descriptor >= 0)
+    defer { Darwin.close(descriptor) }
+    try require(flock(descriptor, LOCK_EX | LOCK_NB) == 0)
+    defer { flock(descriptor, LOCK_UN) }
+    let originals = try f.contents()
+    try expectError(.busy) { _ = try f.sync.setParticipation(true, identity: f.identity) }
+    try require(f.contents() == originals)
+}
+
+test("centralized paths resolve build sibling and explicit override without probing files") {
+    let f = try DispatchFixture()
+    let bundle = f.root.appendingPathComponent("next/build/CodexAccountManagerNext.app")
+    let derived = try DispatchParticipationPaths.live(snapshot: f.paths.snapshot, bundleURL: bundle, environment: [:])
+    try require(
+        derived.hubConfig
+            == f.root.appendingPathComponent(DispatchParticipationPaths.hubCheckoutName)
+            .appendingPathComponent(DispatchParticipationPaths.hubConfigFileName))
+    try require(derived.codes == f.paths.codes)
+    let installed = f.root.appendingPathComponent("Applications/CodexAccountManagerNext.app")
+    let override = try DispatchParticipationPaths.live(
+        snapshot: f.paths.snapshot, bundleURL: installed,
+        environment: [DispatchParticipationPaths.hubConfigEnvironmentKey: f.paths.hubConfig.path])
+    try require(override.hubConfig == f.paths.hubConfig)
+    try expectError(.hubLocation) {
+        _ = try DispatchParticipationPaths.live(snapshot: f.paths.snapshot, bundleURL: installed, environment: [:])
+    }
+    try expectError(.hubLocation) {
+        _ = try DispatchParticipationPaths.live(
+            snapshot: f.paths.snapshot, bundleURL: bundle,
+            environment: [DispatchParticipationPaths.hubConfigEnvironmentKey: "relative/config.json"])
+    }
+}
+
+print("All \(passed) dispatch participation tests passed (temporary fixtures only).")

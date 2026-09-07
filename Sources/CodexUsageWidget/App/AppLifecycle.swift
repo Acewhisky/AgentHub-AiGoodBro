@@ -94,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var window: MainAppWindow?
     private var paletteLibraryWindow: NSWindow?
     private var titlebarToolbarController: NSTitlebarAccessoryViewController?
+    private let screenshotRequests = PassthroughSubject<NSWindow, Never>()
     private var statusItem: NSStatusItem?
     private var statusPopover: NSPopover?
     private var statusPopoverEventMonitors: [Any] = []
@@ -172,7 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             rootView: CodexAccountManagerView(
                 store: store,
                 settings: settings,
-                paletteCatalog: paletteCatalog
+                paletteCatalog: paletteCatalog,
+                screenshotRequests: screenshotRequests.eraseToAnyPublisher()
             ),
             cornerRadius: CodexAccountManagerView.windowCornerRadius
         )
@@ -188,10 +190,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 settings: settings,
                 onOpenSettings: { [weak self] in
                     self?.openSettingsWindow()
+                },
+                onSaveScreenshot: { [weak self] in
+                    guard let self, let window = self.window else { return }
+                    self.screenshotRequests.send(window)
                 }
             )
         )
-        toolbarView.frame = NSRect(x: 0, y: 0, width: CodexAccountManagerView.defaultWidth - 24, height: 44)
+        toolbarView.frame = NSRect(x: 0, y: 0, width: 136, height: 44)
 
         let controller = NSTitlebarAccessoryViewController()
         controller.layoutAttribute = .right

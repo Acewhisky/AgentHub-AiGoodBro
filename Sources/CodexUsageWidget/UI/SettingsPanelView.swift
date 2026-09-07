@@ -83,6 +83,7 @@ struct TitlebarToolbarView: View {
     @ObservedObject var settings: AppSettings
     @Environment(\.colorScheme) private var colorScheme
     let onOpenSettings: () -> Void
+    let onSaveScreenshot: () -> Void
 
     private var language: WidgetLanguage { settings.language }
     private var themeMode: WidgetThemeMode { settings.themeMode }
@@ -98,6 +99,13 @@ struct TitlebarToolbarView: View {
                 .help("帧影帧画")
 
             HStack(spacing: 2) {
+                HeaderActionButton(
+                    systemName: "camera.viewfinder",
+                    help: language.text("保存主界面长截图（PNG）", "Save full workspace screenshot (PNG)"),
+                    accessibilityLabel: language.text("保存主界面长截图", "Save full workspace screenshot")
+                ) {
+                    onSaveScreenshot()
+                }
                 HeaderActionButton(
                     systemName: "gearshape",
                     help: language.text("设置", "Settings"),
@@ -382,8 +390,8 @@ struct SettingsPanelView: View {
                 interval: "5h",
                 title: language.text("5 小时暖号", "5-hour warm-up"),
                 detail: language.text(
-                    "按各账号自己的重置时间串行执行；周额度不足时暂停。",
-                    "Run accounts serially at their own reset times. Pause on low weekly quota."
+                    "按官方重置时间预约，短暂缓冲后优先刷新额度并暖号；周额度不足时暂停。",
+                    "Schedule at the official reset time, briefly allow for propagation, then refresh quota and warm up. Pause on low weekly quota."
                 ),
                 isOn: Binding(get: { store.warmUpSelection.fiveHour }, set: { store.setWarmUpFiveHourEnabled($0) })
             )

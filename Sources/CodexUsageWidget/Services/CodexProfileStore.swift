@@ -26,6 +26,7 @@ struct CodexAccountSnapshot: Codable, Equatable {
     let resetCreditExpiries: [Date]?
     let fetchedAt: Date
     let appServerVersion: String?
+    let quotaReadSucceeded: Bool?
 
     init(
         accountType: String?,
@@ -40,7 +41,8 @@ struct CodexAccountSnapshot: Codable, Equatable {
         availableResetCredits: Int? = nil,
         resetCreditExpiries: [Date]? = nil,
         fetchedAt: Date,
-        appServerVersion: String?
+        appServerVersion: String?,
+        quotaReadSucceeded: Bool? = true
     ) {
         self.accountType = accountType
         self.planType = planType
@@ -55,6 +57,7 @@ struct CodexAccountSnapshot: Codable, Equatable {
         self.resetCreditExpiries = resetCreditExpiries
         self.fetchedAt = fetchedAt
         self.appServerVersion = appServerVersion
+        self.quotaReadSucceeded = quotaReadSucceeded
     }
 }
 
@@ -238,11 +241,16 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     var lastQuotaReadFailureReason: String? = nil
     var chromeProfile: ChromeProfileBinding? = nil
     var automaticSwitchParticipation: Bool? = nil
+    var prioritizeDispatch: Bool? = nil
     var proTierMultiplier: Int? = nil
     var executionPreference: CodexExecutionPreference? = nil
 
     var participatesInAutomaticSwitch: Bool {
         automaticSwitchParticipation != false
+    }
+
+    var isDispatchPriorityEnabled: Bool {
+        prioritizeDispatch == true
     }
 
     var displayedProTierMultiplier: Int? {
@@ -292,9 +300,34 @@ struct CodexProfile: Codable, Equatable, Identifiable {
             .allSatisfy(\.participatesInAutomaticSwitch)
     }
 
+    static func prioritizesDispatch(_ profileID: String, among profiles: [CodexProfile]) -> Bool {
+        guard let profile = profiles.first(where: { $0.id == profileID }) else { return false }
+        return
+            profiles
+            .filter { $0.recordedAccountKey == profile.recordedAccountKey }
+            .allSatisfy(\.isDispatchPriorityEnabled)
+    }
+
     private static func normalizedEmail(_ value: String?) -> String? {
         let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         return normalized.isEmpty ? nil : normalized
+    }
+}
+
+enum SevenDayResetReminder {
+    static let threshold: TimeInterval = 72 * 60 * 60
+
+    static func remainingDays(resetsAt: Date?, now: Date = Date()) -> Int? {
+        guard let resetsAt else { return nil }
+        let remaining = resetsAt.timeIntervalSince(now)
+        guard remaining > 0, remaining <= threshold else { return nil }
+        return max(1, Int(ceil(remaining / (24 * 60 * 60))))
+    }
+
+    static func message(resetsAt: Date?, now: Date = Date()) -> String? {
+        remainingDays(resetsAt: resetsAt, now: now).map {
+            "7 天额度 \($0) 天后重置，快使用额度"
+        }
     }
 }
 
@@ -345,8 +378,8 @@ enum CodexWarmUpPolicy {
     static let minimumWeeklyRemaining = 5.0
     static let resetStartTolerance: TimeInterval = 10 * 60
 
-    static func maintenanceRefreshInterval(warmUpEnabled: Bool) -> TimeInterval {
-        warmUpEnabled ? 10 * 60 : 30 * 60
+    static func maintenanceRefreshInterval(warmUpEnabled: Bool, quotaNotificationsEnabled: Bool = false) -> TimeInterval {
+        quotaNotificationsEnabled ? 60 : (warmUpEnabled ? 10 * 60 : 30 * 60)
     }
 
     static func maintenanceTimerNeedsReplacement(
@@ -740,8 +773,8 @@ final class CodexProfileStore {
             ?? home.appendingPathComponent("Library/Application Support", isDirectory: true)
         stateURL =
             support
-            .appendingPathComponent("CodexAccountManagerNext", isDirectory: true)
-            .appendingPathComponent("account-manager-next-v1.json")
+            .appendingPathComponent(DispatchParticipationPaths.supportDirectoryName, isDirectory: true)
+            .appendingPathComponent(DispatchParticipationPaths.snapshotFileName)
 
         let systemProfile = CodexProfile(
             id: "system",
@@ -912,7 +945,9 @@ final class CodexProfileStore {
                 userInfo: [NSLocalizedDescriptionKey: "当前 Codex 凭据身份与系统账号记录不一致"]
             )
         }
-        let boundSnapshot = system.lastSnapshot.map { Self.snapshot($0, accountID: boundAccountID) }
+        let boundSnapshot = system.lastSnapshot.map {
+            Self.snapshotByReplacingAccountID($0, accountID: boundAccountID)
+        }
         if let existing = state.profiles.first(where: {
             !$0.isSystemProfile
                 && $0.recordedAccountKey == system.recordedAccountKey
@@ -939,6 +974,7 @@ final class CodexProfileStore {
             lastWarmUpFailureReason: system.lastWarmUpFailureReason,
             chromeProfile: system.chromeProfile,
             automaticSwitchParticipation: system.automaticSwitchParticipation,
+            prioritizeDispatch: system.prioritizeDispatch,
             proTierMultiplier: system.proTierMultiplier
         )
         do {
@@ -1001,6 +1037,111 @@ final class CodexProfileStore {
         for index in state.profiles.indices
         where state.profiles[index].recordedAccountKey == accountKey {
             state.profiles[index].automaticSwitchParticipation = enabled
+        }
+        try save()
+    }
+
+    /// External synchronization is an explicit UI action; ordinary persistence,
+    /// startup backfills and snapshot reads never enter this path.
+    func setDispatchParticipationFromUI(_ enabled: Bool, for id: String) throws {
+        try setDispatchSettingsFromUI(.participation(enabled), for: id)
+    }
+
+    func setDispatchPriorityFromUI(_ enabled: Bool, for id: String) throws {
+        try setDispatchSettingsFromUI(.priority(enabled), for: id)
+    }
+
+    private func setDispatchSettingsFromUI(_ change: DispatchParticipationSync.Change, for id: String) throws {
+        guard !persistenceBlocked,
+            let profile = state.profiles.first(where: { $0.id == id }),
+            let system = state.profiles.first(where: \.isSystemProfile)
+        else { throw DispatchParticipationError.invalidSnapshot }
+        let validationNow = Date()
+        let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(
+            codexHomeURL: profile.codexHomeURL
+        )
+        let identity = try Self.validatedDispatchIdentity(
+            for: profile,
+            credentialIdentity: credentialIdentity,
+            now: validationNow
+        )
+        let sync = DispatchParticipationSync(paths: try DispatchParticipationPaths.live(snapshot: stateURL))
+        var updatedState = state
+        _ = try sync.apply(
+            change,
+            identity: identity
+        ) { data in
+            guard let decoded = try? JSONDecoder().decode(State.self, from: data),
+                Self.isValid(decoded, systemPath: system.codexHomePath, managedRoot: self.managedRootURL)
+            else { throw DispatchParticipationError.invalidSnapshot }
+            try Self.validateDispatchMirrorCredentials(
+                for: identity,
+                in: decoded.profiles,
+                now: validationNow,
+                credentialReader: { CodexOfficialProfileReader.credentialIdentity(codexHomeURL: $0) }
+            )
+            updatedState = decoded
+        }
+        // The transaction returns only after all three files verify successfully.
+        state = updatedState
+    }
+
+    static func validatedDispatchIdentity(
+        for profile: CodexProfile,
+        credentialIdentity: CodexCredentialIdentity?,
+        now: Date = Date()
+    ) throws -> DispatchParticipationSync.Identity {
+        guard CodexWarmUpPolicy.hasFreshQuotaEvidence(profile, now: now),
+            let snapshot = profile.lastSnapshot,
+            snapshot.quotaReadSucceeded == true,
+            snapshot.fiveHour != nil || snapshot.sevenDay != nil || snapshot.monthly != nil,
+            profile.lastQuotaReadFailureAt.map({ $0 < snapshot.fetchedAt }) ?? true,
+            let accountID = snapshot.accountID,
+            !accountID.isEmpty,
+            let credentialIdentity,
+            profile.matchesRecordedCredential(credentialIdentity),
+            credentialIdentity.accountID == accountID
+        else { throw DispatchParticipationError.identityMismatch }
+        return .init(
+            profileID: profile.id,
+            homePath: profile.codexHomePath,
+            email: credentialIdentity.email,
+            accountID: credentialIdentity.accountID
+        )
+    }
+
+    static func validateDispatchMirrorCredentials(
+        for clickedIdentity: DispatchParticipationSync.Identity,
+        in profiles: [CodexProfile],
+        now: Date = Date(),
+        credentialReader: (URL) -> CodexCredentialIdentity?
+    ) throws {
+        guard let clicked = profiles.first(where: { $0.id == clickedIdentity.profileID }),
+            clicked.codexHomeURL.standardizedFileURL.path
+                == URL(fileURLWithPath: clickedIdentity.homePath).standardizedFileURL.path,
+            let expectedEmail = clickedIdentity.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            !expectedEmail.isEmpty
+        else { throw DispatchParticipationError.identityMismatch }
+        let mirrors = profiles.filter { $0.recordedAccountKey == clicked.recordedAccountKey }
+        guard !mirrors.isEmpty else { throw DispatchParticipationError.identityMismatch }
+        for mirror in mirrors {
+            let current = try validatedDispatchIdentity(
+                for: mirror,
+                credentialIdentity: credentialReader(mirror.codexHomeURL),
+                now: now
+            )
+            guard current.accountID == clickedIdentity.accountID,
+                current.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == expectedEmail
+            else { throw DispatchParticipationError.identityMismatch }
+        }
+    }
+
+    func setPrioritizeDispatch(_ enabled: Bool, for id: String) throws {
+        guard let profile = state.profiles.first(where: { $0.id == id }) else { return }
+        let accountKey = profile.recordedAccountKey
+        for index in state.profiles.indices
+        where state.profiles[index].recordedAccountKey == accountKey {
+            state.profiles[index].prioritizeDispatch = enabled
         }
         try save()
     }
@@ -1083,7 +1224,20 @@ final class CodexProfileStore {
         let hasVerifiedAccount = snapshot.account?.email?.isEmpty == false
         guard let index = state.profiles.firstIndex(where: { $0.id == profileID })
         else { return }
+        // Pool and selected-profile reads can finish out of order. Keep both
+        // success and failure observations monotonic, while allowing equal-time
+        // records to enrich account data or recover a failed read.
+        let newestObservationAt = max(
+            state.profiles[index].lastSnapshot?.fetchedAt ?? .distantPast,
+            state.profiles[index].lastQuotaReadFailureAt ?? .distantPast
+        )
+        guard snapshot.refreshedAt >= newestObservationAt else { return }
         guard snapshot.quotaReadSucceeded || (allowAccountOnly && hasVerifiedAccount) else {
+            let previous = state.profiles[index].lastSnapshot
+            let successfulSnapshotAtSameTime =
+                previous?.fetchedAt == snapshot.refreshedAt
+                && previous?.quotaReadSucceeded != false
+            guard !successfulSnapshotAtSameTime else { return }
             // 额度读取失败时保留旧数据，但必须留下可见的失败痕迹，
             // 避免账号凭证失效后快照无限期静默过期。
             // 失败原因只保留分类标记，不落盘原始服务端消息，避免写入账号标识。
@@ -1127,30 +1281,47 @@ final class CodexProfileStore {
                 state.profiles[index].chromeProfile = matchingManagedProfile?.chromeProfile
                 state.profiles[index].automaticSwitchParticipation =
                     matchingManagedProfile?.automaticSwitchParticipation
+                state.profiles[index].prioritizeDispatch = matchingManagedProfile?.prioritizeDispatch
                 state.profiles[index].proTierMultiplier = matchingManagedProfile?.proTierMultiplier
             }
         }
+        let previousSnapshot = state.profiles[index].lastSnapshot
+        let mergesEqualObservation = !accountChanged && previousSnapshot?.fetchedAt == snapshot.refreshedAt
         let record = CodexAccountSnapshot(
-            accountType: snapshot.account?.type,
-            planType: snapshot.account?.planType,
-            email: snapshot.account?.email,
+            accountType: mergesEqualObservation ? previousSnapshot?.accountType ?? snapshot.account?.type : snapshot.account?.type,
+            planType: mergesEqualObservation ? previousSnapshot?.planType ?? snapshot.account?.planType : snapshot.account?.planType,
+            email: mergesEqualObservation ? previousSnapshot?.email ?? snapshot.account?.email : snapshot.account?.email,
             accountID: verifiedAccountID ?? (accountChanged ? nil : previousAccountID),
-            limitId: snapshot.limitId,
-            limitName: snapshot.limitName,
-            fiveHour: snapshot.fiveHourQuota.map(CodexQuotaWindowSnapshot.init),
-            sevenDay: snapshot.sevenDayQuota.map(CodexQuotaWindowSnapshot.init),
-            monthly: snapshot.monthlyQuota.map(CodexQuotaWindowSnapshot.init),
-            availableResetCredits: snapshot.credits?.resetCredits,
-            resetCreditExpiries: snapshot.credits?.resetCreditDetails?
-                .compactMap(\.expiresAt)
-                .sorted(),
+            limitId: mergesEqualObservation ? previousSnapshot?.limitId ?? snapshot.limitId : snapshot.limitId,
+            limitName: mergesEqualObservation ? previousSnapshot?.limitName ?? snapshot.limitName : snapshot.limitName,
+            fiveHour: mergesEqualObservation
+                ? previousSnapshot?.fiveHour ?? snapshot.fiveHourQuota.map(CodexQuotaWindowSnapshot.init)
+                : snapshot.fiveHourQuota.map(CodexQuotaWindowSnapshot.init),
+            sevenDay: mergesEqualObservation
+                ? previousSnapshot?.sevenDay ?? snapshot.sevenDayQuota.map(CodexQuotaWindowSnapshot.init)
+                : snapshot.sevenDayQuota.map(CodexQuotaWindowSnapshot.init),
+            monthly: mergesEqualObservation
+                ? previousSnapshot?.monthly ?? snapshot.monthlyQuota.map(CodexQuotaWindowSnapshot.init)
+                : snapshot.monthlyQuota.map(CodexQuotaWindowSnapshot.init),
+            availableResetCredits: mergesEqualObservation
+                ? previousSnapshot?.availableResetCredits ?? snapshot.credits?.resetCredits
+                : snapshot.credits?.resetCredits,
+            resetCreditExpiries: mergesEqualObservation
+                ? previousSnapshot?.resetCreditExpiries ?? snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted()
+                : snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted(),
             fetchedAt: snapshot.refreshedAt,
-            appServerVersion: CodexExecutable.version()
+            appServerVersion: mergesEqualObservation
+                ? previousSnapshot?.appServerVersion ?? CodexExecutable.version()
+                : CodexExecutable.version(),
+            quotaReadSucceeded: snapshot.quotaReadSucceeded
+                || (mergesEqualObservation && (previousSnapshot?.quotaReadSucceeded ?? true))
         )
         let previousSevenDay = state.profiles[index].lastSnapshot?.sevenDay
         state.profiles[index].lastSnapshot = record
-        state.profiles[index].lastQuotaReadFailureAt = nil
-        state.profiles[index].lastQuotaReadFailureReason = nil
+        if snapshot.quotaReadSucceeded {
+            state.profiles[index].lastQuotaReadFailureAt = nil
+            state.profiles[index].lastQuotaReadFailureReason = nil
+        }
         if !accountChanged,
             CodexWarmUpPolicy.didConsumeReset(
                 previous: previousSevenDay,
@@ -1391,13 +1562,19 @@ final class CodexProfileStore {
                 state.profiles[index].matchesRecordedAccount(email: identity.email),
                 current.accountID != identity.accountID
             else { continue }
-            state.profiles[index].lastSnapshot = Self.snapshot(current, accountID: identity.accountID)
+            state.profiles[index].lastSnapshot = Self.snapshotByReplacingAccountID(
+                current,
+                accountID: identity.accountID
+            )
             changed = true
         }
         return changed
     }
 
-    private static func snapshot(_ snapshot: CodexAccountSnapshot, accountID: String?) -> CodexAccountSnapshot {
+    static func snapshotByReplacingAccountID(
+        _ snapshot: CodexAccountSnapshot,
+        accountID: String?
+    ) -> CodexAccountSnapshot {
         CodexAccountSnapshot(
             accountType: snapshot.accountType,
             planType: snapshot.planType,
@@ -1411,7 +1588,8 @@ final class CodexProfileStore {
             availableResetCredits: snapshot.availableResetCredits,
             resetCreditExpiries: snapshot.resetCreditExpiries,
             fetchedAt: snapshot.fetchedAt,
-            appServerVersion: snapshot.appServerVersion
+            appServerVersion: snapshot.appServerVersion,
+            quotaReadSucceeded: snapshot.quotaReadSucceeded
         )
     }
 
@@ -1454,6 +1632,7 @@ enum CodexProfileStoreSelfTest {
             .appendingPathComponent("codex-profile-store-\(UUID().uuidString)", isDirectory: true)
         defer { try? fileManager.removeItem(at: root) }
         do {
+            guard try testQuotaObservationOrdering(root: root, fileManager: fileManager) else { return false }
             let home = root.appendingPathComponent("home", isDirectory: true)
             let support = root.appendingPathComponent("support", isDirectory: true)
             try fileManager.createDirectory(at: home, withIntermediateDirectories: true)
@@ -1521,6 +1700,31 @@ enum CodexProfileStoreSelfTest {
                 print("Codex profile store self-test failed: legacy execution preference default")
                 return false
             }
+            let appleEpochWindow = try JSONDecoder().decode(
+                CodexQuotaWindowSnapshot.self,
+                from: Data(#"{"usedPercent":0,"resetsAt":259200}"#.utf8)
+            )
+            let reminderNow = Date(timeIntervalSince1970: 1_000_000)
+            guard
+                appleEpochWindow.resetsAt
+                    == Date(timeIntervalSince1970: 978_307_200 + 259_200),
+                SevenDayResetReminder.remainingDays(
+                    resetsAt: reminderNow.addingTimeInterval(72 * 60 * 60),
+                    now: reminderNow
+                ) == 3,
+                SevenDayResetReminder.message(
+                    resetsAt: reminderNow.addingTimeInterval(1),
+                    now: reminderNow
+                ) == "7 天额度 1 天后重置，快使用额度",
+                SevenDayResetReminder.remainingDays(
+                    resetsAt: reminderNow.addingTimeInterval(72 * 60 * 60 + 1),
+                    now: reminderNow
+                ) == nil,
+                SevenDayResetReminder.remainingDays(resetsAt: reminderNow, now: reminderNow) == nil
+            else {
+                print("Codex profile store self-test failed: seven-day reset reminder boundary")
+                return false
+            }
             let invalidPreference = CodexExecutionPreference(
                 model: .gpt52,
                 reasoningEffort: .ultra,
@@ -1553,6 +1757,14 @@ enum CodexProfileStoreSelfTest {
             try first.record(managedSnapshot, for: added.id)
             let duplicate = try first.addManagedProfile()
             try first.record(managedSnapshot, for: duplicate.id)
+            try first.setPrioritizeDispatch(true, for: added.id)
+            guard
+                CodexProfile.prioritizesDispatch(added.id, among: first.profiles),
+                CodexProfile.prioritizesDispatch(duplicate.id, among: first.profiles)
+            else {
+                print("Codex profile store self-test failed: dispatch priority propagation")
+                return false
+            }
             let fastPreference = CodexExecutionPreference(
                 model: .terra,
                 reasoningEffort: .ultra,
@@ -1676,6 +1888,15 @@ enum CodexProfileStoreSelfTest {
                 return false
             }
             try first.record(firstSnapshot, for: "system", allowSystemAccountChange: true)
+            guard first.profiles.first(where: { $0.id == "system" })?.lastSnapshot?.email == managedSnapshot.account?.email else {
+                print("Codex profile store self-test failed: late system read must not rebind an older account")
+                return false
+            }
+            // Switching back requires a fresh observation, not replaying the old login snapshot.
+            try first.record(
+                testSnapshot(email: "first@example.com", usedPercent: 11, at: Date(timeIntervalSince1970: 400), resetCredits: 2),
+                for: "system", allowSystemAccountChange: true
+            )
             guard try first.selectMonitorForSystemAccount() == "system" else {
                 print("Codex profile store self-test failed: current account monitor fallback")
                 return false
@@ -1699,6 +1920,7 @@ enum CodexProfileStoreSelfTest {
                 restored.profiles.first(where: { $0.id == added.id })?.lastWarmUpSucceeded == true,
                 restored.profiles.first(where: { $0.id == added.id })?.chromeProfile == chromeProfile,
                 restored.profiles.first(where: { $0.id == added.id })?.participatesInAutomaticSwitch == false,
+                restored.profiles.first(where: { $0.id == added.id })?.isDispatchPriorityEnabled == true,
                 restored.profiles.first(where: { $0.id == added.id })?.displayedProTierMultiplier == 20,
                 restored.profiles.first(where: { $0.id == added.id })?.effectiveExecutionPreference
                     == standardPreference,
@@ -1731,6 +1953,7 @@ enum CodexProfileStoreSelfTest {
             legacyState["profiles"] = legacyProfiles.map { profile in
                 var profile = profile
                 profile.removeValue(forKey: "automaticSwitchParticipation")
+                profile.removeValue(forKey: "prioritizeDispatch")
                 profile.removeValue(forKey: "proTierMultiplier")
                 profile.removeValue(forKey: "executionPreference")
                 return profile
@@ -1742,6 +1965,7 @@ enum CodexProfileStoreSelfTest {
                 applicationSupportDirectory: support
             )
             guard legacyRestored.profiles.allSatisfy(\.participatesInAutomaticSwitch),
+                legacyRestored.profiles.allSatisfy({ !$0.isDispatchPriorityEnabled }),
                 legacyRestored.profiles.allSatisfy({ $0.displayedProTierMultiplier == nil }),
                 legacyRestored.profiles.allSatisfy({
                     $0.effectiveExecutionPreference == .defaultValue
@@ -1806,7 +2030,7 @@ enum CodexProfileStoreSelfTest {
             guard preserved.lastSnapshot?.email == "first@example.com",
                 preserved.lastSnapshot?.accountID == "acct-first",
                 preserved.lastSnapshot?.availableResetCredits == 2,
-                preserved.lastSnapshot?.resetCreditExpiries == [Date(timeIntervalSince1970: 1_100)],
+                preserved.lastSnapshot?.resetCreditExpiries == [Date(timeIntervalSince1970: 1_400)],
                 preservedAuth == systemAuth,
                 preservedAgain.id == preserved.id,
                 reordered.profiles.count == 3,
@@ -2433,6 +2657,350 @@ enum CodexProfileStoreSelfTest {
         }
     }
 
+    private static func testQuotaObservationOrdering(root: URL, fileManager: FileManager) throws -> Bool {
+        let home = root.appendingPathComponent("quota-ordering-home", isDirectory: true)
+        let support = root.appendingPathComponent("quota-ordering-support", isDirectory: true)
+        let store = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        let profile = try store.addManagedProfile()
+        let stateURL =
+            support
+            .appendingPathComponent(DispatchParticipationPaths.supportDirectoryName, isDirectory: true)
+            .appendingPathComponent(DispatchParticipationPaths.snapshotFileName)
+        let base = Date(timeIntervalSince1970: 2_000_000)
+        var failures = 0
+        func expect(_ condition: Bool, _ label: String) {
+            if !condition {
+                print("Codex quota observation self-test failed: \(label)")
+                failures += 1
+            }
+        }
+        func observation(
+            _ seconds: TimeInterval,
+            used: Double? = nil,
+            messages: [String] = [],
+            email: String? = "ordering@example.invalid",
+            succeeded: Bool? = nil
+        ) -> UsageSnapshot {
+            UsageSnapshot(
+                refreshedAt: base.addingTimeInterval(seconds),
+                account: AccountInfo(type: "chatgpt", planType: "plus", emailPresent: email != nil, email: email),
+                limitId: used == nil ? nil : "codex",
+                limitName: nil,
+                quotaReadSucceeded: succeeded ?? (used != nil),
+                fiveHourQuota: nil,
+                sevenDayQuota: used.map {
+                    RateWindow(usedPercent: $0, windowDurationMins: 10_080, resetsAt: base.addingTimeInterval(604_800))
+                },
+                monthlyQuota: nil,
+                credits: nil,
+                cloudLifetimeTokens: nil,
+                local: nil,
+                taskBoard: nil,
+                messages: messages
+            )
+        }
+        func currentProfile() -> CodexProfile { store.profiles.first { $0.id == profile.id }! }
+        func resetCount() -> Int { store.resetCounter(accountKey: currentProfile().recordedAccountKey).automaticCount }
+
+        // A(80) -> B(0) -> duplicate B -> late A(80) -> C(0) is one reset, not two.
+        try store.record(observation(0, used: 80), for: profile.id)
+        try store.record(observation(10, used: 0), for: profile.id)
+        try store.record(observation(10, used: 0), for: profile.id)
+        expect(resetCount() == 1, "duplicate success must not count a second reset")
+        let afterReset = currentProfile().lastSnapshot
+        let persistedAfterReset = try Data(contentsOf: stateURL)
+        try store.record(observation(0, used: 80), for: profile.id)
+        expect(currentProfile().lastSnapshot == afterReset, "late success must not roll back the quota snapshot")
+        expect(try Data(contentsOf: stateURL) == persistedAfterReset, "late success must not rewrite persisted state")
+        try store.record(observation(20, used: 0), for: profile.id)
+        expect(resetCount() == 1, "late success followed by fresh success must still count one reset")
+
+        let afterFreshSuccess = currentProfile().lastSnapshot
+        let persistedAfterSuccess = try Data(contentsOf: stateURL)
+        try store.record(observation(15), for: profile.id)
+        expect(currentProfile().lastQuotaReadFailureAt == nil, "late failure must not replace fresh success")
+        expect(try Data(contentsOf: stateURL) == persistedAfterSuccess, "late failure must not rewrite persisted state")
+
+        try store.record(observation(40, messages: ["401 Unauthorized"]), for: profile.id)
+        let persistedAfterFailure = try Data(contentsOf: stateURL)
+        try store.record(observation(30), for: profile.id)
+        expect(currentProfile().lastQuotaReadFailureAt == base.addingTimeInterval(40), "failure timestamps must not move backwards")
+        expect(currentProfile().lastQuotaReadFailureReason == "oauth-invalidated", "late failure must not erase the latest failure category")
+        try store.record(observation(30, used: 5), for: profile.id)
+        expect(currentProfile().lastSnapshot == afterFreshSuccess, "success older than latest failure must be ignored")
+        expect(currentProfile().lastQuotaReadFailureAt == base.addingTimeInterval(40), "late success must not clear newer failure")
+        expect(try Data(contentsOf: stateURL) == persistedAfterFailure, "older observations must leave persisted failure unchanged")
+
+        // Equal timestamps are intentional: one request may first fail, then gain verified data.
+        try store.record(observation(40, used: 5), for: profile.id)
+        expect(currentProfile().lastQuotaReadFailureAt == nil, "equal-time success must clear the failure")
+        expect(currentProfile().lastSnapshot?.fetchedAt == base.addingTimeInterval(40), "equal-time success must be accepted")
+        let afterRecovery = currentProfile().lastSnapshot
+        let persistedAfterRecovery = try Data(contentsOf: stateURL)
+        try store.record(observation(0), for: profile.id, allowAccountOnly: true)
+        expect(currentProfile().lastSnapshot == afterRecovery, "late account-only enrichment must not erase quota data")
+        expect(try Data(contentsOf: stateURL) == persistedAfterRecovery, "late account-only enrichment must not rewrite state")
+
+        // The ordering watermark is per profile, not global or shared across account cards.
+        let second = try store.addManagedProfile()
+        try store.record(observation(0), for: second.id, allowAccountOnly: true)
+        try store.record(observation(0, used: 80), for: second.id)
+        expect(
+            store.profiles.first { $0.id == second.id }?.lastSnapshot?.sevenDay?.usedPercent == 80,
+            "equal-time quota data must enrich an account-only snapshot on another profile"
+        )
+
+        let third = try store.addManagedProfile()
+        try store.record(observation(50, used: 80, email: nil), for: third.id)
+        try store.record(observation(50), for: third.id, allowAccountOnly: true)
+        expect(
+            store.profiles.first { $0.id == third.id }?.lastSnapshot?.sevenDay?.usedPercent == 80,
+            "equal-time account enrichment must preserve an existing quota"
+        )
+        expect(
+            store.profiles.first { $0.id == third.id }?.lastSnapshot?.email == "ordering@example.invalid",
+            "equal-time account enrichment must fill missing identity fields"
+        )
+        let thirdAfterEnrichment = store.profiles.first { $0.id == third.id }
+        try store.record(observation(50, messages: ["401 Unauthorized"]), for: third.id)
+        expect(
+            store.profiles.first { $0.id == third.id } == thirdAfterEnrichment,
+            "equal-time failure must not override a successful quota observation"
+        )
+        try store.record(observation(50, used: 0), for: third.id)
+        expect(
+            store.profiles.first { $0.id == third.id }?.lastSnapshot?.sevenDay?.usedPercent == 80,
+            "conflicting equal-time success must not rewrite an established quota"
+        )
+
+        let fourth = try store.addManagedProfile()
+        try store.record(observation(60, messages: ["401 Unauthorized"]), for: fourth.id)
+        try store.record(observation(60), for: fourth.id, allowAccountOnly: true)
+        expect(
+            store.profiles.first { $0.id == fourth.id }?.lastQuotaReadFailureAt == base.addingTimeInterval(60),
+            "equal-time account enrichment must retain the quota failure"
+        )
+        try store.record(observation(60, used: 20), for: fourth.id)
+        expect(
+            store.profiles.first { $0.id == fourth.id }?.lastQuotaReadFailureAt == nil,
+            "equal-time quota success must recover a failed observation"
+        )
+
+        let fifth = try store.addManagedProfile()
+        try store.record(observation(70, succeeded: true), for: fifth.id)
+        let fifthAfterSuccess = store.profiles.first { $0.id == fifth.id }
+        try store.record(observation(70, messages: ["401 Unauthorized"]), for: fifth.id)
+        expect(
+            store.profiles.first { $0.id == fifth.id } == fifthAfterSuccess,
+            "equal-time failure must not override a successful observation without quota windows"
+        )
+        let accountOnlySnapshot = CodexAccountSnapshot(
+            accountType: "chatgpt",
+            planType: "plus",
+            email: "ordering@example.invalid",
+            limitId: nil,
+            limitName: nil,
+            fiveHour: nil,
+            sevenDay: nil,
+            monthly: nil,
+            fetchedAt: base.addingTimeInterval(80),
+            appServerVersion: nil,
+            quotaReadSucceeded: false
+        )
+        expect(
+            CodexProfileStore.snapshotByReplacingAccountID(
+                accountOnlySnapshot,
+                accountID: "account-ordering"
+            ).quotaReadSucceeded == false,
+            "account ID backfill must preserve an account-only observation's failure marker"
+        )
+
+        let identityNow = base.addingTimeInterval(100)
+        var identityProfile = store.profiles.first { $0.id == third.id }!
+        identityProfile.lastSnapshot = CodexAccountSnapshot(
+            accountType: "chatgpt",
+            planType: "plus",
+            email: "ordering@example.invalid",
+            accountID: "account-ordering",
+            limitId: "codex",
+            limitName: nil,
+            fiveHour: nil,
+            sevenDay: CodexQuotaWindowSnapshot(
+                RateWindow(
+                    usedPercent: 80,
+                    windowDurationMins: 10_080,
+                    resetsAt: identityNow.addingTimeInterval(604_800)
+                )
+            ),
+            monthly: nil,
+            fetchedAt: identityNow,
+            appServerVersion: nil
+        )
+        identityProfile.lastQuotaReadFailureAt = nil
+        let currentIdentity = CodexCredentialIdentity(
+            email: "ordering@example.invalid",
+            accountID: "account-ordering"
+        )
+        let clickedDispatchIdentity = try CodexProfileStore.validatedDispatchIdentity(
+            for: identityProfile,
+            credentialIdentity: currentIdentity,
+            now: identityNow
+        )
+        expect(
+            clickedDispatchIdentity.accountID == currentIdentity.accountID,
+            "fresh matching credential identity must permit dispatch synchronization"
+        )
+        var staleIdentityProfile = identityProfile
+        staleIdentityProfile.lastSnapshot = CodexAccountSnapshot(
+            accountType: "chatgpt",
+            planType: "plus",
+            email: "ordering@example.invalid",
+            accountID: "account-ordering",
+            limitId: "codex",
+            limitName: nil,
+            fiveHour: nil,
+            sevenDay: identityProfile.lastSnapshot?.sevenDay,
+            monthly: nil,
+            fetchedAt: identityNow.addingTimeInterval(-CodexWarmUpPolicy.maximumQuotaAge - 1),
+            appServerVersion: nil
+        )
+        var failedIdentityProfile = identityProfile
+        failedIdentityProfile.lastSnapshot = CodexAccountSnapshot(
+            accountType: "chatgpt",
+            planType: "plus",
+            email: "ordering@example.invalid",
+            accountID: "account-ordering",
+            limitId: "codex",
+            limitName: nil,
+            fiveHour: nil,
+            sevenDay: identityProfile.lastSnapshot?.sevenDay,
+            monthly: nil,
+            fetchedAt: identityNow,
+            appServerVersion: nil,
+            quotaReadSucceeded: false
+        )
+        func mirror(_ id: String, snapshot: CodexAccountSnapshot?) -> CodexProfile {
+            CodexProfile(
+                id: id,
+                name: id,
+                codexHomePath: root.appendingPathComponent(id, isDirectory: true).path,
+                isSystemProfile: false,
+                createdAt: identityNow,
+                lastSnapshot: snapshot
+            )
+        }
+        func validateMirrors(
+            _ profiles: [CodexProfile],
+            credentials: [String: CodexCredentialIdentity]
+        ) throws {
+            try CodexProfileStore.validateDispatchMirrorCredentials(
+                for: clickedDispatchIdentity,
+                in: profiles,
+                now: identityNow,
+                credentialReader: { credentials[$0.standardizedFileURL.path] }
+            )
+        }
+        func expectMirrorFailure(
+            _ profiles: [CodexProfile],
+            credentials: [String: CodexCredentialIdentity],
+            _ label: String
+        ) {
+            do {
+                try validateMirrors(profiles, credentials: credentials)
+                expect(false, "\(label) must block mirror dispatch synchronization")
+            } catch DispatchParticipationError.identityMismatch {
+            } catch {
+                expect(false, "\(label) returned the wrong mirror dispatch error")
+            }
+        }
+        let matchingMirror = mirror("dispatch-mirror-matching", snapshot: identityProfile.lastSnapshot)
+        let matchingCredentials = [
+            identityProfile.codexHomeURL.standardizedFileURL.path: currentIdentity,
+            matchingMirror.codexHomeURL.standardizedFileURL.path: currentIdentity,
+        ]
+        do {
+            try validateMirrors(
+                [identityProfile],
+                credentials: [identityProfile.codexHomeURL.standardizedFileURL.path: currentIdentity]
+            )
+        } catch {
+            expect(false, "fresh clicked credential must pass mirror dispatch validation")
+        }
+        do {
+            try validateMirrors([identityProfile, matchingMirror], credentials: matchingCredentials)
+        } catch {
+            expect(false, "all matching mirror credentials must permit dispatch synchronization")
+        }
+        expectMirrorFailure(
+            [identityProfile, matchingMirror],
+            credentials: matchingCredentials.merging([
+                matchingMirror.codexHomeURL.standardizedFileURL.path: CodexCredentialIdentity(
+                    email: currentIdentity.email,
+                    accountID: "account-changed"
+                )
+            ]) { _, changed in changed },
+            "changed mirror account id"
+        )
+        expectMirrorFailure(
+            [identityProfile, matchingMirror],
+            credentials: [identityProfile.codexHomeURL.standardizedFileURL.path: currentIdentity],
+            "missing mirror credential"
+        )
+        let staleMirror = mirror("dispatch-mirror-stale", snapshot: staleIdentityProfile.lastSnapshot)
+        expectMirrorFailure(
+            [identityProfile, staleMirror],
+            credentials: [
+                identityProfile.codexHomeURL.standardizedFileURL.path: currentIdentity,
+                staleMirror.codexHomeURL.standardizedFileURL.path: currentIdentity,
+            ],
+            "stale mirror snapshot"
+        )
+        let failedMirror = mirror("dispatch-mirror-failed", snapshot: failedIdentityProfile.lastSnapshot)
+        expectMirrorFailure(
+            [identityProfile, failedMirror],
+            credentials: [
+                identityProfile.codexHomeURL.standardizedFileURL.path: currentIdentity,
+                failedMirror.codexHomeURL.standardizedFileURL.path: currentIdentity,
+            ],
+            "failed mirror quota read"
+        )
+        for (candidate, credential, label) in [
+            (staleIdentityProfile, currentIdentity as CodexCredentialIdentity?, "stale snapshot"),
+            (failedIdentityProfile, currentIdentity as CodexCredentialIdentity?, "failed quota snapshot"),
+            (identityProfile, nil, "missing credential"),
+            (
+                identityProfile,
+                CodexCredentialIdentity(email: "ordering@example.invalid", accountID: "account-other"),
+                "mismatched account id"
+            ),
+            (
+                identityProfile,
+                CodexCredentialIdentity(email: "other@example.invalid", accountID: "account-ordering"),
+                "mismatched email"
+            ),
+        ] {
+            do {
+                _ = try CodexProfileStore.validatedDispatchIdentity(
+                    for: candidate,
+                    credentialIdentity: credential,
+                    now: identityNow
+                )
+                expect(false, "\(label) must block dispatch synchronization")
+            } catch DispatchParticipationError.identityMismatch {
+            } catch {
+                expect(false, "\(label) returned the wrong dispatch synchronization error")
+            }
+        }
+        let reloaded = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        expect(reloaded.profiles.first { $0.id == profile.id }?.lastSnapshot == afterRecovery, "accepted snapshot must survive reload")
+        expect(
+            reloaded.resetCounter(accountKey: currentProfile().recordedAccountKey).automaticCount == 1,
+            "single reset count must survive reload"
+        )
+        if failures == 0 { print("Codex quota observation ordering self-test passed") }
+        return failures == 0
+    }
+
     private static func testSnapshot(
         email: String,
         usedPercent: Double,
@@ -2520,6 +3088,8 @@ enum CodexWarmUpPolicySelfTest {
             expect(
                 CodexWarmUpPolicy.maintenanceRefreshInterval(warmUpEnabled: true) == 10 * 60
                     && CodexWarmUpPolicy.maintenanceRefreshInterval(warmUpEnabled: false) == 30 * 60
+                    && CodexWarmUpPolicy.maintenanceRefreshInterval(warmUpEnabled: false, quotaNotificationsEnabled: true) == 60
+                    && CodexWarmUpPolicy.maintenanceRefreshInterval(warmUpEnabled: true, quotaNotificationsEnabled: true) == 60
                     && !CodexWarmUpPolicy.maintenanceTimerNeedsReplacement(
                         currentInterval: 10 * 60,
                         requestedInterval: 10 * 60

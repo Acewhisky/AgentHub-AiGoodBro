@@ -10,8 +10,8 @@ enum WorkspacePreviewRenderer {
         let profiles = (0..<max(accountCount, 1)).map { index in
             CodexProfile(
                 id: accountCount == 0 ? "system" : "preview-\(index)",
-                name: accountCount == 0 ? "当前 Codex" : ["我的工作账号", "创作账号", "备用账号"][index % 3],
-                remark: accountCount == 0 ? "当前 Codex" : ["我的工作账号", "创作账号", "备用账号"][index % 3],
+                name: accountCount == 0 ? "当前 Codex" : "合成账号 \(index + 1)",
+                remark: accountCount == 0 ? "当前 Codex" : "合成账号 \(index + 1) · 用于验证窄窗长备注省略时不溢出操作区",
                 codexHomePath: root.appendingPathComponent("profile-\(index)").path,
                 isSystemProfile: accountCount == 0, createdAt: now,
                 lastSnapshot: CodexAccountSnapshot(
@@ -60,12 +60,17 @@ enum WorkspacePreviewRenderer {
                 for count in [0, 1, 3] {
                     let name = count == 0 ? "single-system" : count == 1 ? "single-account" : "multi-account"
                     let store = fixtureStore(accountCount: count, root: root.appendingPathComponent("\(theme)-\(count)"))
-                    for width: CGFloat in [860, 1080] {
+                    for width: CGFloat in [820, 980, 1280] {
                         let size = CGSize(width: width, height: 760)
                         let view = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog)
                             .frame(width: size.width, height: size.height)
                             .environment(\.colorScheme, scheme)
                         try renderView(view, size: size, scheme: scheme, to: directory.appendingPathComponent("\(name)-\(theme)-\(Int(width)).png"))
+                    }
+                    if count == 3 {
+                        let view = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog)
+                        let capture = try WorkspaceScreenshotExporter.render(view.screenshotContent, width: 980, scheme: scheme)
+                        try capture.png.write(to: directory.appendingPathComponent("workspace-long-\(theme).png"), options: .atomic)
                     }
                     if count < 2 {
                         let updateStore = AppUpdateStore(settings: settings)
@@ -76,6 +81,27 @@ enum WorkspacePreviewRenderer {
                         try renderView(menu, size: CodexAccountMenuView.preferredSize, scheme: scheme, to: directory.appendingPathComponent("\(name)-menu-\(theme).png"))
                     }
                 }
+                let nineAccountStore = fixtureStore(
+                    accountCount: 9,
+                    root: root.appendingPathComponent("\(theme)-9")
+                )
+                let nineAccountView = CodexAccountManagerView(
+                    store: nineAccountStore,
+                    settings: settings,
+                    paletteCatalog: catalog
+                )
+                let nineAccountCapture = try WorkspaceScreenshotExporter.render(
+                    nineAccountView.screenshotContent,
+                    width: 980,
+                    scheme: scheme
+                )
+                try nineAccountCapture.png.write(
+                    to: directory.appendingPathComponent("workspace-nine-\(theme).png"),
+                    options: .atomic
+                )
+                let toolbar = TitlebarToolbarView(settings: settings, onOpenSettings: {}, onSaveScreenshot: {})
+                    .background(FixedVisualPalette.windowScrim(scheme))
+                try renderView(toolbar, size: CGSize(width: 320, height: 44), scheme: scheme, to: directory.appendingPathComponent("toolbar-\(theme).png"))
                 let editor = ExecutionPreferenceControl(
                     preference: .init(model: .astra, reasoningEffort: .max, serviceTier: .standard),
                     inlineEditor: true, onSave: { _, _ in }
