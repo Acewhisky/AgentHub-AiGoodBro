@@ -10,10 +10,14 @@ enum WorkspaceScreenshotExporter {
         case invalidSize, tooLarge, renderingFailed
 
         var errorDescription: String? {
+            message(.storedOrAutomatic())
+        }
+
+        func message(_ language: WidgetLanguage) -> String {
             switch self {
-            case .invalidSize: return "主界面尚未完成排版，请稍后再试。"
-            case .tooLarge: return "内容超出安全图片尺寸，请收起部分栏目后再试；未截断内容。"
-            case .renderingFailed: return "未能生成图片，请重试。"
+            case .invalidSize: return language.text("主界面尚未完成排版，请稍后再试。", "The workspace is still laying out. Please try again shortly.")
+            case .tooLarge: return language.text("内容超出安全图片尺寸，请收起部分栏目后再试；未截断内容。", "The image exceeds the safe size limit. Collapse a section and try again; no content was cropped.")
+            case .renderingFailed: return language.text("未能生成图片，请重试。", "Could not capture the workspace. Please try again.")
             }
         }
     }
@@ -91,16 +95,18 @@ enum WorkspaceScreenshotExporter {
         return Capture(png: png, plan: plan)
     }
 
-    static func save(_ capture: Capture, for window: NSWindow, completion: @escaping (Result<URL?, Error>) -> Void) {
+    static func save(_ capture: Capture, for window: NSWindow, language: WidgetLanguage = .storedOrAutomatic(), completion: @escaping (Result<URL?, Error>) -> Void) {
         let panel = NSSavePanel()
-        panel.title = "保存 Next 主界面长截图"
-        panel.message = "包含滚动区全部内容，保持当前展开状态；仅保存到本机，不会上传。"
+        panel.title = language.text("保存 Next 主界面长截图", "Save Next workspace screenshot")
+        panel.message = language.text(
+            "包含滚动区全部内容，保持当前展开状态；仅保存到本机，不会上传。", "Includes the full scrollable workspace with the current expanded sections. Saves locally; nothing is uploaded.")
+        panel.prompt = language.text("保存", "Save")
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "MMdd-HHmmss"
-        panel.nameFieldStringValue = "Next-长截图-\(formatter.string(from: Date())).png"
+        panel.nameFieldStringValue = language.text("Next-长截图-", "Next-workspace-") + "\(formatter.string(from: Date())).png"
         panel.beginSheetModal(for: window) { response in
             do {
                 completion(.success(try finishSave(capture, to: response == .OK ? panel.url : nil)))

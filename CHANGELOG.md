@@ -1,5 +1,20 @@
 # Changelog
 
+## 9.5.7 / 0907v3 - 2026-09-07
+
+- 相比 0907v2，补齐英文主界面、菜单、模型设置、按钮说明、主要操作反馈及飞书通知，日期与 Token 单位跟随界面语言。
+- Pro 等账号缺失官方 5 小时窗口时，大字改为“—”，保留小字解释，不把未知数据显示为无限。
+- 周额度归零时，卡片、顶部概览及菜单栏的 5 小时可用额度同步归零；只调整展示，不改写官方快照，周额度恢复后还原原始 5 小时值；正数低于 1% 时显示 `<1%`。
+- 统一 CLI 主入口与更多菜单的禁用条件；优先标记明确为“仅保存偏好”，保留原有参与调度同步与安全门禁。
+- 当前公开截图统一使用英文原生 2× 演示界面；26 组自测、69 项离线同步测试、格式、兼容性及内存门禁通过。仅推送源码，不安装、不切号、不部署 Hub 或发布安装包。
+
+### English
+
+- Completed English workspace, menu, model-setting, action-feedback and Feishu notification copy; dates and token units follow the interface language.
+- Replaced oversized missing-5h text with a neutral dash and a short explanation. Unknown quota is never advertised as unlimited.
+- Displayed zero 5h availability when Codex's weekly quota is exhausted, consistently across cards, the overview and menu bar, without rewriting official snapshots or affecting Claude.
+- Aligned CLI entry-point safety guards, clarified saved-only priority preferences and refreshed the public English native screenshots.
+
 ## 9.5.6 / 0907v2 - 2026-09-07
 
 - 相比 0907v1，主界面新增可记忆的「列表 / 卡片」选择，默认保留垂直列表；柔和渐变卡片以大字突出 5 小时额度，随窗口宽度排列多列，全部账号功能和顺序共用。

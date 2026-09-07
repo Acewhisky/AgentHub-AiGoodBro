@@ -4,12 +4,14 @@
 
 [![CI](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-![Version 0907v2](https://img.shields.io/badge/version-0907v2-6C4DFF)
+![Version 0907v3](https://img.shields.io/badge/version-0907v3-6C4DFF)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Next is a local-first macOS workspace for one or multiple Codex accounts, maintained under its own product identity, interface and release channel. Inspect official quota, opt into warm-up, choose GPT-6 Astra or another task model, and pass model, reasoning effort and Standard/Fast speed to an isolated CLI. Multiple accounts retain occupancy monitoring and isolated account homes.
 
-Current source version: `0907v2` · `9.5.6 (18)`. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+Current source version: `0907v3` · `9.5.7 (19)`. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+
+0907v3 versus 0907v2: completed English labels, action feedback, date/token formatting and notification copy. Missing 5-hour limits now use a dash with a short explanation; an exhausted weekly limit makes 5-hour availability zero in cards, the overview and menu bar without changing official data. CLI entry points share the same disabled states, and Priority explicitly says Saved only because Hub does not yet use that preference. Public screenshots now show the English native interface. This is a source-only update; see the [0907v3 notes](docs/release-notes-v9.5.7.md).
 
 0907v2 versus 0907v1: choose List or Cards in the main window. Vertical rows remain the default, the choice persists, and the new softly tinted grid shares every account action and the same order. In Edit mode, drag the three-line handle at the top right of an account to reorder it with a short transition. List rows keep stacked quota windows, top-aligned controls, lower-left reset warnings and an icon-only terminal button; statistics expand and full account details remain accessible. Dispatch and warm-up policies are unchanged. See the [0907v2 notes](docs/release-notes-v9.5.6.md).
 
@@ -21,9 +23,9 @@ Current source version: `0907v2` · `9.5.6 (18)`. This is not an official OpenAI
 
 0905v2 versus 0905v1: clicking the model name or reasoning effort opens its choices directly, removing the redundant submenu in account cards, the single-account workspace and menu bar. Persistence and CLI arguments are unchanged. See the [0905v2 notes](docs/release-notes-v9.5.2.md).
 
-![01 · Next single-account workspace, production SwiftUI at 2x](docs/images/0905v3/01-next-single-account-workspace-zh-dark@2x.png)
+![01 · Next English card workspace, production SwiftUI at 2x](docs/images/0907v3/01-workspace-cards-en-dark@2x.png)
 
-> The current 01–24 media set renders production 0905v3 SwiftUI at native 2×. Workspace images are 2160 × 1520 px and Settings are 760 × 1220 px. Accounts, quota and dates are synthetic; rendering does not connect to Hub or read real credentials or Keychain. Unconfirmed status accurately represents the disconnected fixture. See the [numbered high-resolution image index](docs/images/0905v3/README.md). Retained 0904v2 alert details are labelled separately.
+> The current 0907v3 set uses the English production SwiftUI interface at native 2×. Accounts, quota and dates are synthetic; the renderer does not connect to Hub or read real credentials or Keychain. Unverified status reflects the disconnected fixture. See the [English screenshot index](docs/images/0907v3/README.md); earlier assets remain in their original folders.
 
 ## What changed in 0905v1
 
@@ -60,7 +62,7 @@ Synthetic tests cover nine accounts at 820/980/1280 points in both appearances. 
 
 ## Using one account
 
-![03 · Next single-account menu bar](docs/images/0905v3/03-next-single-account-menu-zh-dark@2x.png)
+![03 · Next single-account menu bar](docs/images/0907v3/03-single-account-menu-en-dark@2x.png)
 
 - Monitor the existing Codex login without registering a second account or changing system identity.
 - Enable automatic warm-up for that one account to attempt starting the next quota window without sending a message manually each time. Five-hour and seven-day controls are independent; warm-up consumes allowance and requires the safeguards explained under [Smart warm-up](#smart-warm-up).
@@ -68,7 +70,7 @@ Synthetic tests cover nine accounts at 820/980/1280 points in both appearances. 
 - System and managed copies of the same identity count as one account. Statistics and advanced management remain accessible; redundant bulk controls are hidden.
 - CLI and warm-up still require the Hub mapping and fresh state described below. Without Hub, single-account monitoring remains read-only; unknown availability never becomes an artificial idle state.
 
-![02 · Next multi-account light workspace](docs/images/0905v3/02-next-multi-account-workspace-zh-light@2x.png)
+![02 · Next multi-account light workspace](docs/images/0907v3/04-workspace-list-en-light@2x.png)
 
 ## Five common account actions with different boundaries
 
@@ -84,7 +86,7 @@ Low-quota automation exposes no launch or switch action. It displays a candidate
 
 ## Per-account execution preference
 
-![04 · Next Astra, effort, Fast and Apply to All](docs/images/0905v3/04-next-model-preferences-zh-dark@2x.png)
+![04 · Next Astra, effort, Fast and Apply to All](docs/images/0907v3/05-model-settings-en-dark@2x.png)
 
 Each independent account stores one execution preference. A change immediately affects later CLI launches and their default subagents without editing the account's `config.toml`.
 
@@ -169,7 +171,7 @@ The old fixed `gpt-5.6-sol + high` configuration baseline has been removed so a 
 
 ## Smart warm-up
 
-![07 · Next independent five-hour and seven-day warm-up controls](docs/images/0905v3/07-next-settings-automation-zh-dark@2x.png)
+![07 · Next independent five-hour and seven-day warm-up controls](docs/images/0907v3/06-automation-en-dark@2x.png)
 
 The 5-hour and 7-day warm-up controls are independent, off by default, and opt-in.
 

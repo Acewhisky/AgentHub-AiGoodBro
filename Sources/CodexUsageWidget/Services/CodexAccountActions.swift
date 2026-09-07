@@ -32,12 +32,13 @@ private enum CodexLoginError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .browserUnavailable: return "无法打开官方登录网页"
-        case .cancelled: return "登录已取消，原账号未受影响"
-        case .credentialsUnavailable: return "官方登录已完成，但没有生成可保存的本机凭据"
-        case .identityMismatch: return "登录身份与这张账号卡不一致，未写入原账号"
+        case .browserUnavailable: return WidgetLanguage.storedOrAutomatic().text("无法打开官方登录网页", "Could not open the official sign-in page.")
+        case .cancelled: return WidgetLanguage.storedOrAutomatic().text("登录已取消，原账号未受影响", "Sign-in was canceled. The original account is unchanged.")
+        case .credentialsUnavailable: return WidgetLanguage.storedOrAutomatic().text("官方登录已完成，但没有生成可保存的本机凭据", "Sign-in completed, but no local credentials were available to save.")
+        case .identityMismatch:
+            return WidgetLanguage.storedOrAutomatic().text("登录身份与这张账号卡不一致，未写入原账号", "The signed-in identity does not match this account card. Nothing was overwritten.")
         case .message(let message): return message
-        case .timedOut: return "等待官方登录完成超时，原账号未受影响"
+        case .timedOut: return WidgetLanguage.storedOrAutomatic().text("等待官方登录完成超时，原账号未受影响", "Sign-in timed out. The original account is unchanged.")
         }
     }
 }
@@ -74,14 +75,14 @@ private enum CodexLoginProtocolParser {
                 return .none
             }
             guard params["success"] as? Bool == true else {
-                return .failed(nonEmpty(params["error"] as? String) ?? "官方登录未完成")
+                return .failed(nonEmpty(params["error"] as? String) ?? WidgetLanguage.storedOrAutomatic().text("官方登录未完成", "Sign-in did not complete."))
             }
             return .loginCompleted
         }
 
         guard let responseID = integerID(object["id"]) else { return .none }
         if let error = object["error"] as? [String: Any] {
-            return .failed(nonEmpty(error["message"] as? String) ?? "官方登录服务返回错误")
+            return .failed(nonEmpty(error["message"] as? String) ?? WidgetLanguage.storedOrAutomatic().text("官方登录服务返回错误", "The sign-in service returned an error."))
         }
         switch (state, responseID) {
         case (.initializing, 1):
@@ -91,14 +92,14 @@ private enum CodexLoginProtocolParser {
                 result["type"] as? String == "chatgpt",
                 let loginID = nonEmpty(result["loginId"] as? String),
                 let authURL = nonEmpty(result["authUrl"] as? String)
-            else { return .failed("官方登录服务返回了无法识别的响应") }
+            else { return .failed(WidgetLanguage.storedOrAutomatic().text("官方登录服务返回了无法识别的响应", "The sign-in service returned an unrecognized response.")) }
             return .loginStarted(loginID: loginID, authURL: authURL)
         case (.readingAccount, 3):
             guard let result = object["result"] as? [String: Any],
                 let account = result["account"] as? [String: Any],
                 account["type"] as? String == "chatgpt",
                 let email = nonEmpty(account["email"] as? String)
-            else { return .failed("登录完成，但无法确认账号身份") }
+            else { return .failed(WidgetLanguage.storedOrAutomatic().text("登录完成，但无法确认账号身份", "Sign-in completed, but the account identity could not be verified.")) }
             return .authenticated(email: email)
         default:
             return .none
@@ -160,7 +161,8 @@ enum ChromeProfileBrowser {
                 records(fileManager: fileManager, homeDirectory: homeDirectory)
                     .contains(where: { $0.binding.directoryName == binding.directoryName })
             else {
-                throw CodexLoginError.message("绑定的 Chrome 用户资料不可用，请重新选择后再登录")
+                throw CodexLoginError.message(
+                    WidgetLanguage.storedOrAutomatic().text("绑定的 Chrome 用户资料不可用，请重新选择后再登录", "The linked Chrome profile is unavailable. Select it again before signing in."))
             }
         }
         if let managedUserDataDirectory {
@@ -175,11 +177,12 @@ enum ChromeProfileBrowser {
                     ofItemAtPath: managedUserDataDirectory.path
                 )
             } catch {
-                throw CodexLoginError.message("无法准备账号专属 Chrome 会话")
+                throw CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("无法准备账号专属 Chrome 会话", "Could not prepare an isolated Chrome session for this account."))
             }
         }
         guard let executable = chromeExecutable(fileManager: fileManager) else {
-            throw CodexLoginError.message("未找到 Google Chrome，无法打开账号专属登录窗口")
+            throw CodexLoginError.message(
+                WidgetLanguage.storedOrAutomatic().text("未找到 Google Chrome，无法打开账号专属登录窗口", "Google Chrome was not found. The account's sign-in window could not be opened."))
         }
 
         let process = Process()
@@ -312,7 +315,7 @@ private final class CodexLoginSession {
         process.terminationHandler = { [weak self] _ in
             self?.queue.async {
                 guard let self, !self.isFinished else { return }
-                self.finish(.failure(CodexLoginError.message("官方登录服务已退出")))
+                self.finish(.failure(CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("官方登录服务已退出", "The sign-in service has exited."))))
             }
         }
         do {
@@ -334,7 +337,7 @@ private final class CodexLoginSession {
                         "capabilities": ["experimentalApi": false, "optOutNotificationMethods": []],
                     ],
                 ])
-            else { throw CodexLoginError.message("无法连接官方登录服务") }
+            else { throw CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("无法连接官方登录服务", "Could not connect to the sign-in service.")) }
         } catch {
             isFinished = true
             state = .finished
@@ -388,7 +391,7 @@ private final class CodexLoginSession {
             data.count <= maximumBytes,
             outputBuffer.count <= maximumBytes - data.count
         else {
-            finish(.failure(CodexLoginError.message("官方登录响应过大")))
+            finish(.failure(CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("官方登录响应过大", "The sign-in response exceeded the safety limit."))))
             return false
         }
         outputBuffer.append(data)
@@ -412,7 +415,7 @@ private final class CodexLoginSession {
             state = .starting
             guard writeJSON(["method": "initialized"]),
                 writeJSON(["id": 2, "method": "account/login/start", "params": ["type": "chatgpt"]])
-            else { return finish(.failure(CodexLoginError.message("无法启动官方登录"))) }
+            else { return finish(.failure(CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("无法启动官方登录", "Could not start sign-in.")))) }
         case .loginStarted(let loginID, let authURL):
             state = .waiting(loginID: loginID)
             guard let url = URL(string: authURL), url.scheme?.lowercased() == "https" else {
@@ -443,7 +446,10 @@ private final class CodexLoginSession {
         case .loginCompleted:
             state = .readingAccount
             guard writeJSON(["id": 3, "method": "account/read", "params": ["refreshToken": false]])
-            else { return finish(.failure(CodexLoginError.message("登录完成，但无法读取账号身份"))) }
+            else {
+                return finish(
+                    .failure(CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("登录完成，但无法读取账号身份", "Sign-in completed, but the account identity could not be read."))))
+            }
         case .authenticated(let email):
             state = .finished
             promoteCredentials(authenticatedEmail: email)
@@ -598,20 +604,20 @@ private enum CodexWarmUpFailure: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .credentialsUnavailable: return "账号凭据不可用，请重新登录该账号"
-        case .identityMismatch: return "账号凭据与账号卡不一致，已阻止暖号"
-        case .invalidRequest: return "无法生成安全的暖号请求"
-        case .redirected: return "官方暖号地址发生重定向，已停止发送凭据"
-        case .timedOut: return "官方暖号请求超时"
-        case .networkUnavailable: return "网络连接失败"
-        case .unauthorized: return "账号登录已失效，请重新登录"
-        case .forbidden: return "该账号无权执行暖号请求"
-        case .rateLimited: return "官方暂时限制了请求频率"
-        case .serviceUnavailable: return "官方暖号服务暂时不可用"
-        case .rejected(let status): return "官方拒绝了暖号请求（HTTP \(status)）"
-        case .streamFailed: return "官方暖号流返回失败"
-        case .incompleteStream: return "官方暖号流未返回完成标记"
-        case .oversizedStream: return "官方暖号流超过安全上限"
+        case .credentialsUnavailable: return WidgetLanguage.storedOrAutomatic().text("账号凭据不可用，请重新登录该账号", "Account credentials are unavailable. Sign in again.")
+        case .identityMismatch: return WidgetLanguage.storedOrAutomatic().text("账号凭据与账号卡不一致，已阻止暖号", "The credentials do not match this account card. Warm-up was blocked.")
+        case .invalidRequest: return WidgetLanguage.storedOrAutomatic().text("无法生成安全的暖号请求", "Could not create a safe warm-up request.")
+        case .redirected: return WidgetLanguage.storedOrAutomatic().text("官方暖号地址发生重定向，已停止发送凭据", "The warm-up endpoint redirected. Credentials were not forwarded.")
+        case .timedOut: return WidgetLanguage.storedOrAutomatic().text("官方暖号请求超时", "The warm-up request timed out.")
+        case .networkUnavailable: return WidgetLanguage.storedOrAutomatic().text("网络连接失败", "The network connection failed.")
+        case .unauthorized: return WidgetLanguage.storedOrAutomatic().text("账号登录已失效，请重新登录", "This sign-in has expired. Sign in again.")
+        case .forbidden: return WidgetLanguage.storedOrAutomatic().text("该账号无权执行暖号请求", "This account is not allowed to run a warm-up request.")
+        case .rateLimited: return WidgetLanguage.storedOrAutomatic().text("官方暂时限制了请求频率", "The service temporarily rate-limited requests.")
+        case .serviceUnavailable: return WidgetLanguage.storedOrAutomatic().text("官方暖号服务暂时不可用", "The warm-up service is temporarily unavailable.")
+        case .rejected(let status): return WidgetLanguage.storedOrAutomatic().text("官方拒绝了暖号请求（HTTP \(status)）", "The warm-up request was rejected (HTTP \(status)).")
+        case .streamFailed: return WidgetLanguage.storedOrAutomatic().text("官方暖号流返回失败", "The warm-up stream reported a failure.")
+        case .incompleteStream: return WidgetLanguage.storedOrAutomatic().text("官方暖号流未返回完成标记", "The warm-up stream ended without a completion marker.")
+        case .oversizedStream: return WidgetLanguage.storedOrAutomatic().text("官方暖号流超过安全上限", "The warm-up stream exceeded the safety limit.")
         }
     }
 
@@ -1024,8 +1030,10 @@ final class CodexAccountActions {
         profile: CodexProfile,
         completion: @escaping (Result<Void, Error>) -> Void
     ) throws {
-        guard !isLoginRunning else { throw CodexLoginError.message("已有账号正在登录") }
-        guard !isWarmUpRunning else { throw CodexLoginError.message("账号暖号正在执行；完成后再登录") }
+        guard !isLoginRunning else { throw CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("已有账号正在登录", "Another account is signing in.")) }
+        guard !isWarmUpRunning else {
+            throw CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("账号暖号正在执行；完成后再登录", "A warm-up is running. Wait for it to finish before signing in."))
+        }
         guard let executable = CodexExecutable.path() else {
             throw CocoaError(.fileNoSuchFile)
         }
@@ -1060,7 +1068,8 @@ final class CodexAccountActions {
             identity.email == Self.normalizedEmail(expectedEmail),
             identity.accountID == expectedAccountID
         else {
-            throw Self.switchError("当前 Codex 凭据身份与低额度触发账号不一致")
+            throw Self.switchError(
+                WidgetLanguage.storedOrAutomatic().text("当前 Codex 凭据身份与低额度触发账号不一致", "The current Codex identity does not match the account that triggered the low-quota event."))
         }
         return Self.authFingerprint(data)
     }
@@ -1084,7 +1093,7 @@ final class CodexAccountActions {
             let result: Error?
             do {
                 guard let journal = try Self.loadPendingSwitchJournal(fileManager: fileManager) else {
-                    throw Self.switchError("没有可提交的账号切换恢复记录")
+                    throw Self.switchError(WidgetLanguage.storedOrAutomatic().text("没有可提交的账号切换恢复记录", "No account-switch recovery record is available to commit."))
                 }
                 let authURL = fileManager.homeDirectoryForCurrentUser
                     .appendingPathComponent(".codex/auth.json")
@@ -1094,7 +1103,9 @@ final class CodexAccountActions {
                         journal: journal
                     ) == .rollbackOriginal
                 else {
-                    throw Self.switchError("提交前账号身份已变化；保留恢复记录且不覆盖")
+                    throw Self.switchError(
+                        WidgetLanguage.storedOrAutomatic().text(
+                            "提交前账号身份已变化；保留恢复记录且不覆盖", "The account identity changed before commit. The recovery record was retained and nothing was overwritten."))
                 }
                 try Self.clearPendingSwitchJournal(fileManager: fileManager)
                 result = nil
@@ -1145,7 +1156,8 @@ final class CodexAccountActions {
                             journal: journal
                         ) == .preserveExternal
                     else {
-                        throw Self.switchError("清理恢复记录前凭据再次变化；已保留恢复记录")
+                        throw Self.switchError(
+                            WidgetLanguage.storedOrAutomatic().text("清理恢复记录前凭据再次变化；已保留恢复记录", "Credentials changed before cleanup. The recovery record was retained."))
                     }
                     try Self.clearPendingSwitchJournal(fileManager: fileManager)
                     result = .success(.preservedExternalAuth)
@@ -1162,7 +1174,10 @@ final class CodexAccountActions {
                             journal: journal
                         ) == .originalAlreadyPresent
                     else {
-                        throw Self.switchError("补开原 Codex 期间凭据变化；已保留恢复记录且不覆盖")
+                        throw Self.switchError(
+                            WidgetLanguage.storedOrAutomatic().text(
+                                "补开原 Codex 期间凭据变化；已保留恢复记录且不覆盖",
+                                "Credentials changed while reopening the original Codex session. The recovery record was retained and nothing was overwritten."))
                     }
                     try Self.clearPendingSwitchJournal(fileManager: fileManager)
                     result = .success(.originalAuthAlreadyPresent(codexWasReopened: reopened))
@@ -1182,7 +1197,9 @@ final class CodexAccountActions {
                             journal: journal
                         ) == .rollbackOriginal
                     else {
-                        throw Self.switchError("恢复前凭据再次变化；已保留外部最新状态，不覆盖")
+                        throw Self.switchError(
+                            WidgetLanguage.storedOrAutomatic().text("恢复前凭据再次变化；已保留外部最新状态，不覆盖", "Credentials changed again before recovery. The newer external state was preserved.")
+                        )
                     }
                     try fileManager.createDirectory(
                         at: systemHome,
@@ -1191,7 +1208,7 @@ final class CodexAccountActions {
                     )
                     try Self.restoreAuth(journal.originalAuthState, at: systemAuthURL, fileManager: fileManager)
                     guard try Self.authState(at: systemAuthURL) == journal.originalAuthState else {
-                        throw Self.switchError("启动恢复写回原账号后校验失败")
+                        throw Self.switchError(WidgetLanguage.storedOrAutomatic().text("启动恢复写回原账号后校验失败", "Startup recovery could not verify the restored original account."))
                     }
                     let reopened = try Self.restoreOriginalCodexRuntimeIfNeeded(
                         originalAuth: journal.originalAuthState,
@@ -1206,7 +1223,10 @@ final class CodexAccountActions {
                             journal: journal
                         ) == .originalAlreadyPresent
                     else {
-                        throw Self.switchError("原 Codex 恢复期间凭据变化；已保留恢复记录且不覆盖")
+                        throw Self.switchError(
+                            WidgetLanguage.storedOrAutomatic().text(
+                                "原 Codex 恢复期间凭据变化；已保留恢复记录且不覆盖",
+                                "Credentials changed while restoring the original Codex session. The recovery record was retained and nothing was overwritten."))
                     }
                     try Self.clearPendingSwitchJournal(fileManager: fileManager)
                     result = .success(.restoredOriginalAuth(codexWasReopened: reopened))
@@ -1227,7 +1247,7 @@ final class CodexAccountActions {
         completion: @escaping (Error?) -> Void
     ) {
         guard !isWarmUpRunning else {
-            completion(Self.switchError("账号暖号仍在运行；完成后会再允许切换"))
+            completion(Self.switchError(WidgetLanguage.storedOrAutomatic().text("账号暖号仍在运行；完成后会再允许切换", "A warm-up is still running. Switching will be available when it finishes.")))
             return
         }
         guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") else {
@@ -1235,7 +1255,10 @@ final class CodexAccountActions {
             return
         }
         guard NSRunningApplication.runningApplications(withBundleIdentifier: "local.codex.account-manager").isEmpty else {
-            completion(Self.switchError("旧版账号管理器仍在运行；为避免两个管理器同时改写登录，请先退出旧版"))
+            completion(
+                Self.switchError(
+                    WidgetLanguage.storedOrAutomatic().text(
+                        "旧版账号管理器仍在运行；为避免两个管理器同时改写登录，请先退出旧版", "The legacy account manager is running. Quit it before switching to avoid competing credential writes.")))
             return
         }
 
@@ -1256,21 +1279,25 @@ final class CodexAccountActions {
         let targetIdentity: CodexCredentialIdentity?
         do {
             guard NSRunningApplication.runningApplications(withBundleIdentifier: "local.codex.account-manager").isEmpty else {
-                throw Self.switchError("旧版账号管理器在切换准备期间启动；已取消写入")
+                throw Self.switchError(
+                    WidgetLanguage.storedOrAutomatic().text("旧版账号管理器在切换准备期间启动；已取消写入", "The legacy account manager started during switch preparation. Writing was canceled."))
             }
             guard try Self.loadPendingSwitchJournal(fileManager: fileManager) == nil else {
-                throw Self.switchError("检测到未完成的账号切换；请先完成启动恢复")
+                throw Self.switchError(
+                    WidgetLanguage.storedOrAutomatic().text("检测到未完成的账号切换；请先完成启动恢复", "An unfinished account switch was detected. Complete startup recovery first."))
             }
             previousAuth = try Self.authState(at: systemAuthURL)
             if let expectedSourceAuthFingerprint {
                 guard case .data(let data) = previousAuth else {
-                    throw Self.switchError("低额度触发后当前 Codex 凭据已变化；已取消切换")
+                    throw Self.switchError(
+                        WidgetLanguage.storedOrAutomatic().text("低额度触发后当前 Codex 凭据已变化；已取消切换", "Codex credentials changed after the low-quota event. Switching was canceled."))
                 }
                 if Self.authFingerprint(data) != expectedSourceAuthFingerprint {
                     guard let expectedSourceIdentity,
                         CodexOfficialProfileReader.credentialIdentity(fromAuthData: data) == expectedSourceIdentity
                     else {
-                        throw Self.switchError("低额度触发后当前 Codex 账号已变化；已取消切换")
+                        throw Self.switchError(
+                            WidgetLanguage.storedOrAutomatic().text("低额度触发后当前 Codex 账号已变化；已取消切换", "The Codex account changed after the low-quota event. Switching was canceled."))
                     }
                 }
             }
@@ -1339,7 +1366,7 @@ final class CodexAccountActions {
         if requiresRestart, !runningApplications.allSatisfy({ $0.terminate() }) {
             try? Self.clearPendingSwitchJournal(fileManager: fileManager)
             Self.releaseSwitchLock(switchLock)
-            completion(Self.switchError("Codex 拒绝了安全退出；账号未切换"))
+            completion(Self.switchError(WidgetLanguage.storedOrAutomatic().text("Codex 拒绝了安全退出；账号未切换", "Codex did not accept a graceful exit. The account was not switched.")))
             return
         }
 
@@ -1382,7 +1409,8 @@ final class CodexAccountActions {
                     )
                     if let targetAuth, requiresRestart {
                         guard NSRunningApplication.runningApplications(withBundleIdentifier: "local.codex.account-manager").isEmpty else {
-                            throw Self.switchError("旧版账号管理器在写入前启动；已取消切换")
+                            throw Self.switchError(
+                                WidgetLanguage.storedOrAutomatic().text("旧版账号管理器在写入前启动；已取消切换", "The legacy account manager started before writing. Switching was canceled."))
                         }
                         let currentSourceAuth = try Self.authState(at: systemAuthURL)
                         if currentSourceAuth != previousAuth {
@@ -1390,7 +1418,9 @@ final class CodexAccountActions {
                                 let targetIdentity,
                                 let existingJournal = journal
                             else {
-                                throw Self.switchError("切换期间 Codex 登录账号已变化；已取消写入")
+                                throw Self.switchError(
+                                    WidgetLanguage.storedOrAutomatic().text(
+                                        "切换期间 Codex 登录账号已变化；已取消写入", "The signed-in Codex account changed during the switch. Writing was canceled."))
                             }
                             let updatedJournal = PendingSwitchJournal(
                                 originalAuth: currentSourceAuth,
@@ -1417,34 +1447,42 @@ final class CodexAccountActions {
                         }
                         if let expectedSourceAuthFingerprint {
                             guard case .data(let data) = previousAuth else {
-                                throw Self.switchError("低额度触发账号凭据已变化；已取消写入")
+                                throw Self.switchError(
+                                    WidgetLanguage.storedOrAutomatic().text("低额度触发账号凭据已变化；已取消写入", "The low-quota account's credentials changed. Writing was canceled."))
                             }
                             if Self.authFingerprint(data) != expectedSourceAuthFingerprint {
                                 guard let expectedSourceIdentity,
                                     CodexOfficialProfileReader.credentialIdentity(fromAuthData: data) == expectedSourceIdentity
                                 else {
-                                    throw Self.switchError("低额度触发账号身份已变化；已取消写入")
+                                    throw Self.switchError(
+                                        WidgetLanguage.storedOrAutomatic().text("低额度触发账号身份已变化；已取消写入", "The low-quota account's identity changed. Writing was canceled."))
                                 }
                             }
                         }
                         guard try Self.codexDaemonIsRunning() == false else {
-                            throw Self.switchError("Codex 共享运行时在写入前重新出现；账号未切换")
+                            throw Self.switchError(
+                                WidgetLanguage.storedOrAutomatic().text(
+                                    "Codex 共享运行时在写入前重新出现；账号未切换", "The shared Codex runtime restarted before writing. The account was not switched."))
                         }
                         try targetAuth.write(to: systemAuthURL, options: .atomic)
                         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: systemAuthURL.path)
                         guard try Data(contentsOf: systemAuthURL) == targetAuth else {
-                            throw Self.switchError("目标账号凭据写入后校验失败")
+                            throw Self.switchError(WidgetLanguage.storedOrAutomatic().text("目标账号凭据写入后校验失败", "Target account credentials could not be verified after writing."))
                         }
                     }
                 }
                 try Self.measureSwitchStage("凭据校验") {
                     if let targetIdentity, requiresRestart {
                         guard try Self.codexDaemonIsRunning() == false else {
-                            throw Self.switchError("Codex 共享运行时在验证前重新出现；已停止切换")
+                            throw Self.switchError(
+                                WidgetLanguage.storedOrAutomatic().text(
+                                    "Codex 共享运行时在验证前重新出现；已停止切换", "The shared Codex runtime restarted before verification. Switching was stopped."))
                         }
                         try Self.verifyAccountCredentials(at: systemHome, expectedIdentity: targetIdentity)
                         guard try Self.codexDaemonIsRunning() == false else {
-                            throw Self.switchError("目标验证期间出现第二个凭据写者；已停止切换")
+                            throw Self.switchError(
+                                WidgetLanguage.storedOrAutomatic().text(
+                                    "目标验证期间出现第二个凭据写者；已停止切换", "Another credential writer appeared during target verification. Switching was stopped."))
                         }
                     }
                 }
@@ -1473,7 +1511,7 @@ final class CodexAccountActions {
                 if requiresRestart,
                     !Self.hasNewCodexProcess(previousProcessIDs: previousProcessIDs)
                 {
-                    throw Self.switchError("目标账号确认后 Codex 进程已退出")
+                    throw Self.switchError(WidgetLanguage.storedOrAutomatic().text("目标账号确认后 Codex 进程已退出", "Codex exited after the target account was verified."))
                 }
                 if Self.shouldClearPendingSwitchJournal(
                     journalPersisted: journalPersisted,
@@ -1485,7 +1523,9 @@ final class CodexAccountActions {
                             journal: journal
                         ) == .rollbackOriginal
                     else {
-                        throw Self.switchError("完成切换前凭据再次变化；不会覆盖外部最新状态")
+                        throw Self.switchError(
+                            WidgetLanguage.storedOrAutomatic().text(
+                                "完成切换前凭据再次变化；不会覆盖外部最新状态", "Credentials changed before the switch completed. The newer external state will not be overwritten."))
                     }
                     try Self.clearPendingSwitchJournal(fileManager: fileManager)
                     journalPersisted = false
@@ -1502,7 +1542,9 @@ final class CodexAccountActions {
                         case .originalAlreadyPresent:
                             break
                         case .preserveExternal:
-                            throw Self.switchError("切换失败后凭据已被其他程序修改；已保留外部最新状态，不覆盖")
+                            throw Self.switchError(
+                                WidgetLanguage.storedOrAutomatic().text(
+                                    "切换失败后凭据已被其他程序修改；已保留外部最新状态，不覆盖", "Another program changed credentials after the switch failed. The newer external state was preserved."))
                         case .rollbackOriginal:
                             try Self.stopCodexGracefullyIfRunning(appURL: appURL)
                             daemonShouldRunAfterTransaction =
@@ -1514,16 +1556,19 @@ final class CodexAccountActions {
                                     journal: journal
                                 ) == .rollbackOriginal
                             else {
-                                throw Self.switchError("恢复前凭据再次变化；已保留外部最新状态，不覆盖")
+                                throw Self.switchError(
+                                    WidgetLanguage.storedOrAutomatic().text(
+                                        "恢复前凭据再次变化；已保留外部最新状态，不覆盖", "Credentials changed again before recovery. The newer external state was preserved."))
                             }
                             try Self.restoreAuth(originalAuthForRecovery, at: systemAuthURL, fileManager: fileManager)
                             guard try Self.authState(at: systemAuthURL) == originalAuthForRecovery else {
-                                throw Self.switchError("原账号凭据回滚后校验失败")
+                                throw Self.switchError(WidgetLanguage.storedOrAutomatic().text("原账号凭据回滚后校验失败", "The original credentials could not be verified after rollback."))
                             }
                         }
                     } catch {
                         reportedError = Self.switchError(
-                            "账号切换失败，且原凭据回滚未完成：\(error.localizedDescription)"
+                            WidgetLanguage.storedOrAutomatic().text(
+                                "账号切换失败，且原凭据回滚未完成：\(error.localizedDescription)", "Account switching failed and credential rollback is incomplete: \(error.localizedDescription)")
                         )
                     }
                 }
@@ -1540,7 +1585,9 @@ final class CodexAccountActions {
                         } ?? (current == originalAuthForRecovery)
                 } catch {
                     reportedError = Self.switchError(
-                        "\(reportedError.localizedDescription)；无法确认原凭据是否已恢复"
+                        WidgetLanguage.storedOrAutomatic().text(
+                            "\(reportedError.localizedDescription)；无法确认原凭据是否已恢复",
+                            "\(reportedError.localizedDescription); restoration of the original credentials could not be verified.")
                     )
                 }
                 var originalRuntimeRestored = !originalCodexWasRunning && !daemonShouldRunAfterTransaction
@@ -1557,7 +1604,9 @@ final class CodexAccountActions {
                         originalRuntimeRestored = true
                     } catch {
                         reportedError = Self.switchError(
-                            "\(reportedError.localizedDescription)；原 Codex 也未能重新打开并确认身份"
+                            WidgetLanguage.storedOrAutomatic().text(
+                                "\(reportedError.localizedDescription)；原 Codex 也未能重新打开并确认身份",
+                                "\(reportedError.localizedDescription); the original Codex session could not be reopened and its identity verified.")
                         )
                     }
                 }
@@ -1569,13 +1618,16 @@ final class CodexAccountActions {
                                 journal: journal
                             ) == .originalAlreadyPresent
                         else {
-                            throw Self.switchError("清理恢复记录前凭据再次变化；已保留恢复记录")
+                            throw Self.switchError(
+                                WidgetLanguage.storedOrAutomatic().text("清理恢复记录前凭据再次变化；已保留恢复记录", "Credentials changed before cleanup. The recovery record was retained."))
                         }
                         try Self.clearPendingSwitchJournal(fileManager: fileManager)
                         journalPersisted = false
                     } catch {
                         reportedError = Self.switchError(
-                            "\(reportedError.localizedDescription)；已恢复原账号，但未能清理恢复记录"
+                            WidgetLanguage.storedOrAutomatic().text(
+                                "\(reportedError.localizedDescription)；已恢复原账号，但未能清理恢复记录",
+                                "\(reportedError.localizedDescription); the original account was restored, but the recovery record could not be removed.")
                         )
                     }
                 }
@@ -1606,7 +1658,7 @@ final class CodexAccountActions {
 
         for application in runningApplications where !application.isTerminated {
             guard application.forceTerminate() else {
-                throw switchError("Codex 无法退出；账号未切换")
+                throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 无法退出；账号未切换", "Codex could not exit. The account was not switched."))
             }
         }
         let forcedDeadline = Date().addingTimeInterval(10)
@@ -1619,9 +1671,9 @@ final class CodexAccountActions {
             Thread.sleep(forTimeInterval: 0.2)
         }
         guard try codexProcessIDs(appURL: appURL).isEmpty else {
-            throw switchError("Codex 强制退出后仍有主进程残留；账号未切换")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 强制退出后仍有主进程残留；账号未切换", "A Codex main process remained after force quit. The account was not switched."))
         }
-        throw switchError("Codex 仍在运行；账号未切换")
+        throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 仍在运行；账号未切换", "Codex is still running. The account was not switched."))
     }
 
     private static func waitForNewCodexProcess(previousProcessIDs: Set<pid_t>) throws {
@@ -1630,7 +1682,7 @@ final class CodexAccountActions {
             if hasNewCodexProcess(previousProcessIDs: previousProcessIDs) { return }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        throw switchError("Codex 未在 30 秒内重新启动，原账号已恢复")
+        throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 未在 30 秒内重新启动，原账号已恢复", "Codex did not restart within 30 seconds. The original account was restored."))
     }
 
     private static func hasNewCodexProcess(previousProcessIDs: Set<pid_t>) -> Bool {
@@ -1643,7 +1695,9 @@ final class CodexAccountActions {
         let applications = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
         let processIDs = try codexProcessIDs(appURL: appURL)
         guard applications.allSatisfy({ $0.terminate() }) else {
-            throw switchError("新 Codex 未能安全退出；为避免运行中身份错配，未恢复原凭据")
+            throw switchError(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "新 Codex 未能安全退出；为避免运行中身份错配，未恢复原凭据", "The new Codex session could not exit safely. Original credentials were not restored to avoid a live identity mismatch."))
         }
         if !applications.isEmpty || !processIDs.isEmpty {
             try waitForCodexExit(appURL: appURL, runningApplications: applications)
@@ -1662,7 +1716,7 @@ final class CodexAccountActions {
             credentialIdentity == expectedIdentity,
             snapshot.quotaReadSucceeded
         else {
-            throw switchError("目标账号未通过官方身份与额度验收")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("目标账号未通过官方身份与额度验收", "The target account did not pass official identity and quota verification."))
         }
     }
 
@@ -1678,14 +1732,14 @@ final class CodexAccountActions {
             if identity == expectedIdentity, daemonReady { return }
             Thread.sleep(forTimeInterval: 0.2)
         }
-        throw switchError("Codex 冷启动后未确认目标账号与共享运行时")
+        throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 冷启动后未确认目标账号与共享运行时", "The target account and shared runtime could not be verified after a cold start."))
     }
 
     private static func codexDaemonIsRunning() throws -> Bool {
         do {
             let data = try runCodexDaemonCommand("version")
             guard let running = daemonRunningStatus(from: data)
-            else { throw switchError("无法读取 Codex 共享运行时状态") }
+            else { throw switchError(WidgetLanguage.storedOrAutomatic().text("无法读取 Codex 共享运行时状态", "Could not read the shared Codex runtime status.")) }
             return running
         } catch {
             guard try processIDsOwningSocket(at: sharedDaemonControlSocket.path).isEmpty else {
@@ -1722,7 +1776,7 @@ final class CodexAccountActions {
             let ownerProcessIDs = try daemonSocketOwnerProcessIDs()
             try runLaunchctl(
                 ["bootout", sharedDaemonLaunchAgentTarget],
-                failureMessage: "无法暂停 Mimi 的 Codex 共享运行时"
+                failureMessage: WidgetLanguage.storedOrAutomatic().text("无法暂停 Mimi 的 Codex 共享运行时", "Could not pause Mimi's shared Codex runtime.")
             )
             try terminateDaemonProcesses(ownerProcessIDs)
         } else {
@@ -1739,7 +1793,7 @@ final class CodexAccountActions {
             }
             Thread.sleep(forTimeInterval: 0.2)
         }
-        throw switchError("Codex 共享运行时未能保持停止；账号未切换")
+        throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 共享运行时未能保持停止；账号未切换", "The shared Codex runtime did not remain stopped. The account was not switched."))
     }
 
     private static func startCodexDaemonIfNeeded(_ shouldRun: Bool) throws {
@@ -1758,7 +1812,7 @@ final class CodexAccountActions {
             if try codexDaemonIsRunning() { return }
             Thread.sleep(forTimeInterval: 0.2)
         }
-        throw switchError("Codex 共享运行时未能重新启动")
+        throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 共享运行时未能重新启动", "The shared Codex runtime could not restart."))
     }
 
     private static let sharedDaemonLaunchAgentLabel = "com.gaixianggeng.mimi.codex-shared-daemon"
@@ -1804,7 +1858,7 @@ final class CodexAccountActions {
             do {
                 try runLaunchctl(
                     ["bootstrap", sharedDaemonLaunchAgentDomain, sharedDaemonLaunchAgentPlist.path],
-                    failureMessage: "无法恢复 Mimi 的 Codex 共享运行时"
+                    failureMessage: WidgetLanguage.storedOrAutomatic().text("无法恢复 Mimi 的 Codex 共享运行时", "Could not restore Mimi's shared Codex runtime.")
                 )
                 return
             } catch {
@@ -1812,13 +1866,13 @@ final class CodexAccountActions {
                 Thread.sleep(forTimeInterval: 0.2)
             }
         } while Date() < deadline
-        throw lastError ?? switchError("无法恢复 Mimi 的 Codex 共享运行时")
+        throw lastError ?? switchError(WidgetLanguage.storedOrAutomatic().text("无法恢复 Mimi 的 Codex 共享运行时", "Could not restore Mimi's shared Codex runtime."))
     }
 
     private static func daemonSocketOwnerProcessIDs() throws -> [pid_t] {
         let version = try runCodexDaemonCommand("version")
         guard let socketPath = daemonSocketPath(from: version) else {
-            throw switchError("无法定位 Mimi 的 Codex 共享运行时")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法定位 Mimi 的 Codex 共享运行时", "Could not locate Mimi's shared Codex runtime."))
         }
         return try processIDsOwningSocket(at: socketPath)
     }
@@ -1833,30 +1887,30 @@ final class CodexAccountActions {
         do {
             try process.run()
         } catch {
-            throw switchError("无法探测 Mimi 的 Codex 共享运行时进程")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法探测 Mimi 的 Codex 共享运行时进程", "Could not inspect Mimi's shared Codex runtime processes."))
         }
         let data = try readAllBytes(
             from: output.fileHandleForReading.fileDescriptor,
             maximumBytes: 8 * 1_024,
-            failureMessage: "无法读取 Mimi 的 Codex 共享运行时进程"
+            failureMessage: WidgetLanguage.storedOrAutomatic().text("无法读取 Mimi 的 Codex 共享运行时进程", "Could not read Mimi's shared Codex runtime processes.")
         )
         process.waitUntilExit()
         if process.terminationStatus == 1 { return [] }
         guard process.terminationStatus == 0,
             let text = String(data: data, encoding: .utf8)
         else {
-            throw switchError("无法探测 Mimi 的 Codex 共享运行时进程")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法探测 Mimi 的 Codex 共享运行时进程", "Could not inspect Mimi's shared Codex runtime processes."))
         }
         let processIDs = try text.split(whereSeparator: \.isNewline).map { value -> pid_t in
             guard value.allSatisfy({ $0.isNumber }),
                 let processID = pid_t(String(value)),
                 processID > 1,
                 processID != getpid()
-            else { throw switchError("Mimi 的 Codex 共享运行时返回了无效进程") }
+            else { throw switchError(WidgetLanguage.storedOrAutomatic().text("Mimi 的 Codex 共享运行时返回了无效进程", "Mimi's shared Codex runtime returned an invalid process.")) }
             return processID
         }
         guard processIDs.count <= 8 else {
-            throw switchError("Mimi 的 Codex 共享运行时进程数量异常")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("Mimi 的 Codex 共享运行时进程数量异常", "Mimi's shared Codex runtime returned an unexpected process count."))
         }
         return Array(Set(processIDs))
     }
@@ -1866,7 +1920,7 @@ final class CodexAccountActions {
         guard fileManager.fileExists(atPath: sharedDaemonControlSocket.path) else { return }
         let attributes = try fileManager.attributesOfItem(atPath: sharedDaemonControlSocket.path)
         guard attributes[.type] as? FileAttributeType == .typeSocket else {
-            throw switchError("Codex 共享运行时控制路径不是 socket；已停止切换")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 共享运行时控制路径不是 socket；已停止切换", "The shared runtime control path is not a socket. Switching was stopped."))
         }
         guard try processIDsOwningSocket(at: sharedDaemonControlSocket.path).isEmpty else { return }
         try fileManager.removeItem(at: sharedDaemonControlSocket)
@@ -1875,7 +1929,7 @@ final class CodexAccountActions {
     private static func terminateDaemonProcesses(_ processIDs: [pid_t]) throws {
         for processID in processIDs where processExists(processID) {
             guard Darwin.kill(processID, SIGTERM) == 0 || errno == ESRCH else {
-                throw switchError("无法停止 Mimi 的 Codex 共享运行时进程")
+                throw switchError(WidgetLanguage.storedOrAutomatic().text("无法停止 Mimi 的 Codex 共享运行时进程", "Could not stop Mimi's shared Codex runtime process."))
             }
         }
         let gracefulDeadline = Date().addingTimeInterval(3)
@@ -1885,7 +1939,7 @@ final class CodexAccountActions {
         }
         for processID in processIDs where processExists(processID) {
             guard Darwin.kill(processID, SIGKILL) == 0 || errno == ESRCH else {
-                throw switchError("无法强制停止 Mimi 的 Codex 共享运行时进程")
+                throw switchError(WidgetLanguage.storedOrAutomatic().text("无法强制停止 Mimi 的 Codex 共享运行时进程", "Could not force-stop Mimi's shared Codex runtime process."))
             }
         }
         let forcedDeadline = Date().addingTimeInterval(3)
@@ -1894,7 +1948,7 @@ final class CodexAccountActions {
             Thread.sleep(forTimeInterval: 0.1)
         }
         guard processIDs.allSatisfy({ !processExists($0) }) else {
-            throw switchError("Mimi 的 Codex 共享运行时进程仍未退出")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("Mimi 的 Codex 共享运行时进程仍未退出", "Mimi's shared Codex runtime process has not exited."))
         }
     }
 
@@ -1934,22 +1988,22 @@ final class CodexAccountActions {
         do {
             try process.run()
         } catch {
-            throw switchError("无法执行 Codex 共享运行时命令")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法执行 Codex 共享运行时命令", "Could not run the shared Codex runtime command."))
         }
         guard finished.wait(timeout: .now() + 12) == .success else {
             if process.isRunning { process.terminate() }
-            throw switchError("Codex 共享运行时命令超时")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 共享运行时命令超时", "The shared Codex runtime command timed out."))
         }
         guard process.terminationStatus == 0 else {
             throw switchError(
-                "Codex 共享运行时命令失败",
+                WidgetLanguage.storedOrAutomatic().text("Codex 共享运行时命令失败", "The shared Codex runtime command failed."),
                 code: Int(process.terminationStatus)
             )
         }
         return try readAllBytes(
             from: output.fileHandleForReading.fileDescriptor,
             maximumBytes: 64 * 1_024,
-            failureMessage: "无法读取 Codex 共享运行时命令结果"
+            failureMessage: WidgetLanguage.storedOrAutomatic().text("无法读取 Codex 共享运行时命令结果", "Could not read the shared Codex runtime command result.")
         )
     }
 
@@ -1964,14 +2018,14 @@ final class CodexAccountActions {
         do {
             try process.run()
         } catch {
-            throw switchError("无法启动 Codex 进程探测；已取消账号切换")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法启动 Codex 进程探测；已取消账号切换", "Could not start Codex process inspection. Switching was canceled."))
         }
         let data: Data
         do {
             data = try readAllBytes(
                 from: output.fileHandleForReading.fileDescriptor,
                 maximumBytes: 64 * 1_024,
-                failureMessage: "无法读取 Codex 进程探测结果；已取消账号切换"
+                failureMessage: WidgetLanguage.storedOrAutomatic().text("无法读取 Codex 进程探测结果；已取消账号切换", "Could not read Codex process inspection results. Switching was canceled.")
             )
         } catch {
             if process.isRunning { process.terminate() }
@@ -1986,17 +2040,17 @@ final class CodexAccountActions {
             break
         default:
             throw switchError(
-                "Codex 进程探测异常退出；已取消账号切换",
+                WidgetLanguage.storedOrAutomatic().text("Codex 进程探测异常退出；已取消账号切换", "Codex process inspection exited unexpectedly. Switching was canceled."),
                 code: Int(process.terminationStatus)
             )
         }
         guard let outputText = String(data: data, encoding: .utf8), !outputText.isEmpty else {
-            throw switchError("Codex 进程探测返回空结果；已取消账号切换")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 进程探测返回空结果；已取消账号切换", "Codex process inspection returned no result. Switching was canceled."))
         }
         var lines = outputText.components(separatedBy: "\n")
         if lines.last == "" { lines.removeLast() }
         guard !lines.isEmpty else {
-            throw switchError("Codex 进程探测返回空结果；已取消账号切换")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("Codex 进程探测返回空结果；已取消账号切换", "Codex process inspection returned no result. Switching was canceled."))
         }
         return try lines.map { line in
             guard !line.isEmpty,
@@ -2004,7 +2058,8 @@ final class CodexAccountActions {
                 let processID = pid_t(line),
                 processID > 0
             else {
-                throw switchError("Codex 进程探测返回非数字 PID；已取消账号切换")
+                throw switchError(
+                    WidgetLanguage.storedOrAutomatic().text("Codex 进程探测返回非数字 PID；已取消账号切换", "Codex process inspection returned an invalid PID. Switching was canceled."))
             }
             return processID
         }
@@ -2019,7 +2074,8 @@ final class CodexAccountActions {
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw switchError("无法重新打开 Codex，原账号已恢复", code: Int(process.terminationStatus))
+            throw switchError(
+                WidgetLanguage.storedOrAutomatic().text("无法重新打开 Codex，原账号已恢复", "Could not reopen Codex. The original account was restored."), code: Int(process.terminationStatus))
         }
     }
 
@@ -2028,7 +2084,7 @@ final class CodexAccountActions {
         do {
             data = try Data(contentsOf: url)
         } catch {
-            throw switchError("无法读取目标账号凭据")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法读取目标账号凭据", "Could not read the target account's credentials."))
         }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let tokens = object["tokens"] as? [String: Any],
@@ -2039,7 +2095,7 @@ final class CodexAccountActions {
             let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: data),
             identity.accountID == expectedAccountID,
             profile.matchesRecordedCredential(identity)
-        else { throw switchError("目标账号凭据无效或身份与账号卡不一致") }
+        else { throw switchError(WidgetLanguage.storedOrAutomatic().text("目标账号凭据无效或身份与账号卡不一致", "Target credentials are invalid or do not match the account card.")) }
         return data
     }
 
@@ -2053,7 +2109,10 @@ final class CodexAccountActions {
             profile.matchesRecordedCredential(
                 CodexOfficialProfileReader.credentialIdentity(fromAuthData: data)
             )
-        else { throw switchError("原账号最新凭据无法安全绑定到账号卡") }
+        else {
+            throw switchError(
+                WidgetLanguage.storedOrAutomatic().text("原账号最新凭据无法安全绑定到账号卡", "The original account's latest credentials could not be safely matched to its account card."))
+        }
         try fileManager.createDirectory(
             at: profile.codexHomeURL,
             withIntermediateDirectories: true,
@@ -2063,7 +2122,7 @@ final class CodexAccountActions {
         try data.write(to: authURL, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path)
         guard try Data(contentsOf: authURL) == data else {
-            throw switchError("原账号最新凭据备份后校验失败")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("原账号最新凭据备份后校验失败", "The original account's latest credentials could not be verified after backup."))
         }
     }
 
@@ -2075,7 +2134,7 @@ final class CodexAccountActions {
         {
             return .missing
         } catch {
-            throw switchError("无法安全读取当前 Codex 凭据；已取消切换")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法安全读取当前 Codex 凭据；已取消切换", "Current Codex credentials could not be read safely. Switching was canceled."))
         }
     }
 
@@ -2159,7 +2218,9 @@ final class CodexAccountActions {
         let applications = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
         let processIDs = try codexProcessIDs(appURL: appURL)
         if applications.isEmpty, !processIDs.isEmpty {
-            throw switchError("仅检测到未受控的 Codex 辅助进程；未自动补开原 Codex")
+            throw switchError(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "仅检测到未受控的 Codex 辅助进程；未自动补开原 Codex", "Only unmanaged Codex helper processes were found. The original Codex session was not reopened automatically."))
         }
 
         var previousProcessIDs = suppliedProcessIDs ?? []
@@ -2168,7 +2229,10 @@ final class CodexAccountActions {
         if !applications.isEmpty, originalIdentity == nil {
             try stopCodexGracefullyIfRunning(appURL: appURL)
             guard try authState(at: systemHome.appendingPathComponent("auth.json")) == originalAuth else {
-                throw switchError("重启原 Codex 前凭据变化；已保留恢复记录且不覆盖")
+                throw switchError(
+                    WidgetLanguage.storedOrAutomatic().text(
+                        "重启原 Codex 前凭据变化；已保留恢复记录且不覆盖",
+                        "Credentials changed before restarting the original Codex session. The recovery record was retained and nothing was overwritten."))
             }
         }
 
@@ -2226,7 +2290,7 @@ final class CodexAccountActions {
                 applicationSupportDirectory: applicationSupportDirectory
             ) == nil
         else {
-            throw switchError("已有未完成的账号切换恢复记录")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("已有未完成的账号切换恢复记录", "An unfinished account-switch recovery record already exists."))
         }
         let directory = try accountManagerSupportDirectory(
             fileManager: fileManager,
@@ -2249,7 +2313,7 @@ final class CodexAccountActions {
             loaded.targetIdentityDigest == journal.targetIdentityDigest,
             loaded.originalCodexWasRunning == journal.originalCodexWasRunning,
             loaded.originalDaemonWasRunning == journal.originalDaemonWasRunning
-        else { throw switchError("账号切换恢复记录写入后校验失败") }
+        else { throw switchError(WidgetLanguage.storedOrAutomatic().text("账号切换恢复记录写入后校验失败", "The account-switch recovery record could not be verified after writing.")) }
     }
 
     fileprivate static func replacePendingSwitchJournal(
@@ -2265,7 +2329,7 @@ final class CodexAccountActions {
                 applicationSupportDirectory: applicationSupportDirectory
             ) == expected
         else {
-            throw switchError("账号切换恢复记录已变化；未覆盖最新状态")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("账号切换恢复记录已变化；未覆盖最新状态", "The recovery record changed. Its newer state was not overwritten."))
         }
         let directory = try accountManagerSupportDirectory(
             fileManager: fileManager,
@@ -2286,7 +2350,7 @@ final class CodexAccountActions {
                 applicationSupportDirectory: applicationSupportDirectory
             ) == replacement
         else {
-            throw switchError("账号切换恢复记录更新后校验失败")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("账号切换恢复记录更新后校验失败", "The recovery record could not be verified after updating."))
         }
     }
 
@@ -2305,30 +2369,30 @@ final class CodexAccountActions {
         }
         guard descriptor >= 0 else {
             if errno == ENOENT { return nil }
-            throw switchError("无法安全打开账号切换恢复记录", code: Int(errno))
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法安全打开账号切换恢复记录", "Could not safely open the account-switch recovery record."), code: Int(errno))
         }
         defer { Darwin.close(descriptor) }
 
         var metadata = stat()
         guard Darwin.fstat(descriptor, &metadata) == 0 else {
-            throw switchError("无法读取账号切换恢复记录属性", code: Int(errno))
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法读取账号切换恢复记录属性", "Could not read the recovery record's file attributes."), code: Int(errno))
         }
         guard (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
             (metadata.st_mode & mode_t(0o777)) == mode_t(0o600),
             metadata.st_size >= 0,
             metadata.st_size <= 1_048_576
-        else { throw switchError("账号切换恢复记录类型、权限或大小不安全") }
+        else { throw switchError(WidgetLanguage.storedOrAutomatic().text("账号切换恢复记录类型、权限或大小不安全", "The recovery record has an unsafe file type, permissions, or size.")) }
 
         let data = try readAllBytes(
             from: descriptor,
             maximumBytes: 1_048_576,
-            failureMessage: "无法读取账号切换恢复记录"
+            failureMessage: WidgetLanguage.storedOrAutomatic().text("无法读取账号切换恢复记录", "Could not read the account-switch recovery record.")
         )
         let journal: PendingSwitchJournal
         do {
             journal = try JSONDecoder().decode(PendingSwitchJournal.self, from: data)
         } catch {
-            throw switchError("账号切换恢复记录损坏；已停止自动切换")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("账号切换恢复记录损坏；已停止自动切换", "The recovery record is corrupt. Automatic switching was stopped."))
         }
         try validatePendingSwitchJournal(journal)
         return journal
@@ -2347,7 +2411,7 @@ final class CodexAccountActions {
         let result = url.path.withCString { Darwin.unlink($0) }
         guard result == 0 else {
             if errno == ENOENT { return }
-            throw switchError("无法清理账号切换恢复记录", code: Int(errno))
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法清理账号切换恢复记录", "Could not remove the account-switch recovery record."), code: Int(errno))
         }
         try syncDirectory(directory)
     }
@@ -2362,7 +2426,7 @@ final class CodexAccountActions {
         guard validVersion,
             validIdentityDigests,
             journal.targetAuthFingerprint.count == SHA256.Digest.byteCount
-        else { throw switchError("账号切换恢复记录版本或指纹无效") }
+        else { throw switchError(WidgetLanguage.storedOrAutomatic().text("账号切换恢复记录版本或指纹无效", "The recovery record's version or fingerprint is invalid.")) }
     }
 
     private static func writeMode600AtomicallyWithoutReplacement(_ data: Data, to url: URL) throws {
@@ -2381,7 +2445,7 @@ final class CodexAccountActions {
             Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR)
         }
         guard descriptor >= 0 else {
-            throw switchError("无法创建账号切换恢复记录临时文件", code: Int(errno))
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法创建账号切换恢复记录临时文件", "Could not create a temporary recovery-record file."), code: Int(errno))
         }
         var installed = false
         defer {
@@ -2390,16 +2454,16 @@ final class CodexAccountActions {
         }
 
         guard Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR) == 0 else {
-            throw switchError("无法设置账号切换恢复记录权限", code: Int(errno))
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法设置账号切换恢复记录权限", "Could not set the recovery record's permissions."), code: Int(errno))
         }
         try writeAllBytes(data, to: descriptor)
         guard Darwin.fsync(descriptor) == 0 else {
-            throw switchError("无法持久化账号切换恢复记录", code: Int(errno))
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法持久化账号切换恢复记录", "Could not persist the account-switch recovery record."), code: Int(errno))
         }
         let closeResult = Darwin.close(descriptor)
         descriptor = -1
         guard closeResult == 0 else {
-            throw switchError("无法关闭账号切换恢复记录", code: Int(errno))
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法关闭账号切换恢复记录", "Could not close the account-switch recovery record."), code: Int(errno))
         }
         let renameResult = temporaryURL.path.withCString { sourcePath in
             url.path.withCString { destinationPath in
@@ -2411,8 +2475,8 @@ final class CodexAccountActions {
         guard renameResult == 0 else {
             throw switchError(
                 !replacingExisting && errno == EEXIST
-                    ? "已有未完成的账号切换恢复记录"
-                    : "无法原子安装账号切换恢复记录",
+                    ? WidgetLanguage.storedOrAutomatic().text("已有未完成的账号切换恢复记录", "An unfinished account-switch recovery record already exists.")
+                    : WidgetLanguage.storedOrAutomatic().text("无法原子安装账号切换恢复记录", "Could not atomically install the account-switch recovery record."),
                 code: Int(errno)
             )
         }
@@ -2431,7 +2495,7 @@ final class CodexAccountActions {
                 )
                 if written < 0, errno == EINTR { continue }
                 guard written > 0 else {
-                    throw switchError("无法完整写入账号切换恢复记录", code: Int(errno))
+                    throw switchError(WidgetLanguage.storedOrAutomatic().text("无法完整写入账号切换恢复记录", "Could not write the complete account-switch recovery record."), code: Int(errno))
                 }
                 offset += written
             }
@@ -2453,7 +2517,7 @@ final class CodexAccountActions {
             guard count >= 0 else { throw switchError(failureMessage, code: Int(errno)) }
             if count == 0 { return result }
             guard result.count <= maximumBytes - count else {
-                throw switchError("\(failureMessage)；数据超过安全上限")
+                throw switchError(WidgetLanguage.storedOrAutomatic().text("\(failureMessage)；数据超过安全上限", "\(failureMessage); data exceeded the safety limit."))
             }
             result.append(contentsOf: buffer[0..<count])
         }
@@ -2462,11 +2526,11 @@ final class CodexAccountActions {
     private static func syncDirectory(_ directory: URL) throws {
         let descriptor = directory.path.withCString { Darwin.open($0, O_RDONLY | O_NOFOLLOW) }
         guard descriptor >= 0 else {
-            throw switchError("无法打开恢复记录目录进行持久化", code: Int(errno))
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法打开恢复记录目录进行持久化", "Could not open the recovery-record folder for persistence."), code: Int(errno))
         }
         defer { Darwin.close(descriptor) }
         guard Darwin.fsync(descriptor) == 0 else {
-            throw switchError("无法持久化恢复记录目录", code: Int(errno))
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("无法持久化恢复记录目录", "Could not persist the recovery-record folder."), code: Int(errno))
         }
     }
 
@@ -2508,14 +2572,14 @@ final class CodexAccountActions {
             O_CREAT | O_RDWR,
             S_IRUSR | S_IWUSR
         )
-        guard descriptor >= 0 else { throw switchError("无法建立账号切换锁") }
+        guard descriptor >= 0 else { throw switchError(WidgetLanguage.storedOrAutomatic().text("无法建立账号切换锁", "Could not create the account-switch lock.")) }
         _ = Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR)
         var lock = flock()
         lock.l_type = Int16(F_WRLCK)
         lock.l_whence = Int16(SEEK_SET)
         guard Darwin.fcntl(descriptor, F_SETLK, &lock) != -1 else {
             Darwin.close(descriptor)
-            throw switchError("另一个账号切换正在进行")
+            throw switchError(WidgetLanguage.storedOrAutomatic().text("另一个账号切换正在进行", "Another account switch is in progress."))
         }
         return descriptor
     }
@@ -2562,14 +2626,14 @@ final class CodexAccountActions {
             throw NSError(
                 domain: "CodexAccountActions",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "账号登录正在执行；完成后再暖号"]
+                userInfo: [NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text("账号登录正在执行；完成后再暖号", "Sign-in is running. Wait for it to finish before warming up.")]
             )
         }
         guard !isWarmUpRunning else {
             throw NSError(
                 domain: "CodexAccountActions",
                 code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "已有暖号请求在执行，请稍候"]
+                userInfo: [NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text("已有暖号请求在执行，请稍候", "A warm-up request is already running. Please wait.")]
             )
         }
         let request = try CodexWarmUpProtocol.request(for: profile)

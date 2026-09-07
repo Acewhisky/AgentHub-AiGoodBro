@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Shared by the workspace, account rows and menu bar. Preferences are persisted by the caller.
 struct ExecutionPreferenceControl: View {
+    @Environment(\.widgetLanguage) private var language
     let preference: CodexExecutionPreference
     var allowsApplyToAll = true
     var expanded = false
@@ -84,8 +85,8 @@ struct ExecutionPreferenceControl: View {
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(ExecutionPreferenceButtonStyle())
-        .help("设置后续 CLI 与任务派单的模型、思考强度和速度")
-        .accessibilityLabel("任务模型")
+        .help(language.text("设置后续 CLI 与任务派单的模型、思考强度和速度", "Set the model, reasoning effort and speed for new CLI sessions and dispatched tasks."))
+        .accessibilityLabel(language.text("任务模型", "Task model"))
         .accessibilityValue("\(preference.model.displayName)，\(preference.reasoningEffort.displayName)，\(speedTitle)")
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
             editor
@@ -108,32 +109,32 @@ struct ExecutionPreferenceControl: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!draft.model.supportsFast)
-                    .help("切换标准 / Fast 速度")
-                    .accessibilityLabel("Fast 速度")
-                    .accessibilityValue(draft.serviceTier == .fast ? "开启" : "关闭")
+                    .help(language.text("切换标准 / Fast 速度", "Toggle Standard / Fast"))
+                    .accessibilityLabel(language.text("Fast 速度", "Fast mode"))
+                    .accessibilityValue(draft.serviceTier == .fast ? language.text("开启", "On") : language.text("关闭", "Off"))
 
                     VStack(spacing: 5) {
                         Menu {
-                            Picker("思考强度", selection: effortBinding) {
+                            Picker(language.text("思考强度", "Reasoning effort"), selection: effortBinding) {
                                 ForEach(draft.model.supportedReasoningEfforts, id: \.rawValue) { effort in
-                                    Text("\(effort.localizedTitle) · \(effort.displayName)").tag(effort)
+                                    Text(language.isChinese ? "\(effort.localizedTitle) · \(effort.displayName)" : effort.displayName).tag(effort)
                                 }
                             }
                             .pickerStyle(.inline)
                             .labelsHidden()
                         } label: {
-                            Text(draft.reasoningEffort.localizedTitle)
+                            Text(language.isChinese ? draft.reasoningEffort.localizedTitle : draft.reasoningEffort.displayName)
                                 .font(.system(size: 22, weight: .semibold))
                                 .foregroundStyle(.tint)
                         }
                         .menuStyle(.borderlessButton)
                         .tint(.accentColor)
                         .fixedSize()
-                        .accessibilityLabel("思考强度")
+                        .accessibilityLabel(language.text("思考强度", "Reasoning effort"))
                         .accessibilityValue(draft.reasoningEffort.displayName)
 
                         Menu {
-                            Picker("模型", selection: modelBinding) {
+                            Picker(language.text("模型", "Model"), selection: modelBinding) {
                                 ForEach(CodexExecutionPreference.Model.allCases, id: \.rawValue) { model in
                                     Text(model.displayName).tag(model)
                                 }
@@ -147,7 +148,7 @@ struct ExecutionPreferenceControl: View {
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
-                        .accessibilityLabel("模型")
+                        .accessibilityLabel(language.text("模型", "Model"))
                     }
                     .frame(maxWidth: .infinity)
 
@@ -161,20 +162,20 @@ struct ExecutionPreferenceControl: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .help("恢复默认：5.6 Sol · High · 标准")
-                    .accessibilityLabel("恢复默认任务模型")
+                    .help(defaultSettingsHelp)
+                    .accessibilityLabel(language.text("恢复默认任务模型", "Restore default model settings"))
                 }
 
                 VStack(spacing: 4) {
                     Slider(value: effortIndexBinding, in: 0...Double(draft.model.supportedReasoningEfforts.count - 1), step: 1)
                         .controlSize(.large)
                         .tint(.accentColor)
-                        .accessibilityLabel("思考强度")
+                        .accessibilityLabel(language.text("思考强度", "Reasoning effort"))
                         .accessibilityValue(draft.reasoningEffort.displayName)
                     HStack {
-                        Text("更轻量")
+                        Text(language.text("更轻量", "Lighter"))
                         Spacer()
-                        Text("更深入")
+                        Text(language.text("更深入", "Deeper"))
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -190,13 +191,16 @@ struct ExecutionPreferenceControl: View {
 
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Fast 速度").font(.subheadline.weight(.medium))
-                    Text(draft.model.supportsFast ? "更快响应，会消耗更多额度" : "此模型仅支持标准速度")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text(language.text("Fast 速度", "Fast mode")).font(.subheadline.weight(.medium))
+                    Text(
+                        draft.model.supportsFast
+                            ? language.text("更快响应，会消耗更多额度", "Faster responses; higher usage") : language.text("此模型仅支持标准速度", "This model supports Standard speed only.")
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Toggle("Fast 速度", isOn: fastBinding)
+                Toggle(language.text("Fast 速度", "Fast mode"), isOn: fastBinding)
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .disabled(!draft.model.supportsFast)
@@ -209,18 +213,22 @@ struct ExecutionPreferenceControl: View {
                     onSave(draft, true)
                     isPresented = false
                 } label: {
-                    Label("应用到所有账号", systemImage: "person.2")
+                    Label(language.text("应用到所有账号", "Apply to all profiles"), systemImage: "person.2")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .help("覆盖所有独立账号的偏好，之后仍可分别调整")
+                .help(language.text("覆盖所有独立账号的偏好，之后仍可分别调整", "Replace saved settings for all isolated profiles. You can still adjust each one."))
             }
 
-            Text("选择即保存。后续 CLI 和派单使用相同的模型、强度与速度；正在运行的任务不变。不会修改系统 Codex 配置。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "选择即保存。后续 CLI 和派单使用相同的模型、强度与速度；正在运行的任务不变。不会修改系统 Codex 配置。",
+                    "Changes save immediately for new CLI sessions and dispatched tasks. Running tasks and your system Codex configuration stay unchanged.")
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
         .frame(width: 340)
@@ -273,7 +281,13 @@ struct ExecutionPreferenceControl: View {
         onSave(updated, false)
     }
 
-    private var speedTitle: String { preference.serviceTier == .fast ? "Fast" : "标准速度" }
+    private var speedTitle: String { preference.serviceTier == .fast ? "Fast" : language.text("标准速度", "Standard") }
+
+    private var defaultSettingsHelp: String {
+        let value = CodexExecutionPreference.defaultValue
+        return language.text("恢复默认：", "Restore defaults: ")
+            + "\(value.model.displayName) · \(value.reasoningEffort.displayName) · \(value.serviceTier.displayName)"
+    }
 
     private var executionGradient: LinearGradient {
         LinearGradient(

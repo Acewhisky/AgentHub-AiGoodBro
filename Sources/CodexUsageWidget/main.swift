@@ -53,7 +53,8 @@ struct CodexAccountManagerNextMain {
         {
             _ = NSApplication.shared
             let outputURL = URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)
-            exit(WorkspacePreviewRenderer.render(to: outputURL) ? 0 : 1)
+            let language: WidgetLanguage = CommandLine.arguments.contains("--preview-english") ? .en : .zh
+            exit(WorkspacePreviewRenderer.render(to: outputURL, language: language) ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-particle-animation") {

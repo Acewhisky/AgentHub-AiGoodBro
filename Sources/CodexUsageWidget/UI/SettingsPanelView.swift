@@ -96,7 +96,7 @@ struct TitlebarToolbarView: View {
             Spacer(minLength: 0)
             ZYZHMark(size: 27)
                 .frame(width: 34, height: titlebarControlHeight)
-                .help("帧影帧画")
+                .help(language.text("帧影帧画", "Frame by Frame"))
 
             HStack(spacing: 2) {
                 HeaderActionButton(
@@ -150,7 +150,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
     func title(_ language: WidgetLanguage) -> String {
         switch self {
-        case .appearance: return language.text("外观", "Look")
+        case .appearance: return language.text("外观", "Appearance")
         case .menuBar: return language.text("菜单栏", "Menu Bar")
         case .automation: return language.text("自动化", "Automation")
         case .workspace: return language.text("工作区", "Workspace")
@@ -356,7 +356,7 @@ struct SettingsPanelView: View {
             }
             SettingsPickerRow(
                 title: language.text("面板透明度", "Panel opacity"),
-                detail: language.text("调整菜单栏面板的背景浓度", "Background density of the menu popover")
+                detail: language.text("调整菜单栏面板的背景浓度", "Adjust the menu bar panel's background opacity")
             ) {
                 SettingsSegmentedControl(
                     selection: $settings.accountMenuTransparency,
@@ -370,7 +370,7 @@ struct SettingsPanelView: View {
             }
             SettingsPickerRow(
                 title: language.text("额度环动效", "Ring motion"),
-                detail: language.text("默认仅前台聚焦时播放；省电仅悬停时播放", "Default: frontmost and focused. Power Saving: ring hover only.")
+                detail: language.text("默认仅前台聚焦时播放；省电仅悬停时播放", "Default: active window only. Power Saving: pointer hover only.")
             ) {
                 SettingsSegmentedControl(
                     selection: $settings.particleAnimationMode,
@@ -401,7 +401,7 @@ struct SettingsPanelView: View {
                 detail: language.text("分别跟随各账号自己的 7 天窗口。", "Follow each account's own 7-day window."),
                 isOn: Binding(get: { store.warmUpSelection.sevenDay }, set: { store.setWarmUpSevenDayEnabled($0) })
             )
-            Label(language.text("先确认空闲，再自动运行", "Idle first. Then automate."), systemImage: "lock.shield")
+            Label(language.text("先确认空闲，再自动运行", "Runs only after idle-state checks"), systemImage: "lock.shield")
                 .font(.system(size: 12, weight: .semibold))
             Text(
                 language.text(
@@ -419,7 +419,7 @@ struct SettingsPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             SettingsPickerRow(
                 title: language.text("数据来源", "Data sources"),
-                detail: language.text("至少保留一个 Runtime；不重复导入历史记录", "Keep at least one runtime. History is not re-imported.")
+                detail: language.text("至少保留一个 Runtime；不重复导入历史记录", "Keep at least one source. Existing history is not counted twice.")
             ) {
                 SettingsRuntimeMultiSelectControl(
                     selectedScopes: settings.visibleRuntimeScopes, language: language
@@ -427,7 +427,7 @@ struct SettingsPanelView: View {
                     settings.setRuntime(scope, visible: !settings.isRuntimeVisible(scope))
                 }
             }
-            SettingsPickerRow(title: language.text("统计时区", "Statistics zone"), detail: statisticsTimeZoneDetail) {
+            SettingsPickerRow(title: language.text("统计时区", "Usage time zone"), detail: statisticsTimeZoneDetail) {
                 SettingsSegmentedControl(
                     selection: statisticsTimeZoneSelectionBinding,
                     options: [
@@ -440,10 +440,10 @@ struct SettingsPanelView: View {
             }
             if store.statisticsPreference.selection == .fixed {
                 SettingsPickerRow(
-                    title: language.text("固定时区", "Fixed zone"),
+                    title: language.text("固定时区", "Fixed time zone"),
                     detail: language.text("IANA 时区，自动处理夏令时", "IANA time zone with daylight-saving support")
                 ) {
-                    Picker(language.text("固定时区", "Fixed zone"), selection: statisticsFixedIdentifierBinding) {
+                    Picker(language.text("固定时区", "Fixed time zone"), selection: statisticsFixedIdentifierBinding) {
                         ForEach(TimeZone.knownTimeZoneIdentifiers, id: \.self) { identifier in
                             Text(identifier).tag(identifier)
                         }
@@ -521,7 +521,7 @@ struct SettingsPanelView: View {
             )
             SettingsValueRow(
                 title: language.text("订阅计划", "Plan"),
-                detail: language.text("来自本机账号读取结果", "Read from the local account result"),
+                detail: language.text("来自本机账号读取结果", "Reported by the connected account"),
                 value: store.snapshot.account?.planType?.uppercased() ?? "LOCAL"
             )
             AppUpdateSettingsRows(settings: settings, updateStore: updateStore, language: language)

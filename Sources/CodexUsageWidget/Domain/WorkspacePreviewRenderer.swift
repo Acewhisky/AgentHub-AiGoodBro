@@ -11,31 +11,45 @@ enum WorkspacePreviewRenderer {
         let resetBackfillCheckedAt: Date
     }
 
-    static func fixtureStore(accountCount: Int, root: URL) -> UsageStore {
+    static func fixtureStore(accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false) -> UsageStore {
         let now = Date()
         let fiveHour = RateWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: now.addingTimeInterval(10_800))
         let sevenDay = RateWindow(usedPercent: 37, windowDurationMins: 10_080, resetsAt: now.addingTimeInterval(259_200))
         let profiles = (0..<max(accountCount, 1)).map { index in
-            CodexProfile(
+            let isPro = includeQuotaEdgeCases && index == 0
+            let weeklyExhausted = includeQuotaEdgeCases && (index == 1 || index == 2)
+            let profileFiveHour = includeQuotaEdgeCases && (index == 0 || index == 2) ? nil : CodexQuotaWindowSnapshot(fiveHour)
+            let profileSevenDay = CodexQuotaWindowSnapshot(
+                RateWindow(
+                    usedPercent: weeklyExhausted ? 100 : isPro ? 17 : sevenDay.usedPercent,
+                    windowDurationMins: 10_080,
+                    resetsAt: includeQuotaEdgeCases ? now.addingTimeInterval(weeklyExhausted ? 172_800 : 432_000) : sevenDay.resetsAt
+                ))
+            return CodexProfile(
                 id: accountCount == 0 ? "system" : "preview-\(index)",
-                name: accountCount == 0 ? "当前 Codex" : "合成账号 \(index + 1)",
-                remark: accountCount == 0 ? "当前 Codex" : "合成账号 \(index + 1) · 用于验证窄窗长备注省略时不溢出操作区",
+                name: accountCount == 0 ? language.text("当前 Codex", "Current Codex") : language.text("合成账号 \(index + 1)", "Demo account \(index + 1)"),
+                remark: accountCount == 0
+                    ? language.text("当前 Codex", "Current Codex")
+                    : includeQuotaEdgeCases
+                        ? language.text("演示账号 \(index + 1)", "Demo account \(index + 1)")
+                        : language.text("合成账号 \(index + 1) · 用于验证窄窗长备注省略时不溢出操作区", "Demo account \(index + 1) · A long label for narrow-window layout checks"),
                 codexHomePath: root.appendingPathComponent(
                     accountCount == 0 ? "home/.codex" : "home/.codex-account-manager-next/profiles/preview-\(index)"
                 ).path,
                 isSystemProfile: accountCount == 0, createdAt: now,
                 lastSnapshot: CodexAccountSnapshot(
-                    accountType: "chatgpt", planType: "plus", email: "preview-\(index)@example.invalid",
-                    limitId: "codex", limitName: "Codex", fiveHour: CodexQuotaWindowSnapshot(fiveHour),
-                    sevenDay: CodexQuotaWindowSnapshot(sevenDay), monthly: nil,
+                    accountType: "chatgpt", planType: isPro ? "pro" : "plus", email: "preview-\(index)@example.invalid",
+                    limitId: "codex", limitName: "Codex", fiveHour: profileFiveHour,
+                    sevenDay: profileSevenDay, monthly: nil,
                     availableResetCredits: 2, resetCreditExpiries: [now.addingTimeInterval(864_000)],
                     fetchedAt: now, appServerVersion: nil
                 ),
                 officialProfile: CodexOfficialProfileSnapshot(
                     accountEmail: nil, displayName: nil, username: nil,
-                    lifetimeTokens: 82_400_000, peakDailyTokens: nil, planType: "plus",
+                    lifetimeTokens: 82_400_000, peakDailyTokens: nil, planType: isPro ? "pro" : "plus",
                     subscriptionActiveUntil: now.addingTimeInterval(1_814_400), statsAsOf: now, fetchedAt: now
                 ),
+                proTierMultiplier: isPro ? 20 : nil,
                 executionPreference: accountCount == 0 ? nil : .init(model: .astra, reasoningEffort: .max, serviceTier: .standard)
             )
         }
@@ -55,16 +69,24 @@ enum WorkspacePreviewRenderer {
         return UsageStore(
             previewProfiles: profiles,
             snapshot: UsageSnapshot(
-                refreshedAt: now, account: AccountInfo(type: "chatgpt", planType: "plus", emailPresent: false),
+                refreshedAt: now, account: AccountInfo(type: "chatgpt", planType: profiles[0].lastSnapshot?.planType, emailPresent: false),
                 limitId: "codex", limitName: "Codex", quotaReadSucceeded: true,
-                fiveHourQuota: fiveHour, sevenDayQuota: sevenDay, monthlyQuota: nil,
-                credits: nil, cloudLifetimeTokens: 82_400_000, local: nil, taskBoard: nil, messages: []
+                fiveHourQuota: profiles[0].lastSnapshot?.fiveHour.map {
+                    RateWindow(usedPercent: $0.usedPercent, windowDurationMins: $0.windowDurationMins, resetsAt: $0.resetsAt)
+                },
+                sevenDayQuota: profiles[0].lastSnapshot?.sevenDay.map {
+                    RateWindow(usedPercent: $0.usedPercent, windowDurationMins: $0.windowDurationMins, resetsAt: $0.resetsAt)
+                }, monthlyQuota: nil,
+                credits: CreditsInfo(
+                    hasCredits: false, unlimited: false, balance: nil, resetCredits: 2,
+                    resetCreditDetails: [ResetCreditDetail(id: "demo-reset", expiresAt: now.addingTimeInterval(864_000))]),
+                cloudLifetimeTokens: 82_400_000, local: nil, taskBoard: nil, messages: []
             ),
             isolatedRoot: root
         )
     }
 
-    static func render(to directory: URL) -> Bool {
+    static func render(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-ui-preview-\(UUID().uuidString)")
         let suiteName = "CodexManagerNext.workspace-preview.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else { return false }
@@ -76,13 +98,14 @@ enum WorkspacePreviewRenderer {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let catalog = PaletteCatalog.loadFromMainBundle()
             let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
+            settings.language = language
             for scheme in [ColorScheme.dark, .light] {
                 settings.themeMode = scheme == .dark ? .dark : .light
                 let theme = scheme == .dark ? "dark" : "light"
                 let tokens = catalog.resolve(id: settings.paletteID, appearance: scheme == .dark ? .dark : .light)
                 for count in [0, 1, 3] {
                     let name = count == 0 ? "single-system" : count == 1 ? "single-account" : "multi-account"
-                    let store = fixtureStore(accountCount: count, root: root.appendingPathComponent("\(theme)-\(count)"))
+                    let store = fixtureStore(accountCount: count, root: root.appendingPathComponent("\(theme)-\(count)"), language: language)
                     for width: CGFloat in [820, 980, 1280] {
                         let size = CGSize(width: width, height: 760)
                         let view = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog)
@@ -106,7 +129,8 @@ enum WorkspacePreviewRenderer {
                 }
                 let nineAccountStore = fixtureStore(
                     accountCount: 9,
-                    root: root.appendingPathComponent("\(theme)-9")
+                    root: root.appendingPathComponent("\(theme)-9"), language: language,
+                    includeQuotaEdgeCases: true
                 )
                 let nineAccountView = CodexAccountManagerView(
                     store: nineAccountStore,
@@ -142,13 +166,15 @@ enum WorkspacePreviewRenderer {
                     )
                 }
                 settings.accountWorkspaceLayout = .rows
-                let statusExample = Text(WarmUpStatusText.attributed("5 小时已暂停 · 7 天额度不足 · 下次暖号 7 天 9月10日 09:30"))
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
-                    .environment(\.colorScheme, scheme)
+                let statusExample = Text(
+                    WarmUpStatusText.attributed(language.text("5 小时已暂停 · 7 天额度不足 · 下次暖号 7 天 9月10日 09:30", "5h warm-up paused · weekly limit low · Next 7d warm-up Sep 10, 09:30"))
+                )
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
+                .environment(\.colorScheme, scheme)
                 try renderView(statusExample, size: CGSize(width: 520, height: 56), scheme: scheme, to: directory.appendingPathComponent("warmup-status-\(theme).png"))
                 let toolbar = TitlebarToolbarView(settings: settings, onOpenSettings: {}, onSaveScreenshot: {})
                     .background(FixedVisualPalette.windowScrim(scheme))
@@ -157,6 +183,8 @@ enum WorkspacePreviewRenderer {
                     preference: .init(model: .astra, reasoningEffort: .max, serviceTier: .standard),
                     inlineEditor: true, onSave: { _, _ in }
                 )
+                .environment(\.widgetLanguage, language)
+                .environment(\.locale, language.locale)
                 .environment(\.visualTokens, tokens)
                 .environment(\.colorScheme, scheme)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

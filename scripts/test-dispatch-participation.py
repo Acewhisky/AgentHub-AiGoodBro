@@ -54,8 +54,14 @@ def main():
         if not options.typecheck_only:
             service = repo / "Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift"
             tests = repo / "tests/DispatchParticipationSyncTests.swift"
+            settings = repo / "Sources/CodexUsageWidget/Services/AppSettings.swift"
+            formatter = repo / "Sources/CodexUsageWidget/Domain/TokenFormatter.swift"
+            # Reuse the production value type, without loading SwiftUI settings or live defaults.
+            language = "enum WidgetLanguage:" + settings.read_text().split("enum WidgetLanguage:", 1)[1].split(
+                "\nprivate struct WidgetLanguageEnvironmentKey", 1
+            )[0]
             script = work / "dispatch-tests.swift"
-            script.write_text(service.read_text() + "\n" + tests.read_text())
+            script.write_text(formatter.read_text() + "\n" + language + "\n" + service.read_text() + "\n" + tests.read_text())
             print("Interpreting offline Swift tests in a temporary directory.", flush=True)
             run(["xcrun", "swift", *flags, str(script)])
 

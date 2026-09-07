@@ -20,17 +20,20 @@ enum TerminalLauncherError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidProfileID:
-            return "账号环境标识无效；仅允许字母和数字"
+            return WidgetLanguage.storedOrAutomatic().text("账号环境标识无效；仅允许字母和数字", "The account profile ID is invalid. Use letters and numbers only.")
         case .invalidProfileDirectory:
-            return "账号环境不在 Next 的独立资料目录中"
+            return WidgetLanguage.storedOrAutomatic().text("账号环境不在 Next 的独立资料目录中", "This account is outside Next's isolated profile directory.")
         case .profileDirectoryMissing:
-            return "账号环境目录不存在，请先重新登录该账号"
+            return WidgetLanguage.storedOrAutomatic().text("账号环境目录不存在，请先重新登录该账号", "The account profile folder is missing. Sign in to this account again.")
         case .codexExecutableMissing:
-            return "未找到可执行的 Codex CLI。请先安装 Codex CLI，或确认独立安装路径可执行"
+            return WidgetLanguage.storedOrAutomatic().text(
+                "未找到可执行的 Codex CLI。请先安装 Codex CLI，或确认独立安装路径可执行", "Codex CLI was not found. Install it or check that the standalone executable is available.")
         case .appleEventDenied:
-            return "Terminal 自动化授权被拒绝。请前往：系统设置 → 隐私与安全性 → 自动化 → CodexAccountManagerNext → Terminal"
+            return WidgetLanguage.storedOrAutomatic().text(
+                "Terminal 自动化授权被拒绝。请前往：系统设置 → 隐私与安全性 → 自动化 → CodexAccountManagerNext → Terminal",
+                "Terminal access was denied. Allow it in System Settings → Privacy & Security → Automation → CodexAccountManagerNext → Terminal.")
         case .appleScriptFailed:
-            return "无法在 Terminal 中打开 Codex"
+            return WidgetLanguage.storedOrAutomatic().text("无法在 Terminal 中打开 Codex", "Could not open Codex in Terminal.")
         }
     }
 }
@@ -104,7 +107,7 @@ struct TerminalAppLauncher: TerminalLaunching {
             "export CODEX_HOME=\(managedHomeExpression)",
             "unset CODEX_ACCESS_TOKEN CODEX_API_KEY",
             directoryCommand,
-            "echo \(Self.shellQuote("Codex 独立账号环境已就绪"))",
+            "echo \(Self.shellQuote(WidgetLanguage.storedOrAutomatic().text("Codex 独立账号环境已就绪", "Isolated Codex account environment is ready.")))",
             try Self.configuredCodexCommand(executable: executable, preference: preference),
         ].joined(separator: "\n")
     }

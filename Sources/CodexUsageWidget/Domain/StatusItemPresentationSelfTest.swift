@@ -29,6 +29,11 @@ enum StatusItemPresentationSelfTest {
         expect(TokenFormatter.format(-1_234_567) == "-1.2M", "negative values should preserve their sign")
         expect(TokenFormatter.formatChineseTotal(nil) == "--", "missing Chinese total should remain unavailable")
         expect(TokenFormatter.formatChineseTotal(3_916_737_420) == "39.2 亿", "Chinese total should use 亿")
+        expect(WidgetLanguage.en.tokens(3_916_737_420) == "3.9B", "English totals must not use Chinese units")
+        expect(WidgetLanguage.zh.tokens(3_916_737_420) == "39.2 亿", "Chinese totals must retain their units")
+        expect(
+            WidgetLanguage.en.dateTime(Date(timeIntervalSince1970: 1_800_000_000)).range(of: "\\p{Han}", options: .regularExpression) == nil,
+            "English dates must not inherit the system language")
         expect(AccountDisplay.masked("longname0917@example.test") == "lon•••917", "email should hide its domain and middle")
         expect(AccountDisplay.masked("abc@example.test") == "abc", "short email names should remain readable")
         expect(AccountDisplay.masked("账号 2") == "账号 2", "non-email profile names should remain unchanged")
@@ -152,6 +157,29 @@ enum StatusItemPresentationSelfTest {
         expect(remainingFiveHour?.paletteRole == .primary, "quota direction must not change palette identity")
         expect(remaining.tooltip.contains("剩余"), "Chinese tooltip should name the quota direction")
         expect(remaining.accessibilityValue.contains("1 小时后重置"), "Chinese VoiceOver should explain reset timing")
+
+        for rawFiveHour: Double? in [82, nil] {
+            let exhausted = StatusItemSourceSnapshot(
+                runtime: .codex, fiveHourRemainingPercent: rawFiveHour,
+                fiveHourResetsAt: source.fiveHourResetsAt,
+                sevenDayRemainingPercent: 0, sevenDayResetsAt: source.sevenDayResetsAt,
+                todayTokens: nil
+            )
+            let zero = builder.build(source: exhausted, preferences: remainingPreferences, language: .en, now: now)
+            expect(zero.metrics.first { $0.metric == .fiveHourQuota }?.value == "0%", "weekly exhaustion must show zero 5h availability, including a missing 5h window")
+            expect(zero.metrics.first { $0.metric == .fiveHourQuota }?.fraction == 0, "weekly exhaustion must empty the 5h ring")
+            expect(zero.metrics.first { $0.metric == .sevenDayQuota }?.value == "0%", "weekly exhaustion must keep the 7d value at zero")
+            expect(exhausted.fiveHourRemainingPercent == rawFiveHour, "displaying effective availability must not mutate the source")
+        }
+        let recovered = builder.build(source: source, preferences: remainingPreferences, language: .en, now: now)
+        expect(recovered.metrics.first { $0.metric == .fiveHourQuota }?.value == "89%", "a recovered weekly window must reveal the official 5h value again")
+        let claudeIndependent = StatusItemSourceSnapshot(
+            runtime: .claudeCode, fiveHourRemainingPercent: 82, fiveHourResetsAt: nil,
+            sevenDayRemainingPercent: 0, sevenDayResetsAt: nil, todayTokens: nil
+        )
+        expect(
+            builder.build(source: claudeIndependent, preferences: remainingPreferences, language: .en, now: now).metrics.first { $0.metric == .fiveHourQuota }?.value == "82%",
+            "Codex availability policy must not change Claude presentation")
 
         var withoutResetPreferences = remainingPreferences
         withoutResetPreferences.showsResetCountdown = false

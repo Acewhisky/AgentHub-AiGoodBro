@@ -107,14 +107,14 @@ enum CodexThreadHistoryError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidThread: return "任务标识无效"
-        case .unavailable: return "Codex 分页历史接口不可用"
-        case .timedOut: return "Codex 分页历史读取超时"
-        case .malformedPage: return "Codex 分页历史格式异常"
-        case .duplicateTurn: return "Codex 分页历史出现重复轮次"
-        case .repeatedCursor: return "Codex 分页历史游标重复"
-        case .tooLarge: return "Codex 分页历史超过安全校验上限"
-        case .empty: return "Codex 分页历史为空"
+        case .invalidThread: return WidgetLanguage.storedOrAutomatic().text("任务标识无效", "The task ID is invalid.")
+        case .unavailable: return WidgetLanguage.storedOrAutomatic().text("Codex 分页历史接口不可用", "The Codex paginated history API is unavailable.")
+        case .timedOut: return WidgetLanguage.storedOrAutomatic().text("Codex 分页历史读取超时", "Reading Codex history timed out.")
+        case .malformedPage: return WidgetLanguage.storedOrAutomatic().text("Codex 分页历史格式异常", "Codex history returned an invalid page.")
+        case .duplicateTurn: return WidgetLanguage.storedOrAutomatic().text("Codex 分页历史出现重复轮次", "Codex history contains duplicate turns.")
+        case .repeatedCursor: return WidgetLanguage.storedOrAutomatic().text("Codex 分页历史游标重复", "Codex history repeated a page cursor.")
+        case .tooLarge: return WidgetLanguage.storedOrAutomatic().text("Codex 分页历史超过安全校验上限", "Codex history exceeded the safety limit.")
+        case .empty: return WidgetLanguage.storedOrAutomatic().text("Codex 分页历史为空", "Codex history is empty.")
         }
     }
 }

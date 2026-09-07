@@ -1,5 +1,53 @@
 import Foundation
 
+/// Effective availability for display only. Never rewrite the official snapshot.
+enum QuotaAvailabilityPresentation {
+    static func percentText(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return "—" }
+        let bounded = max(0, min(100, value))
+        if bounded > 0, bounded < 1 { return "<1%" }
+        return "\(Int(bounded.rounded()))%"
+    }
+
+    static func isWeeklyExhausted(_ sevenDayRemaining: Double?) -> Bool {
+        guard let sevenDayRemaining, sevenDayRemaining.isFinite else { return false }
+        return sevenDayRemaining <= 0
+    }
+
+    static func fiveHourRemaining(_ fiveHour: Double?, sevenDay: Double?) -> Double? {
+        if isWeeklyExhausted(sevenDay) { return 0 }
+        return fiveHour
+    }
+
+    static func fiveHourWindow(_ fiveHour: RateWindow?, sevenDay: RateWindow?) -> RateWindow? {
+        guard isWeeklyExhausted(sevenDay?.remainingPercent) else { return fiveHour }
+        return RateWindow(
+            usedPercent: 100,
+            windowDurationMins: fiveHour?.windowDurationMins ?? 300,
+            resetsAt: fiveHour?.resetsAt
+        )
+    }
+
+    static func selfTest() -> Bool {
+        let fiveHour = RateWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: nil)
+        let exhausted = RateWindow(usedPercent: 100, windowDurationMins: 10_080, resetsAt: nil)
+        return fiveHourRemaining(82, sevenDay: 0) == 0
+            && fiveHourRemaining(nil, sevenDay: 0) == 0
+            && fiveHourRemaining(82, sevenDay: nil) == 82
+            && fiveHourRemaining(nil, sevenDay: 83) == nil
+            && fiveHourRemaining(82, sevenDay: 0.1) == 82
+            && fiveHourRemaining(82, sevenDay: .nan) == 82
+            && fiveHourWindow(fiveHour, sevenDay: exhausted)?.remainingPercent == 0
+            && fiveHourWindow(nil, sevenDay: exhausted)?.remainingPercent == 0
+            && fiveHourWindow(nil, sevenDay: nil) == nil
+            && fiveHour.remainingPercent == 82
+            && percentText(nil) == "—"
+            && percentText(.nan) == "—"
+            && percentText(0) == "0%"
+            && percentText(0.1) == "<1%"
+    }
+}
+
 /// Presentation only: never changes identity, scheduling eligibility or account leases.
 struct WorkspacePresentation {
     let accountCount: Int
@@ -39,13 +87,17 @@ struct WorkspacePresentation {
 
     func quotaSummary(monitored: UsageSnapshot) -> (fiveHour: RateWindow?, sevenDay: RateWindow?, readSucceeded: Bool) {
         guard usesFocusedQuota, let profile = quotaProfile else {
-            return (monitored.fiveHourQuota, monitored.sevenDayQuota, monitored.quotaReadSucceeded)
+            return (
+                QuotaAvailabilityPresentation.fiveHourWindow(monitored.fiveHourQuota, sevenDay: monitored.sevenDayQuota),
+                monitored.sevenDayQuota, monitored.quotaReadSucceeded
+            )
         }
         func window(_ snapshot: CodexQuotaWindowSnapshot?) -> RateWindow? {
             snapshot.map { RateWindow(usedPercent: $0.usedPercent, windowDurationMins: $0.windowDurationMins, resetsAt: $0.resetsAt) }
         }
         return (
-            window(profile.lastSnapshot?.fiveHour), window(profile.lastSnapshot?.sevenDay),
+            QuotaAvailabilityPresentation.fiveHourWindow(window(profile.lastSnapshot?.fiveHour), sevenDay: window(profile.lastSnapshot?.sevenDay)),
+            window(profile.lastSnapshot?.sevenDay),
             profile.lastSnapshot != nil && profile.lastQuotaReadFailureAt == nil
         )
     }
@@ -119,6 +171,7 @@ struct WorkspacePresentation {
             single.quotaSummary(monitored: .empty).readSucceeded,
             !systemOnly.quotaSummary(monitored: .empty).readSucceeded,
             AccountSnapshotHealth.selfTest(),
+            QuotaAvailabilityPresentation.selfTest(),
             !unknown.isSingleAccount
         else {
             print("workspace presentation self-test failed")
@@ -139,11 +192,15 @@ enum AccountSnapshotHealth: Equatable {
     }
 
     var notice: String? {
+        notice(.zh)
+    }
+
+    func notice(_ language: WidgetLanguage) -> String? {
         switch self {
         case .current: return nil
-        case .missing: return "等待额度"
-        case .failed: return "刷新失败"
-        case .stale: return "快照过期"
+        case .missing: return language.text("等待额度", "Waiting for limits")
+        case .failed: return language.text("刷新失败", "Refresh failed")
+        case .stale: return language.text("快照过期", "Stale snapshot")
         }
     }
 

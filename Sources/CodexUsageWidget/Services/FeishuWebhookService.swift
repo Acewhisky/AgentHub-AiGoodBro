@@ -16,25 +16,25 @@ enum FeishuWebhookError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidWebhook:
-            return "飞书 Webhook 地址无效。"
+            return WidgetLanguage.storedOrAutomatic().text("飞书 Webhook 地址无效。", "The Feishu webhook URL is invalid.")
         case .missingWebhook:
-            return "尚未保存飞书 Webhook。"
+            return WidgetLanguage.storedOrAutomatic().text("尚未保存飞书 Webhook。", "No Feishu webhook has been saved.")
         case .keychain(let status):
-            return "无法访问飞书 Webhook 凭据（\(status)）。"
+            return WidgetLanguage.storedOrAutomatic().text("无法访问飞书 Webhook 凭据（\(status)）。", "Could not access the Feishu webhook credential (\(status)).")
         case .invalidMaskedAccount:
-            return "通知中的账号名称必须先脱敏。"
+            return WidgetLanguage.storedOrAutomatic().text("通知中的账号名称必须先脱敏。", "Account names must be masked before sending a notification.")
         case .invalidNotification:
-            return "飞书通知内容无效。"
+            return WidgetLanguage.storedOrAutomatic().text("飞书通知内容无效。", "The Feishu notification content is invalid.")
         case .encodingFailed:
-            return "无法生成飞书通知。"
+            return WidgetLanguage.storedOrAutomatic().text("无法生成飞书通知。", "Could not create the Feishu notification.")
         case .transportFailed:
-            return "飞书通知发送失败。"
+            return WidgetLanguage.storedOrAutomatic().text("飞书通知发送失败。", "Could not send the Feishu notification.")
         case .invalidResponse:
-            return "飞书返回了无法识别的响应。"
+            return WidgetLanguage.storedOrAutomatic().text("飞书返回了无法识别的响应。", "Feishu returned an unrecognized response.")
         case .httpStatus(let status):
-            return "飞书通知请求失败（HTTP \(status)）。"
+            return WidgetLanguage.storedOrAutomatic().text("飞书通知请求失败（HTTP \(status)）。", "The Feishu notification request failed (HTTP \(status)).")
         case .rejected(let code):
-            return "飞书拒绝了通知（\(code)）。"
+            return WidgetLanguage.storedOrAutomatic().text("飞书拒绝了通知（\(code)）。", "Feishu rejected the notification (\(code)).")
         }
     }
 }
@@ -77,13 +77,17 @@ struct FeishuSwitchNotification {
         case unknown
 
         var displayName: String {
+            displayName(.storedOrAutomatic())
+        }
+
+        func displayName(_ language: WidgetLanguage) -> String {
             switch self {
-            case .noEligibleAccount: return "没有符合条件的候选账号"
-            case .appBusy: return "Codex 正在处理任务"
-            case .validationFailed: return "切换前校验失败"
-            case .restartFailed: return "Codex 安全重启失败"
-            case .networkUnavailable: return "网络不可用"
-            case .unknown: return "未知错误"
+            case .noEligibleAccount: return language.text("没有符合条件的候选账号", "No eligible account")
+            case .appBusy: return language.text("Codex 正在处理任务", "Codex is working on a task")
+            case .validationFailed: return language.text("切换前校验失败", "Pre-switch verification failed")
+            case .restartFailed: return language.text("Codex 安全重启失败", "Codex could not restart safely")
+            case .networkUnavailable: return language.text("网络不可用", "Network unavailable")
+            case .unknown: return language.text("未知错误", "Unknown error")
             }
         }
     }
@@ -307,37 +311,40 @@ final class FeishuWebhookService {
         return endpoint
     }
 
-    static func payloadData(for notification: FeishuSwitchNotification) throws -> Data {
-        let presentation = presentation(for: notification.event)
+    static func payloadData(for notification: FeishuSwitchNotification, language: WidgetLanguage = .storedOrAutomatic()) throws -> Data {
+        let presentation = presentation(for: notification.event, language: language)
         var lines = [
-            "**结果**：\(presentation.result)",
-            "**原账号**：`\(notification.sourceAccount.value)`",
+            language.text("**结果**：\(presentation.result)", "**Result**: \(presentation.result)"),
+            language.text("**原账号**：`\(notification.sourceAccount.value)`", "**Source account**: `\(notification.sourceAccount.value)`"),
         ]
         if case .quotaChange(let change) = notification.event {
             switch change {
             case .quotaReset(let fiveHour, let sevenDay):
-                let windows = [(fiveHour, "5 小时"), (sevenDay, "7 天")].filter(\.0).map(\.1)
-                lines.append("**重置窗口**：\(windows.joined(separator: "、"))")
-                lines.append("已读取官方新状态；暖号仍需已启用且账号身份与空闲检查通过。")
+                let windows = [(fiveHour, language.text("5 小时", "5-hour")), (sevenDay, language.text("7 天", "7-day"))].filter(\.0).map(\.1)
+                lines.append(language.text("**重置窗口**：\(windows.joined(separator: "、"))", "**Reset windows**: \(windows.joined(separator: ", "))"))
+                lines.append(language.text("已读取官方新状态；暖号仍需已启用且账号身份与空闲检查通过。", "Official state refreshed. Warm-up still requires opt-in, identity verification, and an idle account."))
             case .resetCreditsAdded(let added, let available):
-                lines.append("**新增 Reset 卡**：\(added) 次")
-                lines.append("**官方可用次数**：\(available) 次")
-                lines.append("仅报告官方可用次数增加，不会自动使用 Reset 卡。")
+                lines.append(language.text("**新增 Reset 卡**：\(added) 次", "**Reset credits added**: \(added)"))
+                lines.append(language.text("**官方可用次数**：\(available) 次", "**Official available resets**: \(available)"))
+                lines.append(language.text("仅报告官方可用次数增加，不会自动使用 Reset 卡。", "This only reports an increase in available resets. Reset credits are never used automatically."))
             }
         } else {
-            lines.append("**触发规则**：5 小时 ≤ 5%；7 天 < \(notification.triggerThresholdPercent)%")
+            lines.append(
+                language.text(
+                    "**触发规则**：5 小时 ≤ 5%；7 天 < \(notification.triggerThresholdPercent)%", "**Trigger rule**: 5-hour ≤ 5%; 7-day < \(notification.triggerThresholdPercent)%"))
         }
         if let target = notification.targetAccount {
-            lines.append("**目标账号**：`\(target.value)`")
+            lines.append(language.text("**目标账号**：`\(target.value)`", "**Target account**: `\(target.value)`"))
         }
         if let remaining = notification.fiveHourRemainingPercent {
-            lines.append("**5 小时额度**：剩余 \(remaining)%")
+            lines.append(language.text("**5 小时额度**：剩余 \(remaining)%", "**5-hour quota**: \(remaining)% remaining"))
         }
         if let remaining = notification.sevenDayRemainingPercent {
-            lines.append("**7 天额度**：剩余 \(remaining)%")
+            lines.append(language.text("**7 天额度**：剩余 \(remaining)%", "**7-day quota**: \(remaining)% remaining"))
         }
-        lines.append("**时间**：\(Self.timestampFormatter.string(from: notification.occurredAt))")
-        lines.append("**事件 ID**：`\(notification.eventID.uuidString)`")
+        lines.append(
+            language.text("**时间**：\(Self.timestampFormatter.string(from: notification.occurredAt))", "**Time**: \(Self.timestampFormatter.string(from: notification.occurredAt))"))
+        lines.append(language.text("**事件 ID**：`\(notification.eventID.uuidString)`", "**Event ID**: `\(notification.eventID.uuidString)`"))
 
         let payload: [String: Any] = [
             "msg_type": "interactive",
@@ -416,24 +423,24 @@ final class FeishuWebhookService {
         ]
     }
 
-    private static func presentation(for event: FeishuSwitchNotification.Event) -> (
+    private static func presentation(for event: FeishuSwitchNotification.Event, language: WidgetLanguage) -> (
         title: String,
         result: String,
         template: String
     ) {
         switch event {
         case .test:
-            return ("Codex 自动化测试通知", "配置可用", "blue")
+            return (language.text("Codex 自动化测试通知", "Codex automation test"), language.text("配置可用", "Configuration ready"), "blue")
         case .lowQuotaDetected:
-            return ("Codex 额度低于阈值", "已检测到低额度", "orange")
+            return (language.text("Codex 额度低于阈值", "Codex quota is low"), language.text("已检测到低额度", "Low quota detected"), "orange")
         case .quotaChange(.quotaReset):
-            return ("Codex 额度已重置", "检测到官方额度恢复或新窗口", "green")
+            return (language.text("Codex 额度已重置", "Codex quota reset"), language.text("检测到官方额度恢复或新窗口", "Official quota recovery or a new window detected"), "green")
         case .quotaChange(.resetCreditsAdded):
-            return ("Codex 获得 Reset 卡", "官方可用 Reset 次数增加", "blue")
+            return (language.text("Codex 获得 Reset 卡", "Codex reset credits added"), language.text("官方可用 Reset 次数增加", "Official available reset count increased"), "blue")
         case .switchSucceeded:
-            return ("Codex 账号已自动切换", "切换成功", "green")
+            return (language.text("Codex 账号已自动切换", "Codex account switched automatically"), language.text("切换成功", "Switch successful"), "green")
         case .switchFailed(let reason):
-            return ("Codex 自动切换未完成", reason.displayName, "red")
+            return (language.text("Codex 自动切换未完成", "Codex automatic switch incomplete"), reason.displayName(language), "red")
         }
     }
 
@@ -487,7 +494,7 @@ enum FeishuWebhookServiceSelfTest {
                 occurredAt: Date(timeIntervalSince1970: 0),
                 eventID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
             )
-            let payload = try FeishuWebhookService.payloadData(for: notification)
+            let payload = try FeishuWebhookService.payloadData(for: notification, language: .zh)
             let text = String(data: payload, encoding: .utf8) ?? ""
             expect(text.contains("\"msg_type\":\"interactive\""), "interactive payload missing")
             expect(text.contains("p***-source"), "masked source missing")
@@ -503,7 +510,7 @@ enum FeishuWebhookServiceSelfTest {
                 occurredAt: Date(timeIntervalSince1970: 0),
                 eventID: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
             )
-            let testPayload = try FeishuWebhookService.payloadData(for: testNotification)
+            let testPayload = try FeishuWebhookService.payloadData(for: testNotification, language: .zh)
             expect(
                 String(data: testPayload, encoding: .utf8)?.contains("Codex 自动化测试通知") == true,
                 "test notification mislabeled"
@@ -516,10 +523,13 @@ enum FeishuWebhookServiceSelfTest {
                     event: .quotaChange(change), sourceAccount: source,
                     triggerThresholdPercent: 10, fiveHourRemainingPercent: 100, sevenDayRemainingPercent: 80
                 )
-                let body = String(data: try FeishuWebhookService.payloadData(for: event), encoding: .utf8) ?? ""
+                let body = String(data: try FeishuWebhookService.payloadData(for: event, language: .zh), encoding: .utf8) ?? ""
                 expect(body.contains("p***-source"), "quota event missing masked account")
                 expect(!body.contains("触发规则"), "quota event inherited low-quota rule")
                 expect(!body.contains("目标账号"), "quota event suggests switching")
+                let english = String(data: try FeishuWebhookService.payloadData(for: event, language: .en), encoding: .utf8) ?? ""
+                expect(english.range(of: "\\p{Han}", options: .regularExpression) == nil, "English notification must not contain Chinese app copy")
+                expect(english.contains("p***-source") && !english.contains("person@example.com"), "English notification must preserve masking")
                 switch change {
                 case .quotaReset:
                     expect(body.contains("重置窗口") && body.contains("5 小时、7 天"), "reset windows missing")

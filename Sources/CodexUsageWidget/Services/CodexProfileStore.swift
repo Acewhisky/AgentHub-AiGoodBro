@@ -216,11 +216,11 @@ enum CodexExecutionPreferenceError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unsupportedReasoningEffort(let model, let reasoningEffort):
-            return "模型 \(model) 不支持推理强度 \(reasoningEffort)"
+            return WidgetLanguage.storedOrAutomatic().text("模型 \(model) 不支持推理强度 \(reasoningEffort)", "\(model) does not support the \(reasoningEffort) reasoning level.")
         case .fastUnavailable(let model):
-            return "模型 \(model) 不支持 Fast 模式"
+            return WidgetLanguage.storedOrAutomatic().text("模型 \(model) 不支持 Fast 模式", "\(model) does not support Fast mode.")
         case .systemProfileUnsupported:
-            return "系统账号不保存执行偏好"
+            return WidgetLanguage.storedOrAutomatic().text("系统账号不保存执行偏好", "Execution preferences cannot be saved for the system account.")
         }
     }
 }
@@ -324,9 +324,9 @@ enum SevenDayResetReminder {
         return max(1, Int(ceil(remaining / (24 * 60 * 60))))
     }
 
-    static func message(resetsAt: Date?, now: Date = Date()) -> String? {
+    static func message(resetsAt: Date?, now: Date = Date(), language: WidgetLanguage = .zh) -> String? {
         remainingDays(resetsAt: resetsAt, now: now).map {
-            "7 天额度 \($0) 天后重置，快使用额度"
+            language.text("7 天额度 \($0) 天后重置，快使用额度", "Weekly limit resets in \($0) \($0 == 1 ? "day" : "days")")
         }
     }
 }
@@ -925,7 +925,7 @@ final class CodexProfileStore {
             throw NSError(
                 domain: "CodexAccountManagerNext.ProfileStore",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "无法安全读取当前 Codex 凭据"]
+                userInfo: [NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text("无法安全读取当前 Codex 凭据", "Could not safely read the current Codex credentials.")]
             )
         }
         let boundEmail = (expectedEmail ?? system.lastSnapshot?.email)?
@@ -942,7 +942,10 @@ final class CodexProfileStore {
             throw NSError(
                 domain: "CodexAccountManagerNext.ProfileStore",
                 code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "当前 Codex 凭据身份与系统账号记录不一致"]
+                userInfo: [
+                    NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text(
+                        "当前 Codex 凭据身份与系统账号记录不一致", "The current Codex identity does not match the saved system account.")
+                ]
             )
         }
         let boundSnapshot = system.lastSnapshot.map {
@@ -1536,7 +1539,10 @@ final class CodexProfileStore {
             throw NSError(
                 domain: "CodexAccountManagerNext.ProfileStore",
                 code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "账号状态文件无法安全读取；已阻止覆盖，请先备份并恢复该文件"]
+                userInfo: [
+                    NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text(
+                        "账号状态文件无法安全读取；已阻止覆盖，请先备份并恢复该文件", "The account state file cannot be read safely. Writing is blocked; back up and restore the file first.")
+                ]
             )
         }
         let directory = stateURL.deletingLastPathComponent()

@@ -102,17 +102,17 @@ enum CCSwitchUsageError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .databaseMissing:
-            return "未找到本机历史数据"
+            return WidgetLanguage.storedOrAutomatic().text("未找到本机历史数据", "Local usage history was not found.")
         case .sqliteMissing:
-            return "未找到系统 sqlite3"
+            return WidgetLanguage.storedOrAutomatic().text("未找到系统 sqlite3", "The system sqlite3 executable was not found.")
         case .unsupportedSchema(let version):
-            return "本机历史数据版本为 \(version)，当前暂不支持"
+            return WidgetLanguage.storedOrAutomatic().text("本机历史数据版本为 \(version)，当前暂不支持", "Local usage history version \(version) is not supported yet.")
         case .incompatibleSchema:
-            return "本机历史数据格式不兼容"
+            return WidgetLanguage.storedOrAutomatic().text("本机历史数据格式不兼容", "The local usage history format is incompatible.")
         case .overlappingSources:
-            return "本机历史明细发生重叠，已停止估算以避免重复统计"
+            return WidgetLanguage.storedOrAutomatic().text("本机历史明细发生重叠，已停止估算以避免重复统计", "Local usage sources overlap. Estimates were stopped to avoid double counting.")
         case .queryFailed:
-            return "本机历史统计失败"
+            return WidgetLanguage.storedOrAutomatic().text("本机历史统计失败", "Could not calculate local usage history.")
         }
     }
 }

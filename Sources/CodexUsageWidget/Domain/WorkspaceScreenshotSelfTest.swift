@@ -31,7 +31,15 @@ enum WorkspaceScreenshotSelfTest {
             expect(text.font == .caption2.weight(.semibold), "blocking status must also use stronger weight")
         }
         let reset = Date(timeIntervalSince1970: 1_800_000_000)
-        let resetText = reset.formatted(.dateTime.month().day().hour().minute())
+        let resetText = WidgetLanguage.zh.dateTime(reset)
+        let englishReset = WidgetLanguage.en.dateTime(reset)
+        let englishStatus = "Last warm-up succeeded Sep 7, 09:00 · Next 5h warm-up \(englishReset) · Next 7d warm-up \(englishReset)"
+        expect(
+            WarmUpStatusText.summary(englishStatus, fiveHourReset: reset, sevenDayReset: reset, language: .en) == nil,
+            "English duplicate reset schedules and successful history must be omitted")
+        expect(
+            WorkspaceScreenshotExporter.ExportError.invalidSize.message(.en).range(of: "\\p{Han}", options: .regularExpression) == nil,
+            "English screenshot errors must stay English")
         let duplicate = "最近暖号成功 9月7日 09:00 · 下次暖号 5 小时 \(resetText) · 下次暖号 7 天 \(resetText)"
         expect(WarmUpStatusText.summary(duplicate, fiveHourReset: reset, sevenDayReset: reset) == nil, "repeated reset times and successful history belong in details only")
         let unique = "5 小时已暂停 · 7 天额度不足 · 下次暖号 7 天 \(resetText)"

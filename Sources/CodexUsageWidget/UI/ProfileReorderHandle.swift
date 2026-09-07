@@ -47,6 +47,7 @@ struct ProfileFramePreferenceKey: PreferenceKey {
 
 /// Window-local pointer tracking. No account identifiers enter a drag pasteboard.
 struct ProfileReorderHandle: NSViewRepresentable {
+    @Environment(\.widgetLanguage) private var language
     let isEnabled: Bool
     let onBegin: () -> Bool
     let onMove: (CGPoint) -> Void
@@ -56,6 +57,8 @@ struct ProfileReorderHandle: NSViewRepresentable {
     func makeNSView(context: Context) -> HandleView { HandleView() }
 
     func updateNSView(_ view: HandleView, context: Context) {
+        view.setAccessibilityLabel(language.text("拖动调整账号顺序", "Drag to reorder accounts"))
+        view.toolTip = language.text("拖动调整顺序；右键可上移或下移", "Drag to reorder; right-click to move up or down")
         view.isEnabled = isEnabled
         view.onBegin = onBegin
         view.onMove = onMove
@@ -82,8 +85,6 @@ struct ProfileReorderHandle: NSViewRepresentable {
             super.init(frame: frame)
             setAccessibilityElement(true)
             setAccessibilityRole(.button)
-            setAccessibilityLabel("拖动调整账号顺序")
-            toolTip = "拖动调整顺序；右键可上移或下移"
         }
 
         required init?(coder: NSCoder) { nil }

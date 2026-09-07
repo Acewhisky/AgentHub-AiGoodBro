@@ -34,8 +34,8 @@ struct StatusItemSettingsView: View {
         }
 
         SettingsPickerRow(
-            title: language.text("额度口径", "Quota direction"),
-            detail: language.text("进度环、进度条和数字始终使用同一口径", "Rings, bars, and numbers always use the same direction")
+            title: language.text("额度口径", "Usage display"),
+            detail: language.text("进度环、进度条和数字始终使用同一口径", "Rings, bars and numbers all show either used or remaining limits.")
         ) {
             SettingsSegmentedControl(
                 selection: quotaModeBinding,

@@ -55,16 +55,20 @@ struct HubAccountTaskStatus: Equatable {
     let updatedAt: Date?
 
     var localizedLabel: String {
+        label(.zh)
+    }
+
+    func label(_ language: WidgetLanguage) -> String {
         switch phase {
-        case .idle: return "未运行"
-        case .awaitingApproval: return "待批准"
-        case .starting: return "准备中"
-        case .running: return "工作进行中"
-        case .cancelRequested: return "正在请求取消"
-        case .uncertain, .unavailable: return "状态待确认"
-        case .succeeded: return "任务成功"
-        case .failed: return "任务失败"
-        case .cancelled: return "任务已取消"
+        case .idle: return language.text("未运行", "Idle")
+        case .awaitingApproval: return language.text("待批准", "Awaiting approval")
+        case .starting: return language.text("准备中", "Starting")
+        case .running: return language.text("工作进行中", "Working")
+        case .cancelRequested: return language.text("正在请求取消", "Cancelling")
+        case .uncertain, .unavailable: return language.text("状态待确认", "Unverified")
+        case .succeeded: return language.text("任务成功", "Completed")
+        case .failed: return language.text("任务失败", "Failed")
+        case .cancelled: return language.text("任务已取消", "Cancelled")
         }
     }
 

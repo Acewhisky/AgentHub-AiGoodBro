@@ -339,7 +339,9 @@ struct StatusItemPresentationBuilder {
             return makeQuotaMetric(
                 metric: metric,
                 label: "5h",
-                remainingPercent: source.fiveHourRemainingPercent,
+                remainingPercent: source.runtime == .codex
+                    ? QuotaAvailabilityPresentation.fiveHourRemaining(source.fiveHourRemainingPercent, sevenDay: source.sevenDayRemainingPercent)
+                    : source.fiveHourRemainingPercent,
                 resetsAt: source.fiveHourResetsAt,
                 paletteRole: paletteRole(for: .fiveHour, source: source),
                 preferences: preferences,
@@ -389,13 +391,12 @@ struct StatusItemPresentationBuilder {
         preferences: StatusItemPreferences,
         now: Date
     ) -> StatusItemMetricPresentation {
-        let remaining = remainingPercent.map { max(0, min(100, $0)) }
+        let remaining = remainingPercent.flatMap { $0.isFinite ? max(0, min(100, $0)) : nil }
         let displayPercent = remaining.map { value in
             preferences.quotaMode == .remaining ? value : 100 - value
         }
-        let roundedValue = displayPercent.map { Int($0.rounded()) }
-        let compactValue = roundedValue.map(String.init) ?? "--"
-        let value = roundedValue.map { "\($0)%" } ?? "--"
+        let value = displayPercent.map { QuotaAvailabilityPresentation.percentText($0) } ?? "--"
+        let compactValue = displayPercent == nil ? "--" : String(value.dropLast())
         let fraction = displayPercent.map { CGFloat($0 / 100) }
         let resetText =
             preferences.showsResetCountdown

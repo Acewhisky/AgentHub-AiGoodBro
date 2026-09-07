@@ -4,12 +4,14 @@
 
 [![CI](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-![Version 0907v2](https://img.shields.io/badge/version-0907v2-6C4DFF)
+![Version 0907v3](https://img.shields.io/badge/version-0907v3-6C4DFF)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Next 是面向 macOS 的本地优先 Codex 工作台，以独立产品名称、界面与发布渠道维护。一个账号也能清楚查看额度、按需自动暖号、选择任务模型；多个账号可以集中管理隔离环境、监控任务占用。支持 GPT-6 Astra，模型、思考强度和 Standard/Fast 速度会一起传给后续 CLI。
 
-当前源码版本：`0907v2` · `9.5.6 (18)`。项目非 OpenAI 官方产品，不提供账号、不增加额度，也不绕过登录、MFA 或平台限制。
+当前源码版本：`0907v3` · `9.5.7 (19)`。项目非 OpenAI 官方产品，不提供账号、不增加额度，也不绕过登录、MFA 或平台限制。
+
+0907v3 相比 0907v2：补齐英文界面、按钮说明、操作反馈、日期和 Token 单位及通知文案；Pro 等账号缺少 5 小时官方返回时，大字显示“—”并保留简短解释。周额度归零后，账号卡、顶部概览和菜单栏的 5 小时可用额度同步归零，不改写原始数据。CLI 两个入口统一禁用条件；优先标记注明“仅保存偏好”，不宣称 Hub 已消费。公开截图更新为英文原生界面。本次仅更新源码，详见 [0907v3 更新说明](docs/release-notes-v9.5.7.md)。
 
 0907v2 相比 0907v1：主界面可选「列表 / 卡片」，默认保留垂直列表并记住选择；新增柔和渐变卡片网格，方便横向比较额度，两种视图共用全部账号操作和顺序。点击「编辑」后，拖动账号右上角三条横杠即可排序，带短过渡动效。列表的额度条上下排列、右侧操作顶对齐、红色重置提醒位于左下，终端按钮只保留图标；顶部统计可展开，完整账号资料与历史暖号在“详情”。没有修改账号调度或暖号策略，详见 [0907v2 更新说明](docs/release-notes-v9.5.6.md)。
 
@@ -21,9 +23,9 @@ Next 是面向 macOS 的本地优先 Codex 工作台，以独立产品名称、�
 
 0905v2 相比 0905v1：点击模型名或思考强度即可直接看到选项，不再经过同名二级菜单；账号卡、单账号工作台和菜单栏使用同一套修正。保存与 CLI 参数不变。详见 [0905v2 更新说明](docs/release-notes-v9.5.2.md)。
 
-![01 · Next 单账号工作台 · 2× 原生组件预览](docs/images/0905v3/01-next-single-account-workspace-zh-dark@2x.png)
+![01 · Next 英文卡片工作台 · 2× 原生组件预览](docs/images/0907v3/01-workspace-cards-en-dark@2x.png)
 
-> 当前素材按 01–24 连续编号，来自 0905v3 的实际 SwiftUI 组件，使用原生 2× 渲染。工作台为 2160 × 1520 px，设置页为 760 × 1220 px。所有账号、额度与订阅日期均为演示数据，不连接 Hub、不读取真实凭据或 Keychain；“状态待确认”是未连接的真实界面表现。查看[高清图片与中文用途索引](docs/images/0905v3/README.md)。保留的 0904v2 提醒局部图会单独标记版本。
+> 当前截图来自 0907v3 英文版生产 SwiftUI 组件的原生 2× 渲染，全部使用演示账号、额度和日期，不连接 Hub、不读取真实凭据或 Keychain。“Unverified”真实反映未连接状态；查看[英文截图索引](docs/images/0907v3/README.md)。旧版素材保留在原目录，历史提醒局部图会单独标记版本。
 
 ## 0905v1 更新重点
 
@@ -60,7 +62,7 @@ Next 是面向 macOS 的本地优先 Codex 工作台，以独立产品名称、�
 
 ## 一个账号也能使用
 
-![03 · Next 单账号菜单栏](docs/images/0905v3/03-next-single-account-menu-zh-dark@2x.png)
+![03 · Next 单账号菜单栏](docs/images/0907v3/03-single-account-menu-en-dark@2x.png)
 
 - 只有当前 Codex 登录时，直接查看额度，不要求注册第二个账号，不修改系统登录。
 - 单账号同样支持自动暖号。主动启用后，Next 按账号窗口与空闲状态发送最小请求，尝试启动下一轮计时；5 小时和 7 天分别控制，不必每轮手动发消息。暖号会消耗额度，条件与时间规律见[智能暖号](#智能暖号)。
@@ -68,7 +70,7 @@ Next 是面向 macOS 的本地优先 Codex 工作台，以独立产品名称、�
 - 同一身份的系统入口与独立入口不会被算成两个账号。单账号模式隐藏无意义的批量按钮，原有高级功能保留在“账号管理与自动化”。
 - CLI 与暖号仍需要下面的 Hub 映射与新鲜状态；未配置 Hub 的单账号用户可以先只读监控。专注模式不会把“状态未知”伪装成“空闲”。
 
-![02 · Next 多账号浅色工作台](docs/images/0905v3/02-next-multi-account-workspace-zh-light@2x.png)
+![02 · Next 多账号浅色工作台](docs/images/0907v3/04-workspace-list-en-light@2x.png)
 
 ## 五个常用账号动作，边界完全不同
 
@@ -84,7 +86,7 @@ Next 是面向 macOS 的本地优先 Codex 工作台，以独立产品名称、�
 
 ## 每账号执行偏好
 
-![04 · Next 模型、思考强度、Fast 与应用到所有账号](docs/images/0905v3/04-next-model-preferences-zh-dark@2x.png)
+![04 · Next 模型、思考强度、Fast 与应用到所有账号](docs/images/0907v3/05-model-settings-en-dark@2x.png)
 
 每个独立账号保存一份执行偏好；修改后立即用于该账号后续启动的 CLI 及其默认子 Agent，不写入账号的 `config.toml`。
 
@@ -169,7 +171,7 @@ Next 从本机 `http://127.0.0.1:8787/api/overview` 读取 Hub 概览，以账�
 
 ## 智能暖号
 
-![07 · Next 自动化设置，5 小时与 7 天独立开关](docs/images/0905v3/07-next-settings-automation-zh-dark@2x.png)
+![07 · Next 自动化设置，5 小时与 7 天独立开关](docs/images/0907v3/06-automation-en-dark@2x.png)
 
 5 小时与 7 天暖号分别开关，默认关闭，必须主动启用。
 
@@ -248,7 +250,7 @@ Next 读取官方 `windowDurationMins` 与 `resetsAt`。前者是窗口分钟数
 
 ## 个性化设置
 
-![05 · Next 外观设置，一级分区、主题预览和直接选择](docs/images/0905v3/05-next-settings-appearance-zh-dark@2x.png)
+![05 · Next 外观设置，一级分区、主题预览和直接选择](docs/images/0907v3/07-appearance-en-dark@2x.png)
 
 设置按使用目的拆成五个一级分区，不再把暖号、外观和系统信息混在同一张长表中。
 
@@ -260,7 +262,7 @@ Next 读取官方 `windowDurationMins` 与 `resetsAt`。前者是窗口分钟数
 | 工作区 | Runtime 来源、统计时区、置顶、后台驻留、全局快捷键 |
 | 关于 | 当前版本、Runtime、订阅计划、更新检查与开源来源 |
 
-![06 · Next 菜单栏设置，实时预览与直接选择](docs/images/0905v3/06-next-settings-menu-bar-zh-dark@2x.png)
+![06 · Next 菜单栏设置，实时预览与直接选择](docs/images/0907v3/08-menu-bar-en-dark@2x.png)
 
 设置图为真实 SwiftUI 组件的 760 × 1220 px 原生 2× 渲染，使用隔离演示数据，不读取用户凭据或触发暖号。中文／English、浅色／深色共 20 个分区预览用于布局验收。
 

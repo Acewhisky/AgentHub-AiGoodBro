@@ -428,7 +428,7 @@ final class CodexUsageReader {
         let performanceSpan = PerformanceMonitor.shared.begin(.appServerQuota)
         defer { PerformanceMonitor.shared.end(performanceSpan) }
         guard let codexPath = resolveCodexExecutablePath() else {
-            messages.append("未找到 codex 可执行文件")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("未找到 codex 可执行文件", "The Codex executable was not found."))
             return AppServerSnapshot()
         }
 
@@ -457,7 +457,7 @@ final class CodexUsageReader {
         do {
             try process.run()
         } catch {
-            messages.append("app-server 启动失败")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("app-server 启动失败", "Could not start app-server."))
             return AppServerSnapshot()
         }
 
@@ -522,7 +522,7 @@ final class CodexUsageReader {
 
             if object["error"] is [String: Any] {
                 lock.lock()
-                appServerMessages.append("app-server \(id): 请求失败")
+                appServerMessages.append(WidgetLanguage.storedOrAutomatic().text("app-server \(id): 请求失败", "app-server \(id): request failed."))
                 lock.unlock()
                 markComplete(id)
                 return
@@ -559,7 +559,7 @@ final class CodexUsageReader {
             writeLock.unlock()
             terminate(process)
             try? outputHandle.close()
-            messages.append("app-server 输出读取失败")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("app-server 输出读取失败", "Could not read app-server output."))
             return AppServerSnapshot()
         }
         let readerGroup = DispatchGroup()
@@ -587,7 +587,7 @@ final class CodexUsageReader {
                 buffer.append(data)
                 if buffer.count > maximumOutputBufferBytes {
                     lock.lock()
-                    appServerMessages.append("app-server 输出超过安全上限")
+                    appServerMessages.append(WidgetLanguage.storedOrAutomatic().text("app-server 输出超过安全上限", "app-server output exceeded the safety limit."))
                     lock.unlock()
                     requestedResponseIDs.forEach(markComplete)
                     break
@@ -621,7 +621,7 @@ final class CodexUsageReader {
 
         if responseGroup.wait(timeout: .now() + (quotaOnly ? 30 : 12)) == .timedOut {
             lock.lock()
-            appServerMessages.append("app-server 响应超时")
+            appServerMessages.append(WidgetLanguage.storedOrAutomatic().text("app-server 响应超时", "app-server response timed out."))
             lock.unlock()
         }
 
@@ -698,10 +698,12 @@ final class CodexUsageReader {
         snapshot.monthlyQuota = quotaReadSucceeded ? normalized.monthly : nil
         var diagnostics = rateLimitDiagnostics(for: normalized)
         if !hasWindowFields {
-            diagnostics.append("Codex 额度响应缺少窗口字段，未将其视为当前无限制")
+            diagnostics.append(
+                WidgetLanguage.storedOrAutomatic().text("Codex 额度响应缺少窗口字段，未将其视为当前无限制", "The Codex limit response is missing window fields. It is not treated as unlimited."))
         }
         if hasMalformedWindow {
-            diagnostics.append("Codex 额度窗口格式无法解析，未将其视为当前无限制")
+            diagnostics.append(
+                WidgetLanguage.storedOrAutomatic().text("Codex 额度窗口格式无法解析，未将其视为当前无限制", "Codex limit windows could not be parsed. They are not treated as unlimited."))
         }
         snapshot.rateLimitDiagnostics = diagnostics
 
@@ -782,25 +784,30 @@ final class CodexUsageReader {
         var messages: [String] = []
 
         if windows.fiveHourMatchCount > 1 {
-            messages.append("Codex 返回了重复的 5 小时额度窗口，已停止显示该窗口")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("Codex 返回了重复的 5 小时额度窗口，已停止显示该窗口", "Codex returned duplicate 5-hour windows. That window is hidden."))
         }
         if windows.sevenDayMatchCount > 1 {
-            messages.append("Codex 返回了重复的 7 天额度窗口，已停止显示该窗口")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("Codex 返回了重复的 7 天额度窗口，已停止显示该窗口", "Codex returned duplicate 7-day windows. That window is hidden."))
         }
         if windows.monthlyMatchCount > 1 {
-            messages.append("Codex 返回了重复的月额度窗口，已停止显示该窗口")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("Codex 返回了重复的月额度窗口，已停止显示该窗口", "Codex returned duplicate monthly windows. That window is hidden."))
         }
         let missingDurationCount = windows.unclassified.filter {
             $0.windowDurationMins == nil
         }.count
         if missingDurationCount > 0 {
-            messages.append("Codex 返回了缺少时长的额度窗口，未将其标注为 5 小时、7 天或月额度")
+            messages.append(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "Codex 返回了缺少时长的额度窗口，未将其标注为 5 小时、7 天或月额度", "A Codex limit window has no duration. It is not labeled as 5-hour, 7-day or monthly."))
         }
 
         let unknownDurations = Set(windows.unclassified.compactMap(\.windowDurationMins)).sorted()
         if !unknownDurations.isEmpty {
             let values = unknownDurations.map(String.init).joined(separator: "、")
-            messages.append("Codex 返回了未识别的额度窗口（\(values) 分钟），未将其标注为 5 小时、7 天或月额度")
+            messages.append(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "Codex 返回了未识别的额度窗口（\(values) 分钟），未将其标注为 5 小时、7 天或月额度",
+                    "Codex returned an unrecognized window (\(values) minutes). It is not labeled as 5-hour, 7-day or monthly."))
         }
 
         return messages
@@ -818,7 +825,7 @@ final class CodexUsageReader {
                 NSHomeDirectory() + "/.codex/sqlite/state_5.sqlite",
             ])
         else {
-            messages.append("未找到 Codex state_5.sqlite")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("未找到 Codex state_5.sqlite", "The Codex history database was not found."))
             return nil
         }
 
@@ -829,7 +836,7 @@ final class CodexUsageReader {
                 "/opt/homebrew/share/android-commandlinetools/platform-tools/sqlite3",
             ])
         else {
-            messages.append("未找到 sqlite3")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("未找到 sqlite3", "sqlite3 was not found."))
             return nil
         }
 
@@ -862,7 +869,7 @@ final class CodexUsageReader {
             let usageObjects = Optional(runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: usageQuery)),
             let recentObjects = Optional(runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: recentQuery))
         else {
-            messages.append("SQLite 查询失败")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("SQLite 查询失败", "The SQLite query failed."))
             return nil
         }
 
@@ -920,7 +927,7 @@ final class CodexUsageReader {
             let key = dayFormatter.string(from: date)
             return DailyTokenBucket(
                 id: key,
-                label: index == 6 ? "今天" : labelFormatter.string(from: date),
+                label: index == 6 ? WidgetLanguage.storedOrAutomatic().text("今天", "Today") : labelFormatter.string(from: date),
                 tokens: tokensByDay[key] ?? 0
             )
         }
@@ -991,7 +998,9 @@ final class CodexUsageReader {
         )
         guard suspiciousToday || suspiciousSevenDay else { return analytics }
 
-        messages.append("Codex token_count 精细统计与本机线程统计差异异常，已回退到线程口径")
+        messages.append(
+            WidgetLanguage.storedOrAutomatic().text(
+                "Codex token_count 精细统计与本机线程统计差异异常，已回退到线程口径", "Detailed token counts differ unexpectedly from local thread totals. Thread totals are used instead."))
         return LocalAnalytics(
             detailedUsage: nil,
             usageTrend: nil,
@@ -1038,7 +1047,7 @@ final class CodexUsageReader {
         if inferenceArchive != loadedInferenceArchive,
             !ModelInferenceHistoryStore.save(inferenceArchive, fileManager: fileManager)
         {
-            messages.append("推理表现历史清理后暂时无法写入本机")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("推理表现历史清理后暂时无法写入本机", "Inference history could not be saved after cleanup."))
         }
         let inferenceArchiveBeforeCollection = inferenceArchive
 
@@ -1081,7 +1090,7 @@ final class CodexUsageReader {
         }
 
         guard !sources.isEmpty else {
-            messages.append("未找到 Codex session 日志")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("未找到 Codex session 日志", "Codex session logs were not found."))
             return LocalAnalytics(
                 detailedUsage: nil,
                 usageTrend: nil,
@@ -1274,7 +1283,7 @@ final class CodexUsageReader {
 
                 if delta.date >= sevenDayStart {
                     let projectKey = source.cwd.isEmpty ? "未归类" : source.cwd
-                    let projectName = source.cwd.isEmpty ? "未归类" : shortWorkspaceName(source.cwd)
+                    let projectName = source.cwd.isEmpty ? WidgetLanguage.storedOrAutomatic().text("未归类", "Uncategorized") : shortWorkspaceName(source.cwd)
                     var project =
                         recentProjectUsage[projectKey]
                         ?? ProjectUsageAccumulator(
@@ -1318,7 +1327,7 @@ final class CodexUsageReader {
         if inferenceArchive != inferenceArchiveBeforeCollection,
             !ModelInferenceHistoryStore.save(inferenceArchive, fileManager: fileManager)
         {
-            messages.append("推理表现历史暂时无法写入本机")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("推理表现历史暂时无法写入本机", "Inference history could not be saved locally."))
         }
 
         writePersistentSessionUsageCache()
@@ -1328,7 +1337,7 @@ final class CodexUsageReader {
         )
 
         guard accumulator.parsedFileCount > 0, accumulator.tokenEventCount > 0 else {
-            messages.append("未找到 Codex token_count 事件")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("未找到 Codex token_count 事件", "No Codex token_count events were found."))
             let analytics = LocalAnalytics(
                 detailedUsage: nil,
                 usageTrend: nil,
@@ -1712,7 +1721,7 @@ final class CodexUsageReader {
             projects.append(
                 ProjectUsage(
                     id: path.isEmpty ? "uncategorized" : path,
-                    name: path.isEmpty ? "未归类" : shortWorkspaceName(path),
+                    name: path.isEmpty ? WidgetLanguage.storedOrAutomatic().text("未归类", "Uncategorized") : shortWorkspaceName(path),
                     fullPath: path,
                     tokens: total.tokens,
                     estimatedCostUSD: nil,
@@ -2316,7 +2325,7 @@ final class CodexUsageReader {
                 )
             }
         } else {
-            messages.append("任务看板未找到 SQLite 数据源")
+            messages.append(WidgetLanguage.storedOrAutomatic().text("任务看板未找到 SQLite 数据源", "The task board's SQLite source was not found."))
         }
 
         activeItems = sortedTaskItems(activeItems)
@@ -2327,10 +2336,10 @@ final class CodexUsageReader {
         return TaskBoard(
             refreshedAt: now,
             columns: [
-                TaskColumn(id: .active, title: "最近活跃", count: activeItems.count, items: activeItems),
-                TaskColumn(id: .pending, title: "待继续", count: pendingItems.count, items: pendingItems),
-                TaskColumn(id: .scheduled, title: "定时", count: scheduledItems.count, items: scheduledItems),
-                TaskColumn(id: .done, title: "今日归档", count: doneItems.count, items: doneItems),
+                TaskColumn(id: .active, title: WidgetLanguage.storedOrAutomatic().text("最近活跃", "Recently active"), count: activeItems.count, items: activeItems),
+                TaskColumn(id: .pending, title: WidgetLanguage.storedOrAutomatic().text("待继续", "To continue"), count: pendingItems.count, items: pendingItems),
+                TaskColumn(id: .scheduled, title: WidgetLanguage.storedOrAutomatic().text("定时", "Scheduled"), count: scheduledItems.count, items: scheduledItems),
+                TaskColumn(id: .done, title: WidgetLanguage.storedOrAutomatic().text("今日归档", "Archived today"), count: doneItems.count, items: doneItems),
             ])
     }
 

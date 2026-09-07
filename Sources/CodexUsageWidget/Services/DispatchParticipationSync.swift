@@ -54,19 +54,29 @@ enum DispatchParticipationError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .hubLocation: return "无法定位 Hub 配置，请从 build 目录启动或设置 CAMNEXT_HUB_CONFIG_PATH"
-        case .invalidSnapshot: return "Next 快照无效，未修改调度设置"
-        case .invalidHub: return "Hub 配置无效，未修改调度设置"
-        case .invalidCodes: return "调度编号文件无效或存在重复映射，未修改调度设置"
-        case .identityMismatch: return "账号身份与已保存快照不一致，请刷新后重试"
-        case .ambiguousAccount: return "无法唯一匹配 Hub 账号，请检查账号目录与编号映射"
-        case .codeExhausted: return "A–Z 调度编号已用尽，未修改调度设置"
-        case .fileAccess: return "无法安全读取调度配置，请检查文件和目录权限"
-        case .busy: return "另一项参与调度同步正在进行，请稍后重试"
-        case .concurrentChange: return "调度配置已被其他操作修改，请刷新后重试"
-        case .writeFailed: return "调度配置备份或写入失败，原配置未改变"
-        case .rolledBack: return "三源同步失败，已恢复本次写入前的配置"
-        case .rollbackFailed: return "三源同步失败且回滚未完成；已保留 dispatch-participation-backups 备份，请恢复后重试"
+        case .hubLocation:
+            return WidgetLanguage.storedOrAutomatic().text(
+                "无法定位 Hub 配置，请从 build 目录启动或设置 CAMNEXT_HUB_CONFIG_PATH", "Hub configuration was not found. Launch from the build folder or set CAMNEXT_HUB_CONFIG_PATH.")
+        case .invalidSnapshot: return WidgetLanguage.storedOrAutomatic().text("Next 快照无效，未修改调度设置", "The Next snapshot is invalid. Dispatch settings were not changed.")
+        case .invalidHub: return WidgetLanguage.storedOrAutomatic().text("Hub 配置无效，未修改调度设置", "The Hub configuration is invalid. Dispatch settings were not changed.")
+        case .invalidCodes: return WidgetLanguage.storedOrAutomatic().text("调度编号文件无效或存在重复映射，未修改调度设置", "Dispatch codes are invalid or duplicated. Settings were not changed.")
+        case .identityMismatch:
+            return WidgetLanguage.storedOrAutomatic().text("账号身份与已保存快照不一致，请刷新后重试", "The account identity does not match the saved snapshot. Refresh and try again.")
+        case .ambiguousAccount:
+            return WidgetLanguage.storedOrAutomatic().text(
+                "无法唯一匹配 Hub 账号，请检查账号目录与编号映射", "The Hub account could not be uniquely matched. Check its profile folder and dispatch code.")
+        case .codeExhausted: return WidgetLanguage.storedOrAutomatic().text("A–Z 调度编号已用尽，未修改调度设置", "All A–Z dispatch codes are in use. Settings were not changed.")
+        case .fileAccess:
+            return WidgetLanguage.storedOrAutomatic().text("无法安全读取调度配置，请检查文件和目录权限", "Dispatch configuration cannot be read safely. Check file and folder permissions.")
+        case .busy: return WidgetLanguage.storedOrAutomatic().text("另一项参与调度同步正在进行，请稍后重试", "Another dispatch-pool sync is running. Try again shortly.")
+        case .concurrentChange: return WidgetLanguage.storedOrAutomatic().text("调度配置已被其他操作修改，请刷新后重试", "Dispatch configuration changed elsewhere. Refresh and try again.")
+        case .writeFailed:
+            return WidgetLanguage.storedOrAutomatic().text("调度配置备份或写入失败，原配置未改变", "Could not back up or save dispatch settings. The original configuration is unchanged.")
+        case .rolledBack: return WidgetLanguage.storedOrAutomatic().text("三源同步失败，已恢复本次写入前的配置", "The three-store sync failed. The previous configuration was restored.")
+        case .rollbackFailed:
+            return WidgetLanguage.storedOrAutomatic().text(
+                "三源同步失败且回滚未完成；已保留 dispatch-participation-backups 备份，请恢复后重试",
+                "The three-store sync failed and rollback is incomplete. Restore the retained dispatch-participation-backups before retrying.")
         }
     }
 }

@@ -24,6 +24,16 @@ enum WidgetLanguage: String, CaseIterable, Equatable {
 
     var isChinese: Bool { self == .zh }
 
+    var locale: Locale { Locale(identifier: isChinese ? "zh_CN" : "en_US") }
+
+    func dateTime(_ date: Date) -> String {
+        date.formatted(.dateTime.month(.abbreviated).day().hour().minute().locale(locale))
+    }
+
+    func tokens(_ value: Int64?) -> String {
+        isChinese ? TokenFormatter.formatChineseTotal(value) : TokenFormatter.format(value)
+    }
+
     static func storedOrAutomatic(defaults: UserDefaults = .standard) -> WidgetLanguage {
         guard let rawValue = defaults.string(forKey: storageKey),
             let language = WidgetLanguage(rawValue: rawValue)
@@ -37,6 +47,17 @@ enum WidgetLanguage: String, CaseIterable, Equatable {
 
     func text(_ zh: String, _ en: String) -> String {
         isChinese ? zh : en
+    }
+}
+
+private struct WidgetLanguageEnvironmentKey: EnvironmentKey {
+    static var defaultValue: WidgetLanguage { .storedOrAutomatic() }
+}
+
+extension EnvironmentValues {
+    var widgetLanguage: WidgetLanguage {
+        get { self[WidgetLanguageEnvironmentKey.self] }
+        set { self[WidgetLanguageEnvironmentKey.self] = newValue }
     }
 }
 
