@@ -83,6 +83,8 @@ final class UsageStore: ObservableObject {
     private var warmUpTimer: Timer?
     private var quotaEventTracker = CodexQuotaEventTracker()
     private var warmUpMaintenanceTimer: Timer?
+    private var quotaResetRefreshTimer: Timer?
+    private var quotaResetRefreshAttempts: [String: Date] = [:]
     private var systemTimeZoneObserver: NSObjectProtocol?
     private var powerStateObserver: NSObjectProtocol?
     private var thermalStateObserver: NSObjectProtocol?
@@ -134,12 +136,12 @@ final class UsageStore: ObservableObject {
     init() {
         isPreview = false
         statisticsPreference = StatisticsTimeZonePreferenceStore.load()
-        warmUpSelection = CodexWarmUpSelection.load()
         automaticAccountSwitchEnabled = UserDefaults.standard.bool(forKey: CodexAutomaticSwitchPolicy.enabledDefaultsKey)
         feishuNotificationsEnabled = UserDefaults.standard.bool(forKey: Self.feishuNotificationsEnabledKey)
         feishuQuotaResetEnabled = UserDefaults.standard.bool(forKey: Self.feishuQuotaResetEnabledKey)
         feishuResetCreditEnabled = UserDefaults.standard.bool(forKey: Self.feishuResetCreditEnabledKey)
         let profileStore = CodexProfileStore()
+        warmUpSelection = CodexWarmUpSelection.load(hasExistingInstallation: profileStore.hadSavedStateOnLoad)
         try? profileStore.discardUnverifiedManagedProfiles()
         self.profileStore = profileStore
         profiles = profileStore.profiles
@@ -481,8 +483,8 @@ final class UsageStore: ObservableObject {
                 ? WidgetLanguage.storedOrAutomatic().text(
                     "该账号已加入调度；Next、Hub 配置与编号已同步（Hub 重载后生效）", "Account added to the pool. Next, Hub config and pool code are synced; Hub reload is required.")
                 : WidgetLanguage.storedOrAutomatic().text(
-                    "该账号已排除调度并移除编号；保留 7 天与官方随机重置暖号（Hub 重载后生效）",
-                    "Account removed from the pool and its code cleared. Weekly and unexpected-reset warm-up remain enabled; Hub reload is required.")
+                    "该账号已排除调度并移除编号；额度刷新、5 小时与 7 天暖号照常（Hub 重载后调度设置生效）",
+                    "Account removed from the pool and its code cleared. Limit refresh and both warm-up windows continue; Hub reload applies the dispatch change.")
             debugLog("dispatch participation: three-source sync succeeded")
             refreshWarmUpProfilesThenSchedule()
         } catch {
@@ -2008,6 +2010,47 @@ final class UsageStore: ObservableObject {
         refreshWarmUpProfilesThenSchedule()
     }
 
+    private func scheduleQuotaResetRefresh(at retryAt: Date? = nil) {
+        quotaResetRefreshTimer?.invalidate()
+        quotaResetRefreshTimer = nil
+        guard hasStarted, !isPreview else { return }
+        let now = Date()
+        guard
+            let deadline = retryAt
+                ?? profiles.compactMap({
+                    CodexWarmUpPolicy.nextQuotaResetRefreshDate(for: $0, lastAttemptAt: quotaResetRefreshAttempts[$0.id], now: now)
+                }).min()
+        else { return }
+        let timer = Timer(fire: max(deadline, now.addingTimeInterval(1)), interval: 0, repeats: false) { [weak self] _ in
+            guard let self, self.hasStarted else { return }
+            self.quotaResetRefreshTimer = nil
+            guard !self.isRefreshingWarmUpProfiles, self.warmingProfileID == nil,
+                !self.isLoggingIn, !self.isLaunchingCodex, !self.isAccountSwitchTransactionActive
+            else {
+                self.scheduleQuotaResetRefresh(at: Date().addingTimeInterval(5))
+                return
+            }
+            let now = Date()
+            let dueIDs = Set(
+                self.profiles.filter {
+                    CodexWarmUpPolicy.nextQuotaResetRefreshDate(for: $0, lastAttemptAt: self.quotaResetRefreshAttempts[$0.id], now: now).map { $0 <= now } ?? false
+                }.map(\.id))
+            guard !dueIDs.isEmpty else {
+                self.scheduleQuotaResetRefresh()
+                return
+            }
+            for id in dueIDs { self.quotaResetRefreshAttempts[id] = now }
+            self.refreshWarmUpProfilesThenSchedule(
+                performWarmUpAfterRefresh: self.warmUpSelection.isEnabled,
+                profileIDs: dueIDs,
+                quotaOnly: true
+            )
+        }
+        timer.tolerance = 1
+        RunLoop.main.add(timer, forMode: .common)
+        quotaResetRefreshTimer = timer
+    }
+
     /// 独立维护所有账号的官方额度：暖号开启时每 10 分钟刷新，关闭时每 30 分钟刷新。
     /// 维护刷新始终 quota-only，不会发送暖号请求；暖号仅由独立的到期判定触发。
     private func scheduleWarmUpMaintenanceTimer() {
@@ -2104,9 +2147,7 @@ final class UsageStore: ObservableObject {
         if let failureText = quotaFailureStatusText(for: profile, language: language) {
             parts.append(failureText)
         }
-        if warmUpSelection.fiveHour, !selection.fiveHour {
-            parts.append(language.text("5 小时已排除 · 官方随机重置仍会暖号", "5h warm-up excluded · unexpected resets still trigger warm-up"))
-        } else if selection.fiveHour {
+        if selection.fiveHour {
             if CodexWarmUpPolicy.shouldSkipFiveHourToProtectWeekly(profile) {
                 parts.append(language.text("5 小时已暂停 · 7 天额度不足", "5h warm-up paused · weekly limit low"))
             } else {
@@ -2178,6 +2219,7 @@ final class UsageStore: ObservableObject {
         let unexpected = unexpectedWarmUpKindsByAccount[profile.recordedAccountKey] ?? []
         guard manual || warmUpSelection.isEnabled,
             warmingProfileID == nil,
+            !isRefreshingWarmUpProfiles,
             !isLoggingIn,
             !isLaunchingCodex,
             !isAccountSwitchTransactionActive,
@@ -2275,7 +2317,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func hubAccountAlias(for profile: CodexProfile) -> String? {
-        DispatchCodeCatalog.alias(for: profile.id)
+        configuredHubAccountAlias(for: profile)
     }
 
     private func nextDueWarmUpProfile(now: Date = Date()) -> CodexProfile? {
@@ -2300,6 +2342,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func scheduleWarmUpTimer() {
+        guard !isRefreshingWarmUpProfiles else { return }
         warmUpTimer?.invalidate()
         warmUpTimer = nil
         guard warmUpSelection.isEnabled, hasStarted, warmingProfileID == nil else { return }
@@ -2479,8 +2522,9 @@ final class UsageStore: ObservableObject {
     private func refreshWarmUpProfilesThenSchedule(
         performWarmUpAfterRefresh: Bool = true,
         profileIDs: Set<String>? = nil,
-        quotaOnly: Bool = false,
+        quotaOnly: Bool = true,
         retryQuotaReadOnce: Bool = false,
+        refreshMembershipDates: Bool = true,
         completion: ((Bool) -> Void)? = nil
     ) {
         if performWarmUpAfterRefresh {
@@ -2577,6 +2621,7 @@ final class UsageStore: ObservableObject {
                 }
                 self.syncProfiles()
                 completion?(snapshots.contains { $0.1.quotaReadSucceeded })
+                if refreshMembershipDates { self.refreshExpiredMembershipDates() }
                 if performWarmUpAfterRefresh {
                     if self.warmUpSelection.isEnabled {
                         self.runDueWarmUp()
@@ -2617,7 +2662,8 @@ final class UsageStore: ObservableObject {
             performWarmUpAfterRefresh: false,
             profileIDs: profileIDs,
             quotaOnly: true,
-            retryQuotaReadOnce: true
+            retryQuotaReadOnce: true,
+            refreshMembershipDates: false
         )
     }
 
@@ -2743,6 +2789,7 @@ final class UsageStore: ObservableObject {
         scheduleStatisticsRollover()
         scheduleFullRefreshTimer()
         scheduleWarmUpMaintenanceTimer()
+        scheduleQuotaResetRefresh()
         if wakeObserver == nil {
             wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didWakeNotification,
@@ -2779,6 +2826,105 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    private func configuredHubAccountAlias(for profile: CodexProfile) -> String? {
+        if let alias = DispatchCodeCatalog.alias(for: profile.id) { return HubAccountTaskStatusResolver.canonicalAlias(alias) }
+        // Monitoring-only accounts have no dispatch code. Match their existing Hub home without opting them in.
+        let snapshotURL = DispatchParticipationPaths.supportDirectory().appendingPathComponent(DispatchParticipationPaths.snapshotFileName)
+        guard let paths = try? DispatchParticipationPaths.live(snapshot: snapshotURL),
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(paths.hubConfig, maximumBytes: 256 * 1_024),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let accounts = object["accounts"] as? [[String: Any]],
+            accounts.count <= DispatchParticipationSync.maximumCatalogEntries
+        else { return nil }
+        let aliases = accounts.compactMap { ($0["alias"] as? String).map(HubAccountTaskStatusResolver.canonicalAlias) }
+        guard aliases.count == accounts.count, !aliases.contains(""), Set(aliases).count == aliases.count else { return nil }
+        let expectedHome = profile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+        let matches = accounts.filter {
+            guard let home = $0["home"] as? String, home.hasPrefix("/") else { return false }
+            return URL(fileURLWithPath: home).resolvingSymlinksInPath().standardizedFileURL == expectedHome
+        }
+        guard matches.count == 1, let alias = matches[0]["alias"] as? String else { return nil }
+        return HubAccountTaskStatusResolver.canonicalAlias(alias)
+    }
+
+    private func refreshExpiredMembershipDates() {
+        guard hasStarted, !isPreview, !isRefreshingWarmUpProfiles, warmingProfileID == nil,
+            !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive
+        else { return }
+        let systemAccountKey = profiles.first(where: \.isSystemProfile)?.recordedAccountKey
+        let candidates = Array(
+            profiles.filter {
+                CodexOfficialProfileReader.needsMembershipRefresh($0, systemAccountKey: systemAccountKey)
+                    && hubAccountAlias(for: $0) != nil
+            }.prefix(4))
+        guard !candidates.isEmpty else { return }
+        let candidateIDs = Set(candidates.map(\.id))
+        let preference = statisticsPreference
+        isRefreshingWarmUpProfiles = true
+        refreshingProfileIDs.formUnion(candidateIDs)
+        warmUpRefreshStartedAt = Date()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for candidate in candidates {
+                guard self.hasStarted, !self.isLoggingIn, !self.isLaunchingCodex,
+                    !self.isAccountSwitchTransactionActive, self.warmingProfileID == nil,
+                    let profile = self.profiles.first(where: { $0.id == candidate.id }),
+                    CodexOfficialProfileReader.needsMembershipRefresh(profile, systemAccountKey: systemAccountKey),
+                    let alias = self.hubAccountAlias(for: profile),
+                    let overview = try? await HubConsoleModel.fetchInspectionOverview(),
+                    HubWarmUpAvailability.resolve(for: alias, overview: overview) == .idle
+                else { continue }
+                guard self.hasStarted, !self.isLoggingIn, !self.isLaunchingCodex,
+                    !self.isAccountSwitchTransactionActive, self.warmingProfileID == nil
+                else { break }
+                let attemptedAt = Date()
+                do {
+                    try self.profileStore.recordMembershipRefresh(at: attemptedAt, succeeded: false, for: profile.id)
+                } catch { continue }
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "正在更新 \(AccountDisplay.profileName(profile)) 的会员日期…",
+                    "Updating the subscription date for \(AccountDisplay.profileName(profile))…")
+                let result = await Task.detached(priority: .utility) {
+                    let context = RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: profile.codexHomeURL)
+                    let reader = CodexUsageReader()
+                    var messages: [String] = []
+                    let account = reader.readQuotaSnapshot(
+                        context: context, quotaOnly: true, messages: &messages, refreshingMembershipFor: profile)
+                    let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL)
+                    let succeeded = account.membershipRefreshSucceeded && profile.matchesRecordedCredential(identity)
+                    let official = succeeded ? CodexOfficialProfileReader.load(codexHomeURL: profile.codexHomeURL) : nil
+                    let snapshot = reader.finishingLoad(appServer: account, messages: messages, context: context, quotaOnly: true)
+                    return (succeeded, official, snapshot)
+                }.value
+                guard self.hasStarted,
+                    self.profiles.first(where: { $0.id == profile.id })?.recordedAccountKey == profile.recordedAccountKey
+                else { break }
+                let succeeded = result.0 && result.1 != nil
+                try? self.profileStore.recordMembershipRefresh(at: attemptedAt, succeeded: succeeded, for: profile.id)
+                if let official = result.1 { try? self.profileStore.recordOfficialProfile(official, for: profile.id) }
+                if result.2.quotaReadSucceeded { try? self.profileStore.record(result.2, for: profile.id) }
+                self.syncProfiles()
+                self.accountManagerMessage =
+                    succeeded
+                    ? WidgetLanguage.storedOrAutomatic().text(
+                        "\(AccountDisplay.profileName(profile)) 的会员日期已重新核查",
+                        "Subscription date rechecked for \(AccountDisplay.profileName(profile)).")
+                    : WidgetLanguage.storedOrAutomatic().text(
+                        "\(AccountDisplay.profileName(profile)) 的会员日期刷新失败，稍后自动重试",
+                        "Could not update the subscription date for \(AccountDisplay.profileName(profile)). It will retry later.")
+            }
+            self.isRefreshingWarmUpProfiles = false
+            self.refreshingProfileIDs.subtract(candidateIDs)
+            self.warmUpRefreshStartedAt = nil
+            guard self.hasStarted else { return }
+            if self.hasPendingDispatchQuotaRefresh {
+                self.hasPendingDispatchQuotaRefresh = false
+                self.requestDispatchQuotaRefresh()
+            }
+            self.scheduleWarmUpTimer()
+        }
+    }
+
     func stop() {
         hasStarted = false
         taskClient.stop()
@@ -2790,6 +2936,9 @@ final class UsageStore: ObservableObject {
         warmUpTimer = nil
         warmUpMaintenanceTimer?.invalidate()
         warmUpMaintenanceTimer = nil
+        quotaResetRefreshTimer?.invalidate()
+        quotaResetRefreshTimer = nil
+        quotaResetRefreshAttempts.removeAll()
         warmUpRefreshStartedAt = nil
         isRefreshingWarmUpProfiles = false
         refreshingProfileIDs.removeAll()
@@ -3259,6 +3408,8 @@ final class UsageStore: ObservableObject {
 
     private func syncProfiles() {
         profiles = profileStore.profiles
+        let activeProfileIDs = Set(profiles.map(\.id))
+        quotaResetRefreshAttempts = quotaResetRefreshAttempts.filter { activeProfileIDs.contains($0.key) }
         let observed = Self.observedOfficialLifetimeTokens(in: profiles)
         officialAccountsLifetimeTokens =
             isPreview
@@ -3266,6 +3417,7 @@ final class UsageStore: ObservableObject {
             : Self.persistedHighWater(forKey: Self.officialLifetimeHighWaterKey, observed: observed)
         selectedMonitorProfileID = profileStore.selectedMonitorProfileID
         selectedLaunchProfileID = profileStore.selectedLaunchProfileID
+        scheduleQuotaResetRefresh()
     }
 
     private func updateLocalLifetimeHighWater() {

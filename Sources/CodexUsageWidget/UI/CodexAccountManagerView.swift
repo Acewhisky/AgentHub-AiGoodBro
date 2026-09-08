@@ -2931,8 +2931,8 @@ private struct ProfileRow: View {
             .accessibilityValue(participatesInAutomaticSwitch ? language.text("已加入", "Included") : language.text("已排除", "Excluded"))
             .help(
                 language.text(
-                    "同步 Next 调度范围、Hub 配置和账号编号（Hub 重载后生效）；开启后参与低额度推荐与 5 小时暖号，关闭仍保留 7 天暖号",
-                    "Syncs pool membership, Hub config and account code (effective after Hub reload). Includes low-limit suggestions and 5h warm-up. Weekly warm-up remains independent."
+                    "只控制派单与低额度推荐，同步 Hub 配置和账号编号（Hub 重载后生效）；关闭后仍刷新额度、会员日期，并按全局开关执行 5 小时与 7 天暖号",
+                    "Controls task assignment and low-limit suggestions; syncs Hub config and pool code after reload. Limit and subscription refresh, plus both warm-up windows, remain independent."
                 )
             )
             .frame(maxWidth: .infinity)
@@ -3151,9 +3151,15 @@ private struct ProfileRow: View {
     private func membershipDetail(_ activeUntil: Date) -> String {
         let remainingDays = membershipRemainingDays(activeUntil)
         let date = activeUntil.formatted(.dateTime.month().day().locale(language.locale))
-        return remainingDays >= 0
-            ? language.text("会员有效期还有 \(remainingDays) 天 · 至 \(date)", "Subscription: \(remainingDays) days left · until \(date)")
-            : language.text("会员日期待刷新 · 原记录至 \(date)", "Subscription date needs refresh · last reported until \(date)")
+        if remainingDays >= 0 {
+            return language.text("会员有效期还有 \(remainingDays) 天 · 至 \(date)", "Subscription: \(remainingDays) days left · until \(date)")
+        }
+        if let checkedAt = profile.lastMembershipRefreshAt, checkedAt >= activeUntil {
+            return profile.lastMembershipRefreshSucceeded == true
+                ? language.text("已核查，官方日期未更新 · 原记录至 \(date)", "Rechecked; no new subscription date · last reported until \(date)")
+                : language.text("会员日期刷新失败，稍后重试 · 原记录至 \(date)", "Subscription date refresh failed; retrying later · last reported until \(date)")
+        }
+        return language.text("会员日期待刷新 · 原记录至 \(date)", "Subscription date needs refresh · last reported until \(date)")
     }
 
     private func membershipTint(_ activeUntil: Date) -> Color {

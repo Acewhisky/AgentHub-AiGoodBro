@@ -29,6 +29,14 @@ enum HubWarmUpAvailability: Equatable {
     case idle
     case busy
     case unavailable
+
+    static func resolve(for accountAlias: String, overview: HubOverview, now: Date = Date()) -> Self {
+        let alias = HubAccountTaskStatusResolver.canonicalAlias(accountAlias)
+        guard !alias.isEmpty, let tasks = overview.tasks else { return .unavailable }
+        let status = HubAccountTaskStatusResolver.status(
+            for: HubAccountTaskStatusResolver.latestTasksByAlias(tasks, now: now)[alias], now: now)
+        return status.blocksLocalCLI ? .busy : .idle
+    }
 }
 
 enum HubConnectionState: Equatable {
@@ -272,10 +280,7 @@ enum HubConsoleModel {
         guard !alias.isEmpty else { return .unavailable }
         do {
             let overview = try await fetchInspectionOverview()
-            let tasks = HubAccountTaskStatusResolver.latestTasksByAlias(overview.tasks ?? [])
-            let status = HubAccountTaskStatusResolver.status(for: tasks[alias], now: Date())
-            if status.phase == .unavailable { return .unavailable }
-            return status.blocksLocalCLI ? .busy : .idle
+            return HubWarmUpAvailability.resolve(for: alias, overview: overview)
         } catch {
             return .unavailable
         }
@@ -335,6 +340,16 @@ enum HubWarmUpGateSelfTest {
         func expect(_ condition: @autoclosure () -> Bool, _ name: String) {
             if !condition() { failures.append(name) }
         }
+
+        expect(
+            HubWarmUpAvailability.resolve(for: "account-a", overview: HubOverview(tasks: nil), now: now) == .unavailable,
+            "missing task evidence blocks warm-up")
+        expect(
+            HubWarmUpAvailability.resolve(for: "account-a", overview: HubOverview(tasks: []), now: now) == .idle,
+            "explicitly empty task list allows idle maintenance")
+        expect(
+            HubWarmUpAvailability.resolve(for: "account-a", overview: HubOverview(tasks: [task(state: "running")]), now: now) == .busy,
+            "active task blocks maintenance")
 
         let busyStates: [(String, HubAccountTaskPhase)] = [
             ("awaiting_approval", .awaitingApproval),

@@ -285,12 +285,14 @@ final class CodexUsageReader {
     func readQuotaSnapshot(
         context: RuntimeLoadContext,
         quotaOnly: Bool,
-        messages: inout [String]
+        messages: inout [String],
+        refreshingMembershipFor profile: CodexProfile? = nil
     ) -> AppServerSnapshot {
         return readAppServer(
             context: context,
             messages: &messages,
-            quotaOnly: quotaOnly
+            quotaOnly: quotaOnly,
+            refreshingMembershipFor: profile
         )
     }
 
@@ -397,6 +399,7 @@ final class CodexUsageReader {
 
     struct AppServerSnapshot {
         var account: AccountInfo?
+        var membershipRefreshSucceeded = false
         var limitId: String?
         var limitName: String?
         var quotaReadSucceeded = false
@@ -411,7 +414,8 @@ final class CodexUsageReader {
     private func readAppServer(
         context: RuntimeLoadContext,
         messages: inout [String],
-        quotaOnly: Bool
+        quotaOnly: Bool,
+        refreshingMembershipFor profile: CodexProfile? = nil
     ) -> AppServerSnapshot {
         // 系统默认 home 是官方 Codex 正在使用的登录，保持原有全局门禁不变；
         // 其他账号 home 只涉及自身凭据，按 home 互斥即可允许跨账号并行读取。
@@ -419,12 +423,27 @@ final class CodexUsageReader {
         let systemHomePath = context.homeDirectory
             .appendingPathComponent(".codex", isDirectory: true)
             .standardizedFileURL.path
+        if profile != nil { CodexCredentialAccessGate.lock.lock() }
+        defer { if profile != nil { CodexCredentialAccessGate.lock.unlock() } }
         let gate: NSRecursiveLock =
             homePath == systemHomePath
             ? CodexCredentialAccessGate.lock
             : CodexCredentialAccessGate.homeLock(forHomePath: homePath)
         gate.lock()
         defer { gate.unlock() }
+        if let profile {
+            let systemHome = context.homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+            let managedRoot = context.homeDirectory.appendingPathComponent(".codex-account-manager-next/profiles", isDirectory: true)
+            let resolvedHome = context.codexHomeDirectory.resolvingSymlinksInPath().standardizedFileURL
+            guard !profile.isSystemProfile,
+                profile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL == resolvedHome,
+                resolvedHome.deletingLastPathComponent() == managedRoot.resolvingSymlinksInPath().standardizedFileURL,
+                let systemIdentity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: systemHome),
+                let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: resolvedHome),
+                identity.accountID != systemIdentity.accountID,
+                profile.matchesRecordedCredential(identity)
+            else { return AppServerSnapshot() }
+        }
         let performanceSpan = PerformanceMonitor.shared.begin(.appServerQuota)
         defer { PerformanceMonitor.shared.end(performanceSpan) }
         guard let codexPath = resolveCodexExecutablePath() else {
@@ -488,6 +507,11 @@ final class CodexUsageReader {
         var sentAccountRequests = false
         var appServerMessages: [String] = []
 
+        func writeUsageRequests() {
+            writeMessage(["id": 3, "method": "account/rateLimits/read"])
+            if !quotaOnly { writeMessage(["id": 4, "method": "account/usage/read"]) }
+        }
+
         func markComplete(_ id: Int) {
             lock.lock()
             let inserted = completed.insert(id).inserted
@@ -511,18 +535,18 @@ final class CodexUsageReader {
 
                 if shouldSend {
                     writeMessage(["method": "initialized"])
-                    writeMessage(["id": 2, "method": "account/read", "params": ["refreshToken": false]])
-                    writeMessage(["id": 3, "method": "account/rateLimits/read"])
-                    if !quotaOnly {
-                        writeMessage(["id": 4, "method": "account/usage/read"])
-                    }
+                    writeMessage(["id": 2, "method": "account/read", "params": ["refreshToken": profile != nil]])
+                    if profile == nil { writeUsageRequests() }
                 }
                 return
             }
 
-            if object["error"] is [String: Any] {
+            // A proactive refresh must finish before the quota request uses its credentials.
+            if id == 2, profile != nil { writeUsageRequests() }
+
+            if let error = object["error"] as? [String: Any] {
                 lock.lock()
-                appServerMessages.append(WidgetLanguage.storedOrAutomatic().text("app-server \(id): 请求失败", "app-server \(id): request failed."))
+                appServerMessages.append(Self.appServerFailureMessage(requestID: id, error: error))
                 lock.unlock()
                 markComplete(id)
                 return
@@ -537,6 +561,7 @@ final class CodexUsageReader {
             switch id {
             case 2:
                 snapshot.account = parseAccount(result)
+                snapshot.membershipRefreshSucceeded = profile?.matchesRecordedAccount(email: snapshot.account?.email) == true
             case 3:
                 parseRateLimits(result, into: &snapshot)
             case 4:
@@ -648,6 +673,14 @@ final class CodexUsageReader {
         messages.append(contentsOf: finalSnapshot.rateLimitDiagnostics)
 
         return finalSnapshot
+    }
+
+    static func appServerFailureMessage(requestID: Int, error: [String: Any]) -> String {
+        // Classify in memory; never retain the server message, which may contain credentials or identifiers.
+        if let reason = CodexProfileStore.quotaFailureReason(from: [error["message"] as? String ?? ""]) {
+            return "app-server \(requestID): \(reason)"
+        }
+        return WidgetLanguage.storedOrAutomatic().text("app-server \(requestID): 请求失败", "app-server \(requestID): request failed.")
     }
 
     private func parseAccount(_ result: [String: Any]) -> AccountInfo? {

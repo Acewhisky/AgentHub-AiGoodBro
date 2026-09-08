@@ -4,12 +4,14 @@
 
 [![CI](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-![Version 0907v3](https://img.shields.io/badge/version-0907v3-6C4DFF)
+![Version 0908v3](https://img.shields.io/badge/version-0908v3-6C4DFF)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Next is a local-first macOS workspace for one or multiple Codex accounts, maintained under its own product identity, interface and release channel. Inspect official quota, opt into warm-up, choose GPT-6 Astra or another task model, and pass model, reasoning effort and Standard/Fast speed to an isolated CLI. Multiple accounts retain occupancy monitoring and isolated account homes.
+Next is a local-first macOS workspace for one or multiple Codex accounts, maintained under its own product identity, interface and release channel. Inspect official quota, control automatic warm-up, choose GPT-6 Astra or another task model, and pass model, reasoning effort and Standard/Fast speed to an isolated CLI. Multiple accounts retain occupancy monitoring and isolated account homes.
 
-Current source version: `0907v3` · `9.5.7 (19)`. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+Current source version: `0908v3` · `9.5.8 (22)`. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+
+0908v3 versus 0908v2: accounts excluded from dispatch still refresh limits and subscription dates, and follow both global warm-up switches. Expired subscription dates trigger a guarded official credential refresh and recheck, with retry backoff and explicit results. Previous behavior is retained: official 5-hour and 7-day reset deadlines trigger quota reads by default, including when warm-up is off, an account is excluded from dispatch, or cached quota is exhausted. Failed reads and old exhausted windows are checked again with backoff. Fresh installations enable warm-up; upgrades preserve existing choices. Sign-in failures retain a safe error classification. This version has passed local overwrite-installation validation; see the [0908v3 notes](docs/release-notes-v9.5.8.md).
 
 0907v3 versus 0907v2: completed English labels, action feedback, date/token formatting and notification copy. Missing 5-hour limits now use a dash with a short explanation; an exhausted weekly limit makes 5-hour availability zero in cards, the overview and menu bar without changing official data. CLI entry points share the same disabled states, and Priority explicitly says Saved only because Hub does not yet use that preference. Public screenshots now show the English native interface. This is a source-only update; see the [0907v3 notes](docs/release-notes-v9.5.7.md).
 
@@ -173,9 +175,9 @@ The old fixed `gpt-5.6-sol + high` configuration baseline has been removed so a 
 
 ![07 · Next independent five-hour and seven-day warm-up controls](docs/images/0907v3/06-automation-en-dark@2x.png)
 
-The 5-hour and 7-day warm-up controls are independent, off by default, and opt-in.
+The 5-hour and 7-day warm-up controls are independent and enabled on a fresh installation. Upgrades preserve previous choices, including an older installation's unsaved default-off state. Warm-up sends a real minimal request and consumes quota; either control can be turned off at any time.
 
-Single-account users can also enable automatic warm-up; a second account is not required. Next must remain running on an awake, connected Mac, and identity, quota, Hub mapping and idle-state checks must pass. Five-hour warm-up normally follows account dispatch participation, with separate handling for detected unexpected resets. Seven-day warm-up is independently controlled.
+Single-account users can also enable automatic warm-up; a second account is not required. Next must remain running on an awake, connected Mac, and identity, quota, Hub mapping and idle-state checks must pass. Both warm-up windows follow their global switches independently of dispatch participation. Accounts excluded from dispatch still refresh limits and subscription dates and warm up eligible windows.
 
 ### How the five-hour window relates to warm-up
 
@@ -190,14 +192,14 @@ For illustration, if a request at 9 a.m. starts a window and the server reports 
 Execution flow:
 
 1. Perform a quota-only refresh and verify identity plus fresh quota.
-2. Require a provisioned dispatch alias and confirm that the fresh Hub overview has no active task for that alias.
+2. Resolve the alias from dispatch codes or the existing Hub account home, then confirm that the fresh Hub overview has no active task for that alias. A missing task list blocks warm-up.
 3. Use a temporary, cookie-free, cache-free session against the ChatGPT Codex backend SSE endpoint.
 4. Send `gpt-5.6-luna`, `store:false`, and a minimal `hi` input.
 5. Refresh quota on success. On failure, record a classified result and do not retry the same idle window automatically.
 
 The implementation uses a 45-second request timeout, 90-second resource timeout, 64 KiB response limit, 1 MiB auth-file read limit, and rejects redirects. Authentication loss, 403, 429, server errors, network failures, timeouts, oversized responses, and incomplete SSE are reported separately.
 
-While warm-up is active, conflicting add, login, delete, switch, and manual-refresh mutations are blocked. All-account quota maintenance runs every 10 minutes while either warm-up is enabled and every 30 minutes while both are disabled. A 7-day remaining quota at or below 5% pauses automatic 5-hour warm-up.
+While warm-up is active, conflicting add, login, delete, switch, and manual-refresh mutations are blocked. All-account quota maintenance runs every 10 minutes while either warm-up is enabled and every 30 minutes while both are disabled. Known official reset deadlines also trigger a quota read, regardless of warm-up controls, dispatch participation or an exhausted cached quota. Failed reads or an old exhausted window still reported after its deadline are checked again at least 60 seconds apart. Failed reads retain the previous snapshot and block warm-up until fresh quota is confirmed. A 7-day remaining quota at or below 5% pauses automatic 5-hour warm-up.
 
 The protocol implementation references [qxcnm/Codex-Manager](https://github.com/qxcnm/Codex-Manager) under MIT terms. See [THIRD_PARTY_NOTICES.txt](Resources/THIRD_PARTY_NOTICES.txt).
 
@@ -329,18 +331,18 @@ codesign --verify --deep --strict build/CodexAccountManagerNext.app
 5. Choose model, reasoning effort, and Standard/Fast per account; use Apply to All only when desired.
 6. Confirm Hub is online and the account reports Idle before using Use in Terminal.
 7. Use Switch Desktop only when you intentionally want to replace the Codex app's current login.
-8. Enable Smart Warm-up, low-quota recommendations, and Feishu only when needed.
+8. Fresh installations enable both Smart Warm-up controls; turn either off when needed. Low-quota recommendations and Feishu still require explicit opt-in.
 
 ## Updating and uninstalling
 
-Update the retained source checkout:
+Quit the running Next and retain a recovery backup before updating the retained source checkout:
 
 ```bash
 git pull --ff-only
 make build
 ```
 
-Quit the installed Next, retain any desired recovery backup, and overwrite the existing installation with the new build. An upgrade does not automatically enable warm-up, low-quota automation, Feishu, or Desktop switching.
+Overwrite the existing installation with the new build, then open it and confirm that only one Next instance is running. An upgrade preserves warm-up preferences and does not automatically enable low-quota automation, Feishu, or Desktop switching.
 
 To uninstall the app, move `CodexAccountManagerNext.app` to Trash. Remove Next's isolated data only after confirming that saved accounts, settings, and Keychain items are no longer needed; deleting the app bundle alone preserves them.
 

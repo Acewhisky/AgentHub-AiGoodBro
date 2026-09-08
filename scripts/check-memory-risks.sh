@@ -124,6 +124,10 @@ require_literal Sources/CodexUsageWidget/Services/CodexAppServerTaskClient.swift
   'threadListTimeoutSeconds' 'thread/list 缺少超时回收'
 require_swift_literal 'private static let memorySessionUsageCacheLimit' 'session 内存缓存缺少独立数量上限'
 require_swift_literal 'private static let maximumPersistentCacheBytes' '持久缓存读取缺少字节上限'
+require_literal Sources/CodexUsageWidget/Services/UsageStore.swift \
+  'quotaResetRefreshAttempts.filter { activeProfileIDs.contains($0.key) }' '额度到期重试记录必须随账号删除而清理'
+require_literal Sources/CodexUsageWidget/Services/UsageStore.swift \
+  'quotaResetRefreshAttempts.removeAll()' '额度到期重试记录缺少停止时清理'
 require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
   'static let maximumConfigurationBytes' '调度配置读取缺少明确的字节上限'
 require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
