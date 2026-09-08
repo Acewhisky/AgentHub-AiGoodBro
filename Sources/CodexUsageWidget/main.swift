@@ -57,6 +57,14 @@ struct CodexAccountManagerNextMain {
             exit(WorkspacePreviewRenderer.render(to: outputURL, language: language) ? 0 : 1)
         }
 
+        if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-setup-previews"),
+            CommandLine.arguments.indices.contains(previewIndex + 1)
+        {
+            _ = NSApplication.shared
+            let outputURL = URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)
+            exit(NextSetupPreviewRenderer.render(to: outputURL) ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-particle-animation") {
             exit(QuotaParticleAnimationSelfTest.run() ? 0 : 1)
         }
@@ -132,6 +140,7 @@ struct CodexAccountManagerNextMain {
         if CommandLine.arguments.contains("--self-test-profile-store") {
             exit(
                 CodexProfileStoreSelfTest.run()
+                    && NextAppInstanceLease.selfTest()
                     && TerminalAppLauncher.selfTest()
                     && AccountDisplay.selfTest()
                     ? 0 : 1
@@ -149,7 +158,7 @@ struct CodexAccountManagerNextMain {
         }
 
         if CommandLine.arguments.contains("--self-test-automatic-account-switch") {
-            exit(CodexAutomaticSwitchPolicySelfTest.run() ? 0 : 1)
+            exit(CodexAutomaticSwitchPolicySelfTest.run() && NextLocalNotificationService.selfTest() && NextFeatureDefaults.selfTest() && NextSetupProgress.selfTest() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-warm-up-policy") {
@@ -202,9 +211,27 @@ struct CodexAccountManagerNextMain {
             return
         }
 
-        let app = NSApplication.shared
-        let delegate = AppDelegate()
-        app.delegate = delegate
-        app.run()
+        if let owner = NextAppInstanceLease.runningOwner() {
+            _ = owner.activate(options: [.activateAllWindows])
+            return
+        }
+        do {
+            guard let lease = try NextAppInstanceLease.acquire(in: DispatchParticipationPaths.supportDirectory()) else {
+                _ = NextAppInstanceLease.runningOwner()?.activate(options: [.activateAllWindows])
+                return
+            }
+            let app = NSApplication.shared
+            let delegate = AppDelegate()
+            app.delegate = delegate
+            withExtendedLifetime(lease) { app.run() }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = WidgetLanguage.storedOrAutomatic().text("无法安全启动 Next", "Next could not start safely")
+            alert.informativeText = WidgetLanguage.storedOrAutomatic().text(
+                "无法取得账号管理器的独占运行锁。请检查应用支持目录的权限后重试。",
+                "The account manager could not acquire its exclusive run lock. Check the application support folder permissions and try again.")
+            alert.runModal()
+            exit(1)
+        }
     }
 }

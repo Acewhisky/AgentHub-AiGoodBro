@@ -53,6 +53,7 @@ SWIFT_FORMAT ?= xcrun swift-format
 .PHONY: build debug run probe lint test verify-runtime-resources test-rate-limits test-statistics-time-zone test-token-counter test-model-pricing test-model-usage-trend test-model-inference-performance test-app-server-pipe test-cc-switch test-profile-store test-account-inspection test-automatic-account-switch test-feishu-webhook test-account-automation-audit test-account-switch-safety test-task-runtime test-leadership-model test-leadership-assets test-codex-session-link test-performance-monitor test-phase-one-gate test-particle-animation test-palettes test-macos-compatibility memory-risk-check phase-one-check phase-one-soak install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all release-package release-windows release-cross-platform-check release-check notarize verify clean clean-dist
 
 build:
+	python3 scripts/check-build-target-idle.py "$(MACOS_DIR)/$(APP_NAME)"
 	rm -rf "$(APP_DIR)"
 	mkdir -p "$(MACOS_DIR)" "$(RESOURCES_DIR)"
 	cp Resources/Info.plist "$(APP_DIR)/Contents/Info.plist"
@@ -66,7 +67,8 @@ build:
 		-framework Cocoa \
 		-framework Carbon \
 		-framework Security \
-		-framework SwiftUI
+		-framework SwiftUI \
+		-framework UserNotifications
 	codesign $(CODESIGN_FLAGS) "$(APP_DIR)"
 	codesign --verify --deep --strict "$(APP_DIR)"
 

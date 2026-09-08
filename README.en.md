@@ -4,12 +4,16 @@
 
 [![CI](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/codex-account-manager-next/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-![Version 0908v3](https://img.shields.io/badge/version-0908v3-6C4DFF)
+![Version 0908v6](https://img.shields.io/badge/version-0908v6-6C4DFF)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Next is a local-first macOS workspace for one or multiple Codex accounts, maintained under its own product identity, interface and release channel. Inspect official quota, control automatic warm-up, choose GPT-6 Astra or another task model, and pass model, reasoning effort and Standard/Fast speed to an isolated CLI. Multiple accounts retain occupancy monitoring and isolated account homes.
 
-Current source version: `0908v3` · `9.5.8 (22)`. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+Current source version: `0908v6` · `9.5.11 (25)`. Local maintenance validation is complete; no installer has been released for this version. This is not an official OpenAI product. It does not provide accounts, increase quota, or bypass login, MFA, or platform restrictions.
+
+0908v6 versus 0908v5: all seven daily maintenance and notification features now default on; new accounts continue to join dispatch by default. Explicit saved opt-outs are retained, with Enable all available in the guide. A four-step setup guide supports skipping, resuming and reopening, with separate feature, macOS permission and Feishu connection states. See the [0908v6 release notes](docs/release-notes-v9.5.11.md).
+
+Previous version 0908v5 versus 0908v4: shows temporary maintenance pauses and preserves saved warm-up preferences, adds separate 5h and weekly alert thresholds, and provides opt-in macOS notifications. It retains the single-instance lease, shared state transactions, running-build guard and stable dispatch codes from 0908v4. See the [0908v6 consolidated notes](docs/release-notes-v9.5.11.md) for local acceptance and remaining items.
 
 0908v3 versus 0908v2: accounts excluded from dispatch still refresh limits and subscription dates, and follow both global warm-up switches. Expired subscription dates trigger a guarded official credential refresh and recheck, with retry backoff and explicit results. Previous behavior is retained: official 5-hour and 7-day reset deadlines trigger quota reads by default, including when warm-up is off, an account is excluded from dispatch, or cached quota is exhausted. Failed reads and old exhausted windows are checked again with backoff. Fresh installations enable warm-up; upgrades preserve existing choices. Sign-in failures retain a safe error classification. This version has passed local overwrite-installation validation; see the [0908v3 notes](docs/release-notes-v9.5.8.md).
 
@@ -175,7 +179,7 @@ The old fixed `gpt-5.6-sol + high` configuration baseline has been removed so a 
 
 ![07 · Next independent five-hour and seven-day warm-up controls](docs/images/0907v3/06-automation-en-dark@2x.png)
 
-The 5-hour and 7-day warm-up controls are independent and enabled on a fresh installation. Upgrades preserve previous choices, including an older installation's unsaved default-off state. Warm-up sends a real minimal request and consumes quota; either control can be turned off at any time.
+The 5-hour and 7-day warm-up controls are independent. Missing preferences default on; upgrades preserve explicitly saved choices. Warm-up sends a real minimal request and consumes quota; either control can be turned off at any time.
 
 Single-account users can also enable automatic warm-up; a second account is not required. Next must remain running on an awake, connected Mac, and identity, quota, Hub mapping and idle-state checks must pass. Both warm-up windows follow their global switches independently of dispatch participation. Accounts excluded from dispatch still refresh limits and subscription dates and warm up eligible windows.
 
@@ -207,9 +211,9 @@ The protocol implementation references [qxcnm/Codex-Manager](https://github.com/
 
 ![0904v2 low-quota hint and Automation Center entry](docs/images/0904v2/low-quota-automation@2x.png)
 
-> The screenshot shows the control after manual opt-in; a fresh installation defaults to off.
+> This screenshot shows an older interface. Since 0908v6 the feature defaults on and can be adjusted in Getting started or Automation.
 
-This opt-in feature is a candidate hint based on locally saved data, not automatic dispatch or automatic account switching. Its current conditions are:
+This feature defaults on and is a candidate hint based on locally saved data, not automatic dispatch or automatic account switching. Its current conditions are:
 
 - The source account has `<= 5%` remaining in the official 5-hour window, or `< 10%` in the 7-day window.
 - Source quota and the local Codex task snapshot are no more than 45 seconds old, with no running, waiting-for-input, or unconfirmed task.
@@ -220,7 +224,15 @@ This opt-in feature is a candidate hint based on locally saved data, not automat
 
 The recommendation stage does not independently re-verify candidate identity, snapshot freshness, or candidate Hub idle state, so it exposes no launch or switch action. It displays text in-app and writes a local audit event; if Feishu is enabled and configured, it also sends a masked notification. Return to the candidate's account card and select Use in Terminal manually, where that entry point performs the Hub gate. The recommendation itself does not rewrite `~/.codex/auth.json` or switch Desktop.
 
+Alert thresholds can be set independently to 5%, 10%, 15%, 20% or 25% in Automation Center. Defaults remain 5h at or below 5%, and weekly below 10%. Candidate limits, identity/task checks and the one-hour alert interval are unchanged. Temporary maintenance overrides are shown explicitly; affected switches cannot overwrite saved preferences.
+
+## macOS notifications
+
+Low-limit system notifications default on. Choose Allow notifications in Getting started or Automation to request macOS permission. An enabled switch without permission is shown as Permission needed; startup never requests permission automatically. Notifications contain fixed copy and remaining percentages only, with no account details. Low-limit alerts must also be enabled. Permission denial and submission failure are visible; successful submission does not guarantee a banner because notification and Focus settings control presentation.
+
 ## Feishu notifications
+
+Feishu and both quota-event notification options default on. Without a configured bot they show Setup needed and retain their switch preferences; sending begins only after the connection is configured.
 
 Feishu uses only a group Custom Bot webhook:
 
@@ -285,7 +297,7 @@ The settings captures render production SwiftUI at 760 × 1220 px, native 2×, w
 
 ## Installation
 
-The repository currently has no `0907v1 / 9.5.5` GitHub Release installer, and no Apple Developer ID-signed and notarized installer for this version. Install from a local source build on the target Mac. Do not treat an Actions artifact as a notarized distribution.
+The repository currently has no `0908v6 / 9.5.11` GitHub Release installer, and no Apple Developer ID-signed and notarized installer for this version. Install from a local source build on the target Mac. Do not treat an Actions artifact as a notarized distribution.
 
 ```bash
 xcode-select --install
@@ -331,7 +343,7 @@ codesign --verify --deep --strict build/CodexAccountManagerNext.app
 5. Choose model, reasoning effort, and Standard/Fast per account; use Apply to All only when desired.
 6. Confirm Hub is online and the account reports Idle before using Use in Terminal.
 7. Use Switch Desktop only when you intentionally want to replace the Codex app's current login.
-8. Fresh installations enable both Smart Warm-up controls; turn either off when needed. Low-quota recommendations and Feishu still require explicit opt-in.
+8. Getting started has four steps: workspace, features, alerts and completion. Skip, resume or reopen it anytime. Both warm-up controls, low-limit alerts, system notifications, Feishu notifications, limit-reset alerts and new-credit alerts default on. Notifications require system permission or a configured Feishu bot.
 
 ## Updating and uninstalling
 

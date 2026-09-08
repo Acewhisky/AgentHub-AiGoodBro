@@ -1,0 +1,87 @@
+import Foundation
+
+enum NextFeatureDefaults {
+    static func isEnabled(_ key: String, in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) == nil || defaults.bool(forKey: key)
+    }
+
+    static func selfTest() -> Bool {
+        let suite = "CodexManagerNext.feature-defaults-test.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = "feature"
+        guard isEnabled(key, in: defaults), defaults.persistentDomain(forName: suite)?[key] == nil else { return false }
+        defaults.set(false, forKey: key)
+        guard !isEnabled(key, in: defaults) else { return false }
+        defaults.set(true, forKey: key)
+        defaults.setVolatileDomain([key: "NO"], forName: UserDefaults.argumentDomain)
+        return !isEnabled(key, in: defaults) && defaults.persistentDomain(forName: suite)?[key] as? Bool == true
+    }
+}
+
+enum NextSetupStep: Int, CaseIterable, Identifiable {
+    case accounts
+    case features
+    case notifications
+    case ready
+
+    var id: Int { rawValue }
+
+    func title(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .accounts: return language.text("认识工作台", "Your workspace")
+        case .features: return language.text("默认功能", "Your features")
+        case .notifications: return language.text("连接通知", "Connect alerts")
+        case .ready: return language.text("开始使用", "Ready to go")
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .accounts: return "person.2"
+        case .features: return "switch.2"
+        case .notifications: return "bell.badge"
+        case .ready: return "checkmark.circle"
+        }
+    }
+}
+
+struct NextSetupProgress: Equatable {
+    var step: NextSetupStep = .accounts
+    var dismissed = false
+    var completed = false
+
+    var shouldPresentAutomatically: Bool { !dismissed && !completed }
+
+    private static let stepKey = "CodexManagerNext.setup.step"
+    private static let dismissedKey = "CodexManagerNext.setup.dismissed"
+    private static let completedKey = "CodexManagerNext.setup.completed"
+
+    static func load(from defaults: UserDefaults) -> Self {
+        Self(
+            step: NextSetupStep(rawValue: defaults.integer(forKey: stepKey)) ?? .accounts,
+            dismissed: defaults.bool(forKey: dismissedKey),
+            completed: defaults.bool(forKey: completedKey)
+        )
+    }
+
+    func save(to defaults: UserDefaults) {
+        defaults.set(step.rawValue, forKey: Self.stepKey)
+        defaults.set(dismissed, forKey: Self.dismissedKey)
+        defaults.set(completed, forKey: Self.completedKey)
+    }
+
+    static func selfTest() -> Bool {
+        let suite = "CodexManagerNext.setup-test.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        guard load(from: defaults).shouldPresentAutomatically else { return false }
+        let paused = Self(step: .notifications, dismissed: true)
+        paused.save(to: defaults)
+        guard load(from: defaults) == paused, !load(from: defaults).shouldPresentAutomatically else { return false }
+        Self(step: .ready, completed: true).save(to: defaults)
+        guard load(from: defaults).completed, !load(from: defaults).shouldPresentAutomatically else { return false }
+        defaults.set(999, forKey: stepKey)
+        return load(from: defaults).step == .accounts && load(from: defaults).completed
+    }
+}

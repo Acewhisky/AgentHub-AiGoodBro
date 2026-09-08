@@ -96,6 +96,7 @@ struct FeishuSwitchNotification {
     let sourceAccount: FeishuMaskedAccount
     let targetAccount: FeishuMaskedAccount?
     let triggerThresholdPercent: Int
+    let fiveHourTriggerThresholdPercent: Int
     let fiveHourRemainingPercent: Int?
     let sevenDayRemainingPercent: Int?
     let occurredAt: Date
@@ -106,6 +107,7 @@ struct FeishuSwitchNotification {
         sourceAccount: FeishuMaskedAccount,
         targetAccount: FeishuMaskedAccount? = nil,
         triggerThresholdPercent: Int,
+        fiveHourTriggerThresholdPercent: Int = 5,
         fiveHourRemainingPercent: Int?,
         sevenDayRemainingPercent: Int?,
         occurredAt: Date = Date(),
@@ -113,6 +115,7 @@ struct FeishuSwitchNotification {
     ) throws {
         let percentages = [fiveHourRemainingPercent, sevenDayRemainingPercent].compactMap { $0 }
         guard (1...100).contains(triggerThresholdPercent),
+            (1...100).contains(fiveHourTriggerThresholdPercent),
             percentages.allSatisfy({ (0...100).contains($0) })
         else {
             throw FeishuWebhookError.invalidNotification
@@ -132,6 +135,7 @@ struct FeishuSwitchNotification {
         self.sourceAccount = sourceAccount
         self.targetAccount = targetAccount
         self.triggerThresholdPercent = triggerThresholdPercent
+        self.fiveHourTriggerThresholdPercent = fiveHourTriggerThresholdPercent
         self.fiveHourRemainingPercent = fiveHourRemainingPercent
         self.sevenDayRemainingPercent = sevenDayRemainingPercent
         self.occurredAt = occurredAt
@@ -331,7 +335,8 @@ final class FeishuWebhookService {
         } else {
             lines.append(
                 language.text(
-                    "**触发规则**：5 小时 ≤ 5%；7 天 < \(notification.triggerThresholdPercent)%", "**Trigger rule**: 5-hour ≤ 5%; 7-day < \(notification.triggerThresholdPercent)%"))
+                    "**触发规则**：5 小时 ≤ \(notification.fiveHourTriggerThresholdPercent)%；7 天 < \(notification.triggerThresholdPercent)%",
+                    "**Trigger rule**: 5-hour ≤ \(notification.fiveHourTriggerThresholdPercent)%; 7-day < \(notification.triggerThresholdPercent)%"))
         }
         if let target = notification.targetAccount {
             lines.append(language.text("**目标账号**：`\(target.value)`", "**Target account**: `\(target.value)`"))
@@ -500,6 +505,13 @@ enum FeishuWebhookServiceSelfTest {
             expect(text.contains("p***-source"), "masked source missing")
             expect(!text.contains("person@example.com"), "raw account leaked")
             expect((try? FeishuMaskedAccount("person@example.com***")) == nil, "email-like label accepted")
+            let customThresholds = try FeishuSwitchNotification(
+                event: .lowQuotaDetected, sourceAccount: source,
+                triggerThresholdPercent: 15, fiveHourTriggerThresholdPercent: 20,
+                fiveHourRemainingPercent: 18, sevenDayRemainingPercent: 70
+            )
+            let customText = String(data: try FeishuWebhookService.payloadData(for: customThresholds, language: .en), encoding: .utf8) ?? ""
+            expect(customText.contains("5-hour ≤ 20%") && customText.contains("7-day < 15%"), "custom alert thresholds missing from notification")
 
             let testNotification = try FeishuSwitchNotification(
                 event: .test,

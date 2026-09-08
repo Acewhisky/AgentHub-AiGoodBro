@@ -19,6 +19,8 @@ struct CodexAccountManagerView: View {
     @State private var customSourceTokensDraft = ""
     @State private var isAgentBreakdownExpanded = false
     @State private var isAutomationCenterPresented = false
+    @State private var isSetupGuidePresented = false
+    @State private var openAutomationAfterGuide = false
     @State private var isAccountDetailsExpanded = false
     @State private var isUsageDetailsExpanded = false
     @State private var isSavingScreenshot = false
@@ -59,7 +61,12 @@ struct CodexAccountManagerView: View {
         )
         .preferredColorScheme(settings.themeMode.preferredColorScheme)
         .onReceive(screenshotRequests) { saveLongScreenshot(for: $0) }
-        .onAppear { if !store.isPreview { hubTaskStatusModel.startPolling() } }
+        .onAppear {
+            if !store.isPreview {
+                hubTaskStatusModel.startPolling()
+                if settings.setupProgress.shouldPresentAutomatically { isSetupGuidePresented = true }
+            }
+        }
         .onDisappear {
             hubTaskStatusModel.stopPolling()
             profileReorder = nil
@@ -70,6 +77,21 @@ struct CodexAccountManagerView: View {
             AccountAutomationCenterView(store: store)
                 .environment(\.widgetLanguage, language)
                 .environment(\.locale, language.locale)
+        }
+        .sheet(
+            isPresented: $isSetupGuidePresented,
+            onDismiss: {
+                settings.setupProgress.dismissed = true
+                if openAutomationAfterGuide {
+                    openAutomationAfterGuide = false
+                    isAutomationCenterPresented = true
+                }
+            }
+        ) {
+            NextSetupGuideView(store: store, settings: settings) {
+                openAutomationAfterGuide = true
+                isSetupGuidePresented = false
+            }
         }
         .alert(
             store.forcedAccountSwitchProfileID == nil ? language.text("未切换账号", "Account not switched") : language.text("强制切换账号？", "Force account switch?"),
@@ -96,6 +118,7 @@ struct CodexAccountManagerView: View {
     private var workspaceContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             if presentation.isSingleAccount { workspaceBranding }
+            AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
             workspace
         }
         .padding(.horizontal, 18)
@@ -164,6 +187,8 @@ struct CodexAccountManagerView: View {
             )
             .font(.caption.weight(.medium))
             .foregroundStyle(.secondary)
+            Button(language.text("使用引导", "Getting started")) { isSetupGuidePresented = true }
+                .buttonStyle(.bordered)
         }
         .padding(.horizontal, 2)
     }
@@ -733,6 +758,12 @@ struct CodexAccountManagerView: View {
                 }
                 .help(language.text("查看工作状态，空闲后再派单；刷新不触发暖号", "Check task status before starting work. Refresh only reads usage; it does not warm up an account."))
                 Spacer()
+                Button {
+                    isSetupGuidePresented = true
+                } label: {
+                    Label(language.text("使用引导", "Getting started"), systemImage: "questionmark.circle")
+                }
+                .buttonStyle(.bordered)
                 Text(language.text("\(presentation.accountCount) 个账号", "\(presentation.accountCount) accounts"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -784,6 +815,7 @@ struct CodexAccountManagerView: View {
                 )
                 .toggleStyle(.switch)
                 .controlSize(.small)
+                .disabled(store.pausedAutomationFeatures.contains(.fiveHour))
                 .help(
                     language.text(
                         "打开后，各账号按自己的 5 小时重置时间串行执行；7 天剩余额度不高于 5% 时暂停到周窗口重置。",
@@ -797,6 +829,7 @@ struct CodexAccountManagerView: View {
                 )
                 .toggleStyle(.switch)
                 .controlSize(.small)
+                .disabled(store.pausedAutomationFeatures.contains(.sevenDay))
                 .help(
                     language.text("打开后，各账号分别跟随自己的 7 天重置时间执行；失败不会自动重试。", "Sends a minimal request after each account's weekly reset. Failed requests are not retried automatically.")
                 )
@@ -936,9 +969,9 @@ struct CodexAccountManagerView: View {
                 HStack(spacing: 7) {
                     Text(language.text("低额度调度提醒", "Low-limit alerts"))
                         .font(.subheadline.weight(.semibold))
-                    Text("5h ≤5%")
+                    Text("5h ≤\(store.lowQuotaAlertThresholds.fiveHour)%")
                         .profileBadge()
-                    if store.feishuNotificationsEnabled {
+                    if store.feishuNotificationsEnabled && store.feishuWebhookConfigured {
                         Label(language.text("飞书已启用", "Feishu enabled"), systemImage: "paperplane.fill")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.green)
@@ -1053,12 +1086,39 @@ struct CodexAccountManagerView: View {
     }
 }
 
+private struct AutomationMaintenanceNotice: View {
+    let features: [PausedAutomationFeature]
+    let language: WidgetLanguage
+
+    var body: some View {
+        if !features.isEmpty {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "pause.circle.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(language.text("维护期间暂停", "Paused for maintenance"))
+                        .font(.subheadline.weight(.semibold))
+                    Text(features.map { $0.name(language) }.joined(separator: " · "))
+                        .font(.caption)
+                    Text(language.text("原设置已保留；普通启动后恢复。", "Your saved settings are preserved and resume on a normal launch."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
 private struct AccountAutomationCenterView: View {
     @Environment(\.widgetLanguage) private var language
     @ObservedObject var store: UsageStore
     @Environment(\.dismiss) private var dismiss
     @State private var webhookDraft = ""
-    @State private var isConfirmingAutomaticSwitch = false
     @State private var isConfirmingWebhookRemoval = false
 
     var body: some View {
@@ -1089,7 +1149,9 @@ private struct AccountAutomationCenterView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
                     automaticSwitchGroup
+                    localNotificationsGroup
                     feishuGroup
                     auditGroup
                 }
@@ -1097,20 +1159,9 @@ private struct AccountAutomationCenterView: View {
             }
         }
         .frame(width: 600, height: 680)
-        .confirmationDialog(
-            language.text("启用低额度提醒？", "Enable low-limit alerts?"),
-            isPresented: $isConfirmingAutomaticSwitch,
-            titleVisibility: .visible
-        ) {
-            Button(language.text("启用低额度提醒", "Enable alerts")) {
-                store.setAutomaticAccountSwitchEnabled(true)
-            }
-            Button(language.text("取消", "Cancel"), role: .cancel) {}
-        } message: {
-            Text(
-                language.text(
-                    "额度低于阈值时显示候选提示；请回到账号卡手动使用终端，不会改写 ~/.codex 身份。",
-                    "Suggests available accounts when limits are low. Open CLI from an account card to start work. This does not change your Codex sign-in."))
+        .onAppear { store.refreshLocalNotificationAuthorization() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.refreshLocalNotificationAuthorization()
         }
         .alert(language.text("移除飞书 Webhook？", "Remove Feishu webhook?"), isPresented: $isConfirmingWebhookRemoval) {
             Button(language.text("移除", "Remove"), role: .destructive) {
@@ -1130,7 +1181,7 @@ private struct AccountAutomationCenterView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(language.text("低额度提醒", "Low-limit alerts"))
                             .font(.headline)
-                        Text(language.text("默认关闭；额度低于阈值时通知并推荐可用账号", "Off by default. Notifies you and suggests accounts when limits are low."))
+                        Text(language.text("默认开启；额度低于阈值时提醒并推荐可用账号", "On by default. Alerts you and suggests accounts when limits are low."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1139,29 +1190,52 @@ private struct AccountAutomationCenterView: View {
                         language.text("低额度提醒", "Low-limit alerts"),
                         isOn: Binding(
                             get: { store.automaticAccountSwitchEnabled },
-                            set: { enabled in
-                                if enabled {
-                                    isConfirmingAutomaticSwitch = true
-                                } else {
-                                    store.setAutomaticAccountSwitchEnabled(false)
-                                }
-                            }
+                            set: { store.setAutomaticAccountSwitchEnabled($0) }
                         )
                     )
                     .labelsHidden()
                     .toggleStyle(.switch)
+                    .disabled(store.pausedAutomationFeatures.contains(.lowQuota))
                 }
 
                 Divider()
 
                 HStack(spacing: 10) {
-                    automationMetric(title: language.text("触发", "Trigger"), value: "5h ≤5%", icon: "exclamationmark.triangle.fill")
+                    automationMetric(title: language.text("触发", "Trigger"), value: "5h ≤\(store.lowQuotaAlertThresholds.fiveHour)%", icon: "exclamationmark.triangle.fill")
                     automationMetric(title: language.text("备用", "Candidate"), value: "≥ 30%", icon: "battery.75percent")
                     automationMetric(title: language.text("评估间隔", "Check interval"), value: language.text("1 小时", "1 hour"), icon: "clock.arrow.circlepath")
                 }
 
+                HStack(spacing: 16) {
+                    Picker(
+                        language.text("5 小时提醒线", "5h alert threshold"),
+                        selection: Binding(
+                            get: { store.lowQuotaAlertThresholds.fiveHour },
+                            set: { store.setLowQuotaAlertThresholds(fiveHour: $0, sevenDay: store.lowQuotaAlertThresholds.sevenDay) }
+                        )
+                    ) {
+                        ForEach(LowQuotaAlertThresholds.choices, id: \.self) { Text("≤\($0)%").tag($0) }
+                    }
+                    Picker(
+                        language.text("7 天提醒线", "Weekly alert threshold"),
+                        selection: Binding(
+                            get: { store.lowQuotaAlertThresholds.sevenDay },
+                            set: { store.setLowQuotaAlertThresholds(fiveHour: store.lowQuotaAlertThresholds.fiveHour, sevenDay: $0) }
+                        )
+                    ) {
+                        ForEach(LowQuotaAlertThresholds.choices, id: \.self) { Text("<\($0)%").tag($0) }
+                    }
+                }
+                .pickerStyle(.menu)
+                Text(language.text("只调整提醒时间；候选额度、状态核验及提醒间隔保持不变。", "Changes when alerts trigger. Candidate limits, status checks and alert intervals stay unchanged."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 VStack(alignment: .leading, spacing: 8) {
-                    safetyRule(language.text("官方 5 小时剩余 ≤5%，或 7 天剩余严格低于 10%", "5h remaining at 5% or less, or weekly remaining below 10%."))
+                    safetyRule(
+                        language.text(
+                            "官方 5 小时剩余 ≤\(store.lowQuotaAlertThresholds.fiveHour)%，或 7 天剩余严格低于 \(store.lowQuotaAlertThresholds.sevenDay)%",
+                            "5h remaining at \(store.lowQuotaAlertThresholds.fiveHour)% or less, or weekly remaining below \(store.lowQuotaAlertThresholds.sevenDay)%."))
                     safetyRule(language.text("实时任务状态已连接、数据新鲜，且没有运行或等待输入的任务", "Requires fresh task status with no running tasks or pending input."))
                     safetyRule(language.text("按已保存快照推荐参与提醒且对应窗口至少剩余 30% 的账号", "Suggests opted-in accounts with at least 30% in the affected window, based on saved snapshots."))
                     safetyRule(language.text("推荐只显示候选；请回到账号卡手动启动 CLI 并执行 Hub 门禁", "Suggestions do not start work. Open CLI from the account card; Hub checks still apply."))
@@ -1181,12 +1255,70 @@ private struct AccountAutomationCenterView: View {
         }
     }
 
+    private var localNotificationsGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(language.text("低额度系统通知", "Low-limit system notifications"))
+                            .font(.subheadline.weight(.semibold))
+                        Text(language.text("默认开启；完成 macOS 授权后接收提醒", "On by default. Allow macOS permission to receive alerts."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if store.isRequestingLocalNotificationPermission {
+                        ProgressView().controlSize(.small)
+                    }
+                    Toggle(
+                        language.text("系统通知", "System notifications"),
+                        isOn: Binding(
+                            get: { store.localNotificationsEnabled },
+                            set: { store.setLocalNotificationsEnabled($0) }
+                        )
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(store.isRequestingLocalNotificationPermission || store.pausedAutomationFeatures.contains(.localNotification))
+                }
+                Text(
+                    language.text(
+                        "只显示额度百分比，不包含账号资料；显示方式由 macOS 通知与专注模式决定。",
+                        "Shows remaining percentages without account details. macOS notification and Focus settings control presentation.")
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if store.localNotificationsEnabled && !store.localNotificationAuthorizationReady {
+                    Button(
+                        store.localNotificationUsesSystemSettings
+                            ? language.text("打开通知设置", "Open notification settings") : language.text("允许系统通知", "Allow notifications")
+                    ) { store.configureLocalNotifications() }
+                    .disabled(store.isRequestingLocalNotificationPermission || store.pausedAutomationFeatures.contains(.localNotification))
+                }
+                if !store.automaticAccountSwitchEnabled {
+                    Label(language.text("请先开启上方的低额度提醒，才会产生通知。", "Enable low-limit alerts above to generate notifications."), systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let message = store.localNotificationMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(4)
+        } label: {
+            Label(language.text("macOS 通知", "macOS notifications"), systemImage: "bell")
+                .font(.headline)
+        }
+    }
+
     private var feishuGroup: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(store.feishuWebhookConfigured ? language.text("Webhook 已配置", "Webhook configured") : language.text("尚未配置 Webhook", "No webhook configured"))
+                        Text(store.feishuWebhookConfigured ? language.text("Webhook 已配置", "Webhook configured") : language.text("待配置飞书机器人", "Feishu bot setup needed"))
                             .font(.subheadline.weight(.semibold))
                         Text(language.text("地址只保存在 macOS 钥匙串；不会写入设置、日志或仓库", "Stored only in macOS Keychain, never in settings, logs or the repository."))
                             .font(.caption)
@@ -1202,7 +1334,7 @@ private struct AccountAutomationCenterView: View {
                     )
                     .labelsHidden()
                     .toggleStyle(.switch)
-                    .disabled(!store.feishuWebhookConfigured)
+                    .disabled(store.pausedAutomationFeatures.contains(.feishu))
                 }
 
                 Toggle(
@@ -1211,7 +1343,7 @@ private struct AccountAutomationCenterView: View {
                         get: { store.feishuQuotaResetEnabled }, set: { store.setFeishuQuotaResetEnabled($0) }
                     )
                 )
-                .disabled(!store.feishuNotificationsEnabled || !store.feishuWebhookConfigured)
+                .disabled(store.pausedAutomationFeatures.contains(.feishu))
 
                 Toggle(
                     language.text("获得 Reset 卡提醒", "New reset credit alerts"),
@@ -1219,12 +1351,12 @@ private struct AccountAutomationCenterView: View {
                         get: { store.feishuResetCreditEnabled }, set: { store.setFeishuResetCreditEnabled($0) }
                     )
                 )
-                .disabled(!store.feishuNotificationsEnabled || !store.feishuWebhookConfigured)
+                .disabled(store.pausedAutomationFeatures.contains(.feishu))
 
                 Text(
                     language.text(
-                        "两个选项默认关闭。开启后约每分钟读取官方状态，确认额度恢复或可用 Reset 次数增加时提醒。首次同步不补发历史消息，也不会自动使用 Reset 卡。",
-                        "Both are off by default. Checks about once a minute for restored limits or new reset credits. Initial sync sends no past events. Credits are never used automatically."
+                        "两个选项默认开启。飞书连接完成后约每分钟读取官方状态，确认额度恢复或可用 Reset 次数增加时提醒。首次同步不补发历史消息，Reset 卡由你手动使用。",
+                        "Both are on by default. Once Feishu is connected, checks about once a minute for restored limits or new reset credits. Initial sync sends no past events. Reset credits are used manually."
                     )
                 )
                 .font(.caption)
@@ -3216,6 +3348,7 @@ enum DispatchCodeCatalog {
         let code: String
         let alias: String
         let profileId: String
+        let active: Bool?
     }
 
     static func code(for profileID: String, allowsLocalRead: Bool = true) -> String? {
@@ -3243,7 +3376,8 @@ enum DispatchCodeCatalog {
             let profileID = account.profileId.trimmingCharacters(in: .whitespacesAndNewlines)
             let code = account.code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             let alias = account.alias.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !profileID.isEmpty,
+            guard account.active != false,
+                !profileID.isEmpty,
                 !alias.isEmpty,
                 profileID.utf8.count <= DispatchParticipationSync.maximumCatalogFieldBytes,
                 alias.utf8.count <= DispatchParticipationSync.maximumCatalogFieldBytes,

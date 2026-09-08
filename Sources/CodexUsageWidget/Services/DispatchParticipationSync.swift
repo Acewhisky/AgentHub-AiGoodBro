@@ -137,102 +137,95 @@ struct DispatchParticipationSync {
         identity: Identity,
         validateSnapshot: (Data) throws -> Void = { _ in }
     ) throws -> Data {
-        guard Self.processLock.try() else { throw DispatchParticipationError.busy }
-        defer { Self.processLock.unlock() }
-        let directory = paths.snapshot.deletingLastPathComponent()
-        let lockURL = directory.appendingPathComponent(DispatchParticipationPaths.lockFileName)
-        let descriptor = lockURL.path.withCString { Darwin.open($0, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600) }
-        guard descriptor >= 0 else { throw DispatchParticipationError.fileAccess }
-        defer { Darwin.close(descriptor) }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw DispatchParticipationError.busy }
-        defer { flock(descriptor, LOCK_UN) }
-
-        let urls = [paths.snapshot, paths.hubConfig, paths.codes]
-        guard Set(urls.map { $0.standardizedFileURL.path }).count == urls.count else {
-            throw DispatchParticipationError.fileAccess
-        }
-        let originals = try urls.enumerated().map { try Self.read($0.element, allowMissing: $0.offset == 2) }
-        guard let snapshot = originals[0], let hub = originals[1] else { throw DispatchParticipationError.fileAccess }
-        try validateSnapshot(snapshot)
-        let updated = try Self.prepare(change, identity: identity, snapshot: snapshot, hub: hub, codes: originals[2])
-        try validateSnapshot(updated[0])
-
-        let backups = directory.appendingPathComponent(DispatchParticipationPaths.backupDirectoryName, isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        var replaced: [Int] = []
-        do {
-            try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            for index in urls.indices {
-                try checkpoint(.beforeBackup(index))
-                if let original = originals[index] {
-                    let backup = backups.appendingPathComponent(["snapshot.json", "hub-config.json", "dispatch-codes.json"][index])
-                    try Self.replaceAtomically(original, at: backup)
-                    guard try Self.read(backup) == original else { throw DispatchParticipationError.writeFailed }
-                }
+        try Self.withSnapshotLock(at: paths.snapshot) {
+            let directory = paths.snapshot.deletingLastPathComponent()
+            let urls = [paths.snapshot, paths.hubConfig, paths.codes]
+            guard Set(urls.map { $0.standardizedFileURL.path }).count == urls.count else {
+                throw DispatchParticipationError.fileAccess
             }
-            let manifest = try Self.encode(["schemaVersion": 1, "codesOriginallyMissing": originals[2] == nil])
-            try Self.replaceAtomically(manifest, at: backups.appendingPathComponent("manifest.json"))
+            let originals = try urls.enumerated().map { try Self.read($0.element, allowMissing: $0.offset == 2) }
+            guard let snapshot = originals[0], let hub = originals[1] else { throw DispatchParticipationError.fileAccess }
+            try validateSnapshot(snapshot)
+            let updated = try Self.prepare(change, identity: identity, snapshot: snapshot, hub: hub, codes: originals[2])
+            try validateSnapshot(updated[0])
 
-            // Hub and external tools do not take this lock. Check for changes
-            // before every rename and again after the complete transaction.
-            for index in urls.indices {
-                try checkpoint(.beforeReplace(index))
-                for check in urls.indices {
-                    let expected = replaced.contains(check) ? updated[check] : originals[check]
-                    guard try Self.read(urls[check], allowMissing: check == 2) == expected else {
-                        throw DispatchParticipationError.concurrentChange
-                    }
-                }
-                try checkpoint(.afterPreflight(index))
-                try Self.replaceAtomically(
-                    updated[index],
-                    at: urls[index],
-                    expectation: .matching(originals[index]),
-                    checkpointIndex: index,
-                    checkpoint: checkpoint
-                )
-                replaced.append(index)
-                try checkpoint(.afterReplace(index))
-            }
-            for index in urls.indices {
-                guard try Self.read(urls[index]) == updated[index] else { throw DispatchParticipationError.concurrentChange }
-            }
-        } catch {
-            var rollbackSucceeded = true
-            for index in replaced.reversed() {
-                do {
-                    try checkpoint(.beforeRollback(index))
-                    let current = try Self.read(urls[index], allowMissing: true)
-                    if current == originals[index] { continue }
-                    // Never roll back over an unrelated concurrent edit.
-                    guard current == updated[index] else { throw DispatchParticipationError.concurrentChange }
+            let backups = directory.appendingPathComponent(DispatchParticipationPaths.backupDirectoryName, isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            var replaced: [Int] = []
+            do {
+                try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                for index in urls.indices {
+                    try checkpoint(.beforeBackup(index))
                     if let original = originals[index] {
-                        try Self.replaceAtomically(
-                            original,
-                            at: urls[index],
-                            expectation: .matching(updated[index]),
-                            checkpointIndex: index,
-                            checkpoint: checkpoint
-                        )
-                    } else {
-                        try Self.removeAtomicallyIfMatching(
-                            updated[index],
-                            at: urls[index],
-                            checkpointIndex: index,
-                            checkpoint: checkpoint
-                        )
+                        let backup = backups.appendingPathComponent(["snapshot.json", "hub-config.json", "dispatch-codes.json"][index])
+                        try Self.replaceAtomically(original, at: backup)
+                        guard try Self.read(backup) == original else { throw DispatchParticipationError.writeFailed }
                     }
-                    guard try Self.read(urls[index], allowMissing: true) == originals[index] else {
-                        throw DispatchParticipationError.rollbackFailed
+                }
+                let manifest = try Self.encode(["schemaVersion": 1, "codesOriginallyMissing": originals[2] == nil])
+                try Self.replaceAtomically(manifest, at: backups.appendingPathComponent("manifest.json"))
+
+                // Hub and external tools do not take this lock. Check for changes
+                // before every rename and again after the complete transaction.
+                for index in urls.indices {
+                    try checkpoint(.beforeReplace(index))
+                    for check in urls.indices {
+                        let expected = replaced.contains(check) ? updated[check] : originals[check]
+                        guard try Self.read(urls[check], allowMissing: check == 2) == expected else {
+                            throw DispatchParticipationError.concurrentChange
+                        }
                     }
-                } catch { rollbackSucceeded = false }
+                    try checkpoint(.afterPreflight(index))
+                    try Self.replaceAtomically(
+                        updated[index],
+                        at: urls[index],
+                        expectation: .matching(originals[index]),
+                        checkpointIndex: index,
+                        checkpoint: checkpoint
+                    )
+                    replaced.append(index)
+                    try checkpoint(.afterReplace(index))
+                }
+                for index in urls.indices {
+                    guard try Self.read(urls[index]) == updated[index] else { throw DispatchParticipationError.concurrentChange }
+                }
+            } catch {
+                var rollbackSucceeded = true
+                for index in replaced.reversed() {
+                    do {
+                        try checkpoint(.beforeRollback(index))
+                        let current = try Self.read(urls[index], allowMissing: true)
+                        if current == originals[index] { continue }
+                        // Never roll back over an unrelated concurrent edit.
+                        guard current == updated[index] else { throw DispatchParticipationError.concurrentChange }
+                        if let original = originals[index] {
+                            try Self.replaceAtomically(
+                                original,
+                                at: urls[index],
+                                expectation: .matching(updated[index]),
+                                checkpointIndex: index,
+                                checkpoint: checkpoint
+                            )
+                        } else {
+                            try Self.removeAtomicallyIfMatching(
+                                updated[index],
+                                at: urls[index],
+                                checkpointIndex: index,
+                                checkpoint: checkpoint
+                            )
+                        }
+                        guard try Self.read(urls[index], allowMissing: true) == originals[index] else {
+                            throw DispatchParticipationError.rollbackFailed
+                        }
+                    } catch { rollbackSucceeded = false }
+                }
+                if !rollbackSucceeded { throw DispatchParticipationError.rollbackFailed }
+                if !replaced.isEmpty { throw DispatchParticipationError.rolledBack }
+                if let error = error as? DispatchParticipationError { throw error }
+                throw DispatchParticipationError.writeFailed
             }
-            if !rollbackSucceeded { throw DispatchParticipationError.rollbackFailed }
-            if !replaced.isEmpty { throw DispatchParticipationError.rolledBack }
-            if let error = error as? DispatchParticipationError { throw error }
-            throw DispatchParticipationError.writeFailed
+            return updated[0]
         }
-        return updated[0]
     }
 
     private static func prepare(_ change: Change, identity: Identity, snapshot: Data, hub: Data, codes: Data?) throws -> [Data] {
@@ -299,6 +292,7 @@ struct DispatchParticipationSync {
         }
 
         var catalog = try codes.map { try object($0, error: .invalidCodes) } ?? ["schemaVersion": 1, "accounts": []]
+        try normalizeCatalog(&catalog, profiles: profiles, hub: hubObject, accounts: accounts)
         var entries = try validatedEntries(catalog)
         let matchedEntries = entries.indices.filter {
             groupIDs.contains(nonempty(entries[$0]["profileId"]) ?? "") || normalized(entries[$0]["alias"]) == normalized(alias)
@@ -311,13 +305,24 @@ struct DispatchParticipationSync {
             else { throw DispatchParticipationError.ambiguousAccount }
             if enabled {
                 entries[index]["profileId"] = profileID
+                entries[index]["active"] = true
             } else {
-                entries.remove(at: index)
+                // The code is an account identity, while participation is
+                // represented by the snapshot and Hub's dispatchDisabled flag.
+                // Retaining it prevents an opt-out/opt-in cycle from silently
+                // changing a user's dispatch letter.
+                entries[index]["active"] = false
             }
         } else if enabled {
             let highest = entries.compactMap { nonempty($0["code"])?.utf8.first }.max().map(Int.init) ?? 64
             guard highest < 90 else { throw DispatchParticipationError.codeExhausted }
-            entries.append(["code": String(UnicodeScalar(highest + 1)!), "alias": alias, "profileId": profileID])
+            entries.append([
+                "code": String(UnicodeScalar(highest + 1)!),
+                "alias": alias,
+                "profileId": profileID,
+                "priority": try nextPriority(after: entries),
+                "active": true,
+            ])
         }
 
         for index in profiles.indices where groupIDs.contains(nonempty(profiles[index]["id"]) ?? "") {
@@ -328,7 +333,7 @@ struct DispatchParticipationSync {
         accounts[accountIndex]["dispatchDisabled"] = !enabled
         hubObject["accounts"] = accounts
         catalog["accounts"] = entries
-        _ = try validatedEntries(catalog)
+        try validatePreflightCatalog(catalog)
         return try [next, hubObject, catalog].map(encode)
     }
 
@@ -349,10 +354,146 @@ struct DispatchParticipationSync {
                 alias.utf8.count <= maximumCatalogFieldBytes,
                 profileID.utf8.count <= maximumCatalogFieldBytes,
                 codes.insert(code).inserted, aliases.insert(alias).inserted, profileIDs.insert(profileID).inserted,
-                entry["email"] == nil || normalized(entry["email"]) != nil
+                entry["email"] == nil || normalized(entry["email"]) != nil,
+                entry["priority"] == nil || integer(entry["priority"]) != nil,
+                entry["active"] == nil || boolean(entry["active"]) != nil
             else { throw DispatchParticipationError.invalidCodes }
         }
         return entries
+    }
+
+    private static func normalizeCatalog(
+        _ catalog: inout [String: Any],
+        profiles: [[String: Any]],
+        hub: [String: Any],
+        accounts: [[String: Any]]
+    ) throws {
+        guard integer(catalog["schemaVersion"]) == 1 else { throw DispatchParticipationError.invalidCodes }
+        var entries = try validatedEntries(catalog)
+        var priority = try nextPriority(after: entries)
+        for index in entries.indices where entries[index]["priority"] == nil {
+            entries[index]["priority"] = priority
+            if priority < Int.max { priority += 1 }
+        }
+        catalog["accounts"] = entries
+
+        if let value = catalog["snapshotMaxAgeSeconds"] {
+            guard validPositiveNumber(value) else { throw DispatchParticipationError.invalidCodes }
+        } else {
+            catalog["snapshotMaxAgeSeconds"] = 45
+        }
+
+        var minimums: [String: Any]
+        if let existing = catalog["minimumRemainingPercent"] {
+            guard let decoded = existing as? [String: Any] else { throw DispatchParticipationError.invalidCodes }
+            minimums = decoded
+        } else {
+            minimums = [:]
+        }
+        for (key, minimum) in [("fiveHour", 30.0), ("sevenDay", 15.0)] {
+            if let existing = minimums[key] {
+                guard validRemainingPercent(existing, minimum: minimum) else {
+                    throw DispatchParticipationError.invalidCodes
+                }
+            } else {
+                minimums[key] = Int(minimum)
+            }
+        }
+        catalog["minimumRemainingPercent"] = minimums
+
+        var centralAliases: [String]
+        if let existing = catalog["centralAliases"] {
+            guard let decoded = existing as? [String], decoded.allSatisfy({ nonempty($0) != nil }) else {
+                throw DispatchParticipationError.invalidCodes
+            }
+            centralAliases = decoded.compactMap(nonempty)
+        } else {
+            centralAliases = []
+        }
+        let systemHomes = Set(
+            profiles.filter { boolean($0["isSystemProfile"]) == true }.compactMap { canonicalHome($0["codexHomePath"]) }
+        )
+        let derivedCentralAliases = accounts.compactMap { account -> String? in
+            guard let home = canonicalHome(account["home"]), systemHomes.contains(home) else { return nil }
+            return nonempty(account["alias"])
+        }.sorted()
+        var knownCentralAliases = Set(centralAliases.compactMap(normalized))
+        for alias in derivedCentralAliases where knownCentralAliases.insert(alias.lowercased()).inserted {
+            centralAliases.append(alias)
+        }
+        catalog["centralAliases"] = centralAliases
+
+        if let existing = catalog["hubProjects"] {
+            try validateHubProjects(existing)
+        } else {
+            catalog["hubProjects"] = try canonicalHubProjects(from: hub)
+        }
+    }
+
+    private static func nextPriority(after entries: [[String: Any]]) throws -> Int {
+        let values = try entries.compactMap { entry -> Int? in
+            guard let value = entry["priority"] else { return nil }
+            guard let integer = integer(value) else { throw DispatchParticipationError.invalidCodes }
+            return integer
+        }
+        guard let maximum = values.max() else { return 1 }
+        return maximum < Int.max ? maximum + 1 : Int.max
+    }
+
+    private static func validPositiveNumber(_ value: Any) -> Bool {
+        guard let number = number(value) else { return false }
+        return number.isFinite && number > 0
+    }
+
+    private static func validRemainingPercent(_ value: Any, minimum: Double) -> Bool {
+        guard let number = number(value) else { return false }
+        return number.isFinite && number >= minimum && number <= 100
+    }
+
+    private static func number(_ value: Any) -> Double? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return number.doubleValue
+    }
+
+    private static func canonicalHubProjects(from hub: [String: Any]) throws -> [String: Any] {
+        guard let projects = hub["projects"] as? [String: Any] else { throw DispatchParticipationError.invalidHub }
+        var aliasesByPath: [String: String] = [:]
+        for (rawAlias, rawPath) in projects {
+            guard let alias = nonempty(rawAlias), let path = canonicalHome(rawPath) else {
+                throw DispatchParticipationError.invalidHub
+            }
+            if let current = aliasesByPath[path], current <= alias { continue }
+            aliasesByPath[path] = alias
+        }
+        return aliasesByPath.reduce(into: [String: Any]()) { result, entry in
+            result[entry.value] = entry.key
+        }
+    }
+
+    private static func validateHubProjects(_ value: Any) throws {
+        guard let projects = value as? [String: Any] else { throw DispatchParticipationError.invalidCodes }
+        for (alias, path) in projects {
+            guard nonempty(alias) != nil, canonicalHome(path) != nil else {
+                throw DispatchParticipationError.invalidCodes
+            }
+        }
+    }
+
+    private static func validatePreflightCatalog(_ catalog: [String: Any]) throws {
+        guard integer(catalog["schemaVersion"]) == 1,
+            let snapshotAge = catalog["snapshotMaxAgeSeconds"], validPositiveNumber(snapshotAge),
+            let minimums = catalog["minimumRemainingPercent"] as? [String: Any],
+            let fiveHour = minimums["fiveHour"], validRemainingPercent(fiveHour, minimum: 30),
+            let sevenDay = minimums["sevenDay"], validRemainingPercent(sevenDay, minimum: 15),
+            let centralAliases = catalog["centralAliases"] as? [String],
+            centralAliases.allSatisfy({ nonempty($0) != nil })
+        else { throw DispatchParticipationError.invalidCodes }
+        guard let hubProjects = catalog["hubProjects"] else { throw DispatchParticipationError.invalidCodes }
+        try validateHubProjects(hubProjects)
+        let entries = try validatedEntries(catalog)
+        guard entries.allSatisfy({ integer($0["priority"]) != nil }) else {
+            throw DispatchParticipationError.invalidCodes
+        }
     }
 
     private static func profileEmail(_ profile: [String: Any]) -> String? {
@@ -432,6 +573,37 @@ struct DispatchParticipationSync {
 
     private static func read(_ url: URL, allowMissing: Bool = false) throws -> Data? {
         try readBoundedRegularFile(url, maximumBytes: maximumConfigurationBytes, allowMissing: allowMissing)
+    }
+
+    /// Shares the exact synchronization boundary used by the three-file dispatch
+    /// transaction. Callers must retain this lock for the entire read/modify/write
+    /// sequence and use writeSnapshot's compare-and-swap expectation.
+    static func withSnapshotLock<T>(at snapshotURL: URL, _ body: () throws -> T) throws -> T {
+        guard processLock.try() else { throw DispatchParticipationError.busy }
+        defer { processLock.unlock() }
+        let lockURL = snapshotURL.deletingLastPathComponent()
+            .appendingPathComponent(DispatchParticipationPaths.lockFileName)
+        let descriptor = lockURL.path.withCString { Darwin.open($0, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600) }
+        guard descriptor >= 0 else { throw DispatchParticipationError.fileAccess }
+        defer { Darwin.close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+            info.st_mode & S_IFMT == S_IFREG,
+            info.st_uid == geteuid(),
+            info.st_nlink == 1,
+            info.st_mode & 0o077 == 0
+        else { throw DispatchParticipationError.fileAccess }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw DispatchParticipationError.busy }
+        defer { flock(descriptor, LOCK_UN) }
+        return try body()
+    }
+
+    static func readSnapshot(at snapshotURL: URL) throws -> Data? {
+        try read(snapshotURL, allowMissing: true)
+    }
+
+    static func writeSnapshot(_ data: Data, at snapshotURL: URL, replacing original: Data?) throws {
+        try replaceAtomically(data, at: snapshotURL, expectation: .matching(original))
     }
 
     private static func replaceAtomically(

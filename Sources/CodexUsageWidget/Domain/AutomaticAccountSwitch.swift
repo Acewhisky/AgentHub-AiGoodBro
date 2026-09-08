@@ -1,5 +1,62 @@
 import Foundation
 
+struct LowQuotaAlertThresholds: Equatable {
+    static let choices = [5, 10, 15, 20, 25]
+    static let standard = LowQuotaAlertThresholds(fiveHour: 5, sevenDay: 10)
+    static let fiveHourKey = "CodexManagerNext.lowQuotaAlerts.fiveHourThreshold"
+    static let sevenDayKey = "CodexManagerNext.lowQuotaAlerts.sevenDayThreshold"
+
+    let fiveHour: Int
+    let sevenDay: Int
+
+    init(fiveHour: Int, sevenDay: Int) {
+        self.fiveHour = Self.choices.contains(fiveHour) ? fiveHour : 5
+        self.sevenDay = Self.choices.contains(sevenDay) ? sevenDay : 10
+    }
+
+    static func load(from defaults: UserDefaults = .standard) -> Self {
+        func value(_ key: String, fallback: Int) -> Int {
+            guard let number = defaults.object(forKey: key) as? NSNumber,
+                number.doubleValue == Double(number.intValue), choices.contains(number.intValue)
+            else { return fallback }
+            return number.intValue
+        }
+        return Self(fiveHour: value(fiveHourKey, fallback: 5), sevenDay: value(sevenDayKey, fallback: 10))
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        defaults.set(fiveHour, forKey: Self.fiveHourKey)
+        defaults.set(sevenDay, forKey: Self.sevenDayKey)
+    }
+}
+
+enum PausedAutomationFeature: String, CaseIterable {
+    case fiveHour = "CodexManagerNext.automaticWarmUp.fiveHour"
+    case sevenDay = "CodexManagerNext.automaticWarmUp.sevenDay"
+    case lowQuota = "CodexManagerNext.automaticAccountSwitch.enabled"
+    case feishu = "CodexManagerNext.feishuNotifications.enabled"
+    case localNotification = "CodexManagerNext.localNotifications.enabled"
+
+    static func read(from argumentDomain: [String: Any]) -> [Self] {
+        allCases.filter { feature in
+            if let string = argumentDomain[feature.rawValue] as? String {
+                return ["no", "false", "0"].contains(string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            }
+            return (argumentDomain[feature.rawValue] as? NSNumber)?.doubleValue == 0
+        }
+    }
+
+    func name(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .fiveHour: return language.text("5 小时暖号", "5h warm-up")
+        case .sevenDay: return language.text("7 天暖号", "Weekly warm-up")
+        case .lowQuota: return language.text("低额度提醒", "Low-limit alerts")
+        case .feishu: return language.text("飞书通知", "Feishu notifications")
+        case .localNotification: return language.text("系统通知", "System notifications")
+        }
+    }
+}
+
 enum AutomaticQuotaWindow: String, CaseIterable, Equatable {
     case fiveHour
     case sevenDay
@@ -35,14 +92,14 @@ struct AutomaticSwitchQuotaState: Equatable {
         }
     }
 
-    func triggeredWindows() -> [AutomaticQuotaWindow] {
+    func triggeredWindows(thresholds: LowQuotaAlertThresholds = .standard) -> [AutomaticQuotaWindow] {
         AutomaticQuotaWindow.allCases.filter { window in
             guard let remaining = remaining(for: window) else { return false }
             switch window {
             case .fiveHour:
-                return remaining <= CodexAutomaticSwitchPolicy.fiveHourTriggerRemainingPercent
+                return remaining <= Double(thresholds.fiveHour)
             case .sevenDay:
-                return remaining < CodexAutomaticSwitchPolicy.sevenDayTriggerRemainingPercent
+                return remaining < Double(thresholds.sevenDay)
             }
         }
     }
@@ -116,13 +173,14 @@ enum CodexAutomaticSwitchPolicy {
         legacyManagerRunning: Bool,
         lastAttemptAt: Date?,
         lastSucceededAt: Date?,
+        thresholds: LowQuotaAlertThresholds = .standard,
         now: Date = Date()
     ) -> Bool {
         let quotaAge = now.timeIntervalSince(sourceRefreshedAt)
         guard enabled,
             quotaAge >= -5,
             quotaAge <= quotaSnapshotMaximumAge,
-            !sourceQuota.triggeredWindows().isEmpty,
+            !sourceQuota.triggeredWindows(thresholds: thresholds).isEmpty,
             hasSafeTaskState(
                 taskSnapshot,
                 codexInactiveSince: codexInactiveSince,
@@ -170,7 +228,53 @@ enum CodexAutomaticSwitchPolicy {
 }
 
 enum CodexAutomaticSwitchPolicySelfTest {
+    private static func settingsSelfTest() -> Bool {
+        let suite = "CodexManagerNext.alert-settings-test.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        guard LowQuotaAlertThresholds.load(from: defaults) == .standard else { return false }
+        let custom = LowQuotaAlertThresholds(fiveHour: 20, sevenDay: 15)
+        custom.save(to: defaults)
+        guard LowQuotaAlertThresholds.load(from: defaults) == custom,
+            AutomaticSwitchQuotaState(fiveHourRemaining: 20, sevenDayRemaining: 15)
+                .triggeredWindows(thresholds: custom) == [.fiveHour],
+            AutomaticSwitchQuotaState(fiveHourRemaining: 20.01, sevenDayRemaining: 14.99)
+                .triggeredWindows(thresholds: custom) == [.sevenDay],
+            AutomaticSwitchQuotaState(fiveHourRemaining: nil, sevenDayRemaining: .nan)
+                .triggeredWindows(thresholds: custom).isEmpty
+        else { return false }
+        let now = Date(timeIntervalSince1970: 100_000)
+        func evaluates(_ thresholds: LowQuotaAlertThresholds, age: TimeInterval = 0) -> Bool {
+            CodexAutomaticSwitchPolicy.shouldEvaluate(
+                enabled: true,
+                sourceQuota: .init(fiveHourRemaining: 18, sevenDayRemaining: 80),
+                sourceRefreshedAt: now.addingTimeInterval(-age),
+                taskSnapshot: .init(connectionMode: .sharedDaemon, records: [:], refreshedAt: now),
+                codexInactiveSince: now.addingTimeInterval(-300), legacyManagerRunning: false,
+                lastAttemptAt: nil, lastSucceededAt: nil, thresholds: thresholds, now: now
+            )
+        }
+        guard evaluates(custom), !evaluates(.standard), !evaluates(custom, age: 46) else { return false }
+        defaults.set(5.5, forKey: LowQuotaAlertThresholds.fiveHourKey)
+        defaults.set(100, forKey: LowQuotaAlertThresholds.sevenDayKey)
+        guard LowQuotaAlertThresholds.load(from: defaults) == .standard,
+            LowQuotaAlertThresholds(fiveHour: -1, sevenDay: 100) == .standard,
+            CodexAutomaticSwitchPolicy.minimumCandidateRemainingPercent == 30,
+            CodexAutomaticSwitchPolicy.quotaSnapshotMaximumAge == 45,
+            CodexAutomaticSwitchPolicy.failureRetryInterval == 3600,
+            PausedAutomationFeature.read(from: [:]).isEmpty,
+            PausedAutomationFeature.read(from: [PausedAutomationFeature.fiveHour.rawValue: "YES"]).isEmpty,
+            PausedAutomationFeature.read(from: [
+                PausedAutomationFeature.fiveHour.rawValue: "NO",
+                PausedAutomationFeature.sevenDay.rawValue: false,
+            ]) == [.fiveHour, .sevenDay]
+        else { return false }
+        print("Alert settings self-test passed: thresholds, persistence, unchanged safety gates and maintenance overrides")
+        return true
+    }
+
     static func run() -> Bool {
+        guard settingsSelfTest() else { return false }
         let now = Date(timeIntervalSince1970: 100_000)
         let idle = CodexTaskLiveSnapshot(connectionMode: .sharedDaemon, records: [:], refreshedAt: now)
         let active = CodexTaskLiveSnapshot(

@@ -84,7 +84,13 @@ private final class DispatchFixture {
             "accounts": [
                 ["alias": "fixture-primary", "home": identity.homePath, "futureHubField": ["retained": true]],
                 ["alias": "fixture-other", "home": profiles[2]["codexHomePath"]!, "dispatchDisabled": false],
-            ], "futureRootField": "retained",
+            ],
+            "projects": [
+                "demo": root.appendingPathComponent("project").path,
+                "demo-alias": root.appendingPathComponent("project").path,
+                "other": root.appendingPathComponent("other-project").path,
+            ],
+            "futureRootField": "retained",
         ]).write(to: paths.hubConfig)
         if catalogExists {
             try json([
@@ -117,6 +123,8 @@ private final class DispatchFixture {
             try require(matched[0]["code"] as? String == code)
             try require(matched[0]["profileId"] as? String == identity.profileID)
             try require(matched[0]["email"] == nil)
+            try require(matched[0]["priority"] as? Int != nil)
+            try require(matched[0]["active"] as? Bool == enabled)
         }
     }
 
@@ -192,20 +200,103 @@ test("enable, preserve unknown fields, then disable and re-enable") {
     _ = try f.sync.setParticipation(true, identity: f.identity)
     try f.checkState(enabled: true, code: "D")
     _ = try f.sync.setParticipation(false, identity: f.identity)
-    try f.checkState(enabled: false, code: nil)
+    try f.checkState(enabled: false, code: "D")
     _ = try f.sync.setParticipation(true, identity: f.identity)
     try f.checkState(enabled: true, code: "D")
     try f.checkNoTemporaryFiles()
 }
 
-test("missing catalog starts at A; disabling an unnumbered account is supported") {
+test("missing catalog creates a preflight-compatible root and starts at A") {
     let f = try DispatchFixture(catalogExists: false)
     let originals = try f.contents()
     _ = try f.sync.setParticipation(false, identity: f.identity)
     try f.checkState(enabled: false, code: nil)
     try f.checkBackups(originals)
+    let catalog = try object(f.paths.codes)
+    try require(catalog["snapshotMaxAgeSeconds"] as? Int == 45)
+    let minimums = catalog["minimumRemainingPercent"] as? [String: Any]
+    try require(minimums?["fiveHour"] as? Int == 30)
+    try require(minimums?["sevenDay"] as? Int == 15)
+    let projects = catalog["hubProjects"] as? [String: String]
+    try require(projects?["demo"] != nil && projects?["demo-alias"] == nil && projects?["other"] != nil)
+    try require(catalog["centralAliases"] as? [String] != nil)
     _ = try f.sync.setParticipation(true, identity: f.identity)
     try f.checkState(enabled: true, code: "A")
+    let entries = try DispatchParticipationSync.validatedEntries(object(f.paths.codes))
+    try require(entries[0]["priority"] as? Int == 1)
+}
+
+test("an existing dispatch letter survives disable and re-enable behind later letters") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.codes) { catalog in
+        catalog["accounts"] = [
+            ["code": "A", "alias": "fixture-a", "profileId": "profile-a", "priority": 1],
+            ["code": "B", "alias": "fixture-primary", "profileId": "profile-primary", "priority": 1],
+            ["code": "C", "alias": "fixture-c", "profileId": "profile-c", "priority": 1],
+            ["code": "D", "alias": "fixture-d", "profileId": "profile-d", "priority": 2],
+            ["code": "F", "alias": "fixture-f", "profileId": "profile-f", "priority": 4],
+        ]
+    }
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    try f.checkState(enabled: true, code: "B")
+    _ = try f.sync.setParticipation(false, identity: f.identity)
+    try f.checkState(enabled: false, code: "B")
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    try f.checkState(enabled: true, code: "B")
+}
+
+test("a legacy catalog gains integer priorities without changing existing values") {
+    let f = try DispatchFixture()
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    let entries = try DispatchParticipationSync.validatedEntries(object(f.paths.codes))
+    let other = entries.first { $0["alias"] as? String == "fixture-other" }
+    let primary = entries.first { $0["alias"] as? String == "fixture-primary" }
+    try require(other?["priority"] as? Int == 1)
+    try require(primary?["priority"] as? Int == 2)
+}
+
+test("a maximum legacy priority remains finite when a new account is added") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.codes) { catalog in
+        var entries = catalog["accounts"] as! [[String: Any]]
+        entries[0]["priority"] = Int.max
+        catalog["accounts"] = entries
+    }
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    let entries = try DispatchParticipationSync.validatedEntries(object(f.paths.codes))
+    let primary = entries.first { $0["alias"] as? String == "fixture-primary" }
+    try require(primary?["priority"] as? Int == Int.max)
+}
+
+for invalidCatalogField in ["priority", "active"] {
+    test("invalid catalog \(invalidCatalogField) type rejects every write") {
+        let f = try DispatchFixture()
+        try mutate(f.paths.codes) { catalog in
+            var entries = catalog["accounts"] as! [[String: Any]]
+            entries[0][invalidCatalogField] = "invalid"
+            catalog["accounts"] = entries
+        }
+        let originals = try f.contents()
+        try expectError(.invalidCodes) { _ = try f.sync.setParticipation(true, identity: f.identity) }
+        try require(f.contents() == originals)
+    }
+}
+
+test("shared snapshot lock provides bounded reads and compare-and-swap writes") {
+    let f = try DispatchFixture()
+    let original = try DispatchParticipationSync.readSnapshot(at: f.paths.snapshot)
+    try require(original != nil)
+    try DispatchParticipationSync.withSnapshotLock(at: f.paths.snapshot) {
+        try expectError(.busy) {
+            _ = try DispatchParticipationSync.withSnapshotLock(at: f.paths.snapshot) { () }
+        }
+        try expectError(.concurrentChange) {
+            try DispatchParticipationSync.writeSnapshot(original!, at: f.paths.snapshot, replacing: Data())
+        }
+        try DispatchParticipationSync.writeSnapshot(original!, at: f.paths.snapshot, replacing: original)
+        try require(try DispatchParticipationSync.readSnapshot(at: f.paths.snapshot) == original)
+    }
+    try require(try DispatchParticipationSync.readSnapshot(at: f.root.appendingPathComponent("missing.json")) == nil)
 }
 
 test("system mirror uses the managed profile from the matching hub home") {
@@ -257,7 +348,7 @@ test("disabling participation clears priority across account mirrors") {
     let f = try DispatchFixture()
     _ = try f.sync.apply(.priority(true), identity: f.identity)
     _ = try f.sync.setParticipation(false, identity: f.identity)
-    try f.checkState(enabled: false, code: nil)
+    try f.checkState(enabled: false, code: "D")
     let profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
     try require(profiles[0]["prioritizeDispatch"] as? Bool == false)
     try require(profiles[1]["prioritizeDispatch"] as? Bool == false)

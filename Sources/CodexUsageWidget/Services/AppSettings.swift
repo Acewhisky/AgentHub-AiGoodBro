@@ -208,6 +208,10 @@ final class AppSettings: ObservableObject {
     @Published private(set) var paletteID: String
     @Published private(set) var paletteFallbackNotice: PaletteFallbackNotice?
 
+    @Published var setupProgress: NextSetupProgress {
+        didSet { setupProgress.save(to: defaults) }
+    }
+
     @Published var keepMainWindowOnTop: Bool {
         didSet {
             defaults.set(keepMainWindowOnTop, forKey: Self.keepMainWindowOnTopKey)
@@ -251,6 +255,7 @@ final class AppSettings: ObservableObject {
     init(defaults: UserDefaults = .standard, paletteCatalog: PaletteCatalog = .loadFromMainBundle()) {
         self.defaults = defaults
         self.paletteCatalog = paletteCatalog
+        setupProgress = .load(from: defaults)
         let storedPaletteID = defaults.string(forKey: Self.paletteIDKey)
         if let storedPaletteID, paletteCatalog.contains(storedPaletteID) {
             paletteID = storedPaletteID

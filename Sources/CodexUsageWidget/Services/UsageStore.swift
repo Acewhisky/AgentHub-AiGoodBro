@@ -36,6 +36,7 @@ final class UsageStore: ObservableObject {
     private static let feishuNotificationsEnabledKey = "CodexManagerNext.feishuNotifications.enabled"
     private static let feishuQuotaResetEnabledKey = "CodexManagerNext.feishuNotifications.quotaReset"
     private static let feishuResetCreditEnabledKey = "CodexManagerNext.feishuNotifications.resetCredit"
+    private static let localNotificationsEnabledKey = "CodexManagerNext.localNotifications.enabled"
     private static let officialLifetimeHighWaterKey = "CodexManagerNext.tokens.officialLifetimeHighWater"
     private static let localLifetimeHighWaterKey = "CodexManagerNext.tokens.localLifetimeHighWater"
     private static let dispatchQuotaRefreshNotification = Notification.Name(
@@ -69,11 +70,18 @@ final class UsageStore: ObservableObject {
     @Published private(set) var refreshingProfileIDs: Set<String> = []
     @Published private(set) var warmUpSelection: CodexWarmUpSelection
     @Published private(set) var automaticAccountSwitchEnabled: Bool
+    @Published private(set) var lowQuotaAlertThresholds: LowQuotaAlertThresholds = .standard
+    private(set) var pausedAutomationFeatures: [PausedAutomationFeature] = []
     @Published private(set) var feishuNotificationsEnabled: Bool
     @Published private(set) var feishuQuotaResetEnabled = false
     @Published private(set) var feishuResetCreditEnabled = false
     @Published private(set) var feishuWebhookConfigured = false
     @Published private(set) var feishuNotificationMessage: String?
+    @Published private(set) var localNotificationsEnabled = false
+    @Published private(set) var localNotificationMessage: String?
+    @Published private(set) var localNotificationAuthorization: NextLocalNotificationService.AuthorizationState?
+    @Published private(set) var isRequestingLocalNotificationPermission = false
+    private var localNotificationPermissionRequestID: UUID?
     @Published private(set) var automationEvents: [AccountAutomationEvent]
 
     var automaticWarmUpEnabled: Bool { warmUpSelection.isEnabled }
@@ -136,10 +144,13 @@ final class UsageStore: ObservableObject {
     init() {
         isPreview = false
         statisticsPreference = StatisticsTimeZonePreferenceStore.load()
-        automaticAccountSwitchEnabled = UserDefaults.standard.bool(forKey: CodexAutomaticSwitchPolicy.enabledDefaultsKey)
-        feishuNotificationsEnabled = UserDefaults.standard.bool(forKey: Self.feishuNotificationsEnabledKey)
-        feishuQuotaResetEnabled = UserDefaults.standard.bool(forKey: Self.feishuQuotaResetEnabledKey)
-        feishuResetCreditEnabled = UserDefaults.standard.bool(forKey: Self.feishuResetCreditEnabledKey)
+        automaticAccountSwitchEnabled = NextFeatureDefaults.isEnabled(CodexAutomaticSwitchPolicy.enabledDefaultsKey)
+        lowQuotaAlertThresholds = .load()
+        pausedAutomationFeatures = PausedAutomationFeature.read(from: UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain))
+        feishuNotificationsEnabled = NextFeatureDefaults.isEnabled(Self.feishuNotificationsEnabledKey)
+        feishuQuotaResetEnabled = NextFeatureDefaults.isEnabled(Self.feishuQuotaResetEnabledKey)
+        feishuResetCreditEnabled = NextFeatureDefaults.isEnabled(Self.feishuResetCreditEnabledKey)
+        localNotificationsEnabled = NextFeatureDefaults.isEnabled(Self.localNotificationsEnabledKey)
         let profileStore = CodexProfileStore()
         warmUpSelection = CodexWarmUpSelection.load(hasExistingInstallation: profileStore.hadSavedStateOnLoad)
         try? profileStore.discardUnverifiedManagedProfiles()
@@ -161,10 +172,6 @@ final class UsageStore: ObservableObject {
         } catch {
             feishuWebhookConfigured = false
             feishuNotificationMessage = error.localizedDescription
-        }
-        if !feishuWebhookConfigured {
-            feishuNotificationsEnabled = false
-            UserDefaults.standard.set(false, forKey: Self.feishuNotificationsEnabledKey)
         }
     }
 
@@ -1555,6 +1562,7 @@ final class UsageStore: ObservableObject {
     }
 
     func setAutomaticAccountSwitchEnabled(_ enabled: Bool) {
+        guard !pausedAutomationFeatures.contains(.lowQuota) else { return }
         guard automaticAccountSwitchEnabled != enabled else { return }
         automaticAccountSwitchEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: CodexAutomaticSwitchPolicy.enabledDefaultsKey)
@@ -1564,41 +1572,192 @@ final class UsageStore: ObservableObject {
             taskClient.start(reason: .startup)
             taskClient.refreshThreads()
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "低额度提醒已开启；5 小时剩余 ≤5% 或 7 天剩余 <10% 时推荐可用账号", "Low-limit alerts enabled: suggestions appear at 5h remaining ≤5% or weekly remaining <10%.")
+                "低额度提醒已开启；5 小时剩余 ≤\(lowQuotaAlertThresholds.fiveHour)% 或 7 天剩余 <\(lowQuotaAlertThresholds.sevenDay)% 时推荐可用账号",
+                "Low-limit alerts enabled: suggestions appear at 5h remaining ≤\(lowQuotaAlertThresholds.fiveHour)% or weekly remaining <\(lowQuotaAlertThresholds.sevenDay)%.")
             refresh(queueIfBusy: true)
         } else {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("低额度提醒已关闭", "Low-limit alerts disabled.")
         }
     }
 
-    func setFeishuNotificationsEnabled(_ enabled: Bool) {
-        guard !enabled || feishuWebhookConfigured else {
-            feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text("请先保存飞书 Webhook", "Save a Feishu webhook first.")
+    func setLowQuotaAlertThresholds(fiveHour: Int, sevenDay: Int) {
+        let thresholds = LowQuotaAlertThresholds(fiveHour: fiveHour, sevenDay: sevenDay)
+        guard thresholds != lowQuotaAlertThresholds else { return }
+        lowQuotaAlertThresholds = thresholds
+        if !isPreview { thresholds.save() }
+    }
+
+    var localNotificationAuthorizationReady: Bool {
+        guard let state = localNotificationAuthorization, state.alertsEnabled else { return false }
+        return state.status == .authorized || state.status == .provisional
+    }
+
+    var localNotificationUsesSystemSettings: Bool {
+        guard let state = localNotificationAuthorization else { return false }
+        return state.status != .notDetermined && state.status != .unknown
+    }
+
+    func configureLocalNotifications() {
+        guard !isPreview, !pausedAutomationFeatures.contains(.localNotification) else { return }
+        guard localNotificationUsesSystemSettings else {
+            setLocalNotificationsEnabled(true)
             return
         }
+        setLocalNotificationsEnabled(true, requestAuthorization: false)
+        let destinations = [
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
+            "x-apple.systempreferences:com.apple.preference.notifications",
+        ]
+        for destination in destinations {
+            if let url = URL(string: destination), NSWorkspace.shared.open(url) { return }
+        }
+        localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+            "请打开系统设置 > 通知，选择 Next 并允许通知。", "Open System Settings > Notifications, choose Next, then allow notifications.")
+    }
+
+    var enabledSetupFeatureCount: Int {
+        [
+            warmUpSelection.fiveHour, warmUpSelection.sevenDay, automaticAccountSwitchEnabled,
+            localNotificationsEnabled, feishuNotificationsEnabled, feishuQuotaResetEnabled, feishuResetCreditEnabled,
+        ]
+        .filter { $0 }.count
+    }
+
+    func enableAllSetupFeatures() {
+        guard !isPreview else {
+            warmUpSelection = .all
+            automaticAccountSwitchEnabled = true
+            localNotificationsEnabled = true
+            feishuNotificationsEnabled = true
+            feishuQuotaResetEnabled = true
+            feishuResetCreditEnabled = true
+            return
+        }
+        if !warmUpSelection.fiveHour { setWarmUpFiveHourEnabled(true) }
+        if !warmUpSelection.sevenDay { setWarmUpSevenDayEnabled(true) }
+        if !automaticAccountSwitchEnabled { setAutomaticAccountSwitchEnabled(true) }
+        setLocalNotificationsEnabled(true, requestAuthorization: false)
+        setFeishuNotificationsEnabled(true)
+        setFeishuQuotaResetEnabled(true)
+        setFeishuResetCreditEnabled(true)
+    }
+
+    func setLocalNotificationsEnabled(_ enabled: Bool, requestAuthorization: Bool = true) {
+        guard !pausedAutomationFeatures.contains(.localNotification) else { return }
+        localNotificationPermissionRequestID = nil
+        isRequestingLocalNotificationPermission = false
+        localNotificationsEnabled = enabled
+        if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.localNotificationsEnabledKey) }
+        if !enabled || isPreview || !requestAuthorization {
+            localNotificationMessage =
+                enabled
+                ? WidgetLanguage.storedOrAutomatic().text("功能已开启；完成 macOS 授权后接收通知。", "Enabled. Allow macOS notifications to receive alerts.")
+                : WidgetLanguage.storedOrAutomatic().text("系统通知已关闭", "System notifications are off.")
+            if enabled { refreshLocalNotificationAuthorization() }
+            return
+        }
+        let requestID = UUID()
+        localNotificationPermissionRequestID = requestID
+        isRequestingLocalNotificationPermission = true
+        NextLocalNotificationService.shared.requestAlertAuthorization(userInitiated: true) { [weak self] result in
+            guard let self, self.localNotificationPermissionRequestID == requestID else { return }
+            self.localNotificationPermissionRequestID = nil
+            self.isRequestingLocalNotificationPermission = false
+            switch result {
+            case .success(let state):
+                self.localNotificationAuthorization = state
+                self.localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "系统通知已开启；检测到低额度时提交给 macOS。", "System notifications are on. Low-limit alerts will be submitted to macOS.")
+            case .failure(let error):
+                self.localNotificationMessage = self.localNotificationErrorMessage(error)
+                self.refreshLocalNotificationAuthorization()
+            }
+        }
+    }
+
+    func refreshLocalNotificationAuthorization() {
+        guard !isPreview else { return }
+        NextLocalNotificationService.shared.authorizationStatus { [weak self] state in
+            guard let self, !self.isRequestingLocalNotificationPermission else { return }
+            self.localNotificationAuthorization = state
+            let language = WidgetLanguage.storedOrAutomatic()
+            switch state.status {
+            case .notDetermined:
+                self.localNotificationMessage = language.text("等待 macOS 授权；点击“允许系统通知”完成设置。", "Waiting for macOS permission. Choose Allow notifications to continue.")
+            case .denied:
+                self.localNotificationMessage = language.text(
+                    "macOS 未允许通知；可在系统设置的通知中开启 Next。", "Notifications are denied in macOS. Enable Next in System Settings > Notifications.")
+            case .authorized, .provisional:
+                self.localNotificationMessage =
+                    state.alertsEnabled
+                    ? language.text("macOS 已允许通知；是否发送仍由本页开关控制。", "macOS permits alerts. This switch controls whether Next sends them.")
+                    : language.text("macOS 提醒样式已关闭，请在系统通知设置中调整。", "Alerts are disabled in macOS notification settings.")
+            case .ephemeral, .unknown:
+                self.localNotificationMessage = language.text("系统通知状态无法确认，暂不发送。", "System notification status is unverified. No notification will be sent.")
+            }
+        }
+    }
+
+    private func localNotificationErrorMessage(_ error: NextLocalNotificationService.ServiceError) -> String {
+        let language = WidgetLanguage.storedOrAutomatic()
+        switch error {
+        case .authorizationDenied, .alertsDisabled:
+            return language.text("macOS 未允许提醒；请在系统设置的通知中开启 Next。", "macOS alerts are disabled. Enable Next in System Settings > Notifications.")
+        case .authorizationNotDetermined, .userInitiationRequired:
+            return language.text("请点击“允许系统通知”完成 macOS 授权。", "Choose Allow notifications to complete macOS authorization.")
+        case .invalidQuotaData:
+            return language.text("额度数据尚未确认，本次未发送系统通知。", "Limits are unverified. No system notification was sent.")
+        case .unsupportedAuthorizationStatus, .authorizationRequestFailed:
+            return language.text("未能确认系统通知权限，请稍后重试。", "System notification permission could not be verified. Try again later.")
+        case .notificationSubmissionFailed:
+            return language.text("未能提交系统通知，请检查 macOS 通知设置。", "The notification could not be submitted. Check macOS notification settings.")
+        }
+    }
+
+    private func sendLocalLowQuotaNotification(_ quota: AutomaticSwitchQuotaState) {
+        guard !isPreview, localNotificationsEnabled else { return }
+        NextLocalNotificationService.shared.submitLowQuotaNotification(
+            fiveHourRemainingPercent: quota.fiveHourRemaining,
+            sevenDayRemainingPercent: quota.sevenDayRemaining
+        ) { [weak self] result in
+            guard let self, self.localNotificationsEnabled else { return }
+            switch result {
+            case .success:
+                self.localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "通知已提交给 macOS；显示由系统通知与专注模式设置决定。", "Submitted to macOS. Notification and Focus settings control how it appears.")
+            case .failure(let error):
+                self.localNotificationMessage = self.localNotificationErrorMessage(error)
+            }
+        }
+    }
+
+    func setFeishuNotificationsEnabled(_ enabled: Bool) {
+        guard !pausedAutomationFeatures.contains(.feishu) else { return }
         feishuNotificationsEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.feishuNotificationsEnabledKey)
+        if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuNotificationsEnabledKey) }
         quotaEventTracker.reset()
         scheduleWarmUpMaintenanceTimer()
         feishuNotificationMessage =
             enabled
-            ? WidgetLanguage.storedOrAutomatic().text(
-                "已开启飞书通知；可分别选择额度重置和 Reset 卡提醒", "Feishu notifications enabled. Limit reset and new reset credit alerts can be selected separately.")
+            ? (feishuWebhookConfigured
+                ? WidgetLanguage.storedOrAutomatic().text(
+                    "已开启飞书通知；可分别选择额度重置和 Reset 卡提醒", "Feishu notifications enabled. Limit reset and new reset credit alerts can be selected separately.")
+                : WidgetLanguage.storedOrAutomatic().text("功能已开启；保存飞书机器人地址后开始接收通知。", "Enabled. Save a Feishu bot webhook to receive notifications."))
             : WidgetLanguage.storedOrAutomatic().text("飞书推送已关闭", "Feishu notifications disabled.")
     }
 
     func setFeishuQuotaResetEnabled(_ enabled: Bool) {
-        guard !enabled || (feishuNotificationsEnabled && feishuWebhookConfigured) else { return }
+        guard !pausedAutomationFeatures.contains(.feishu) else { return }
         feishuQuotaResetEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.feishuQuotaResetEnabledKey)
+        if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuQuotaResetEnabledKey) }
         quotaEventTracker.reset()
         scheduleWarmUpMaintenanceTimer()
     }
 
     func setFeishuResetCreditEnabled(_ enabled: Bool) {
-        guard !enabled || (feishuNotificationsEnabled && feishuWebhookConfigured) else { return }
+        guard !pausedAutomationFeatures.contains(.feishu) else { return }
         feishuResetCreditEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.feishuResetCreditEnabledKey)
+        if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuResetCreditEnabledKey) }
         quotaEventTracker.reset()
         scheduleWarmUpMaintenanceTimer()
     }
@@ -1613,6 +1772,8 @@ final class UsageStore: ObservableObject {
         do {
             try feishuWebhookService.storeWebhook(value)
             feishuWebhookConfigured = true
+            quotaEventTracker.reset()
+            scheduleWarmUpMaintenanceTimer()
             feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text("飞书 Webhook 已安全保存到钥匙串", "Feishu webhook saved securely in Keychain.")
             return true
         } catch {
@@ -1691,6 +1852,7 @@ final class UsageStore: ObservableObject {
                 legacyManagerRunning: legacyManagerRunning,
                 lastAttemptAt: defaults.object(forKey: CodexAutomaticSwitchPolicy.lastAttemptDefaultsKey) as? Date,
                 lastSucceededAt: defaults.object(forKey: CodexAutomaticSwitchPolicy.lastSuccessDefaultsKey) as? Date,
+                thresholds: lowQuotaAlertThresholds,
                 now: now
             )
         else { return }
@@ -1706,7 +1868,7 @@ final class UsageStore: ObservableObject {
                     atPath: profile.codexHomeURL.appendingPathComponent("auth.json").path
                 )
         }
-        let triggeredWindows = sourceQuota.triggeredWindows()
+        let triggeredWindows = sourceQuota.triggeredWindows(thresholds: lowQuotaAlertThresholds)
         let preferred = CodexAutomaticSwitchPolicy.preferredCandidate(
             candidates.compactMap { profile in
                 guard let snapshot = profile.lastSnapshot else { return nil }
@@ -1730,6 +1892,7 @@ final class UsageStore: ObservableObject {
         let detail = WidgetLanguage.storedOrAutomatic().text(
             "额度低于阈值；推荐账号：\(recommendedName)。请回到账号卡手动使用终端", "Usage limits are low. Suggested account: \(recommendedName). Open CLI from its account card to continue.")
         accountManagerMessage = detail
+        sendLocalLowQuotaNotification(sourceQuota)
         if let source = maskedAccount(for: sourceProfile) {
             sendFeishuNotification(
                 event: .lowQuotaDetected,
@@ -1805,7 +1968,8 @@ final class UsageStore: ObservableObject {
                 event: event,
                 sourceAccount: source,
                 targetAccount: target,
-                triggerThresholdPercent: Int(CodexAutomaticSwitchPolicy.sevenDayTriggerRemainingPercent),
+                triggerThresholdPercent: lowQuotaAlertThresholds.sevenDay,
+                fiveHourTriggerThresholdPercent: lowQuotaAlertThresholds.fiveHour,
                 fiveHourRemainingPercent: quota.fiveHourRemaining.map { Int($0.rounded()) },
                 sevenDayRemainingPercent: quota.sevenDayRemaining.map { Int($0.rounded()) },
                 eventID: eventID
@@ -1920,6 +2084,7 @@ final class UsageStore: ObservableObject {
     }
 
     func setWarmUpFiveHourEnabled(_ enabled: Bool) {
+        guard !pausedAutomationFeatures.contains(.fiveHour) else { return }
         warmUpSelection.fiveHour = enabled
         warmUpSelection.save()
         accountManagerMessage =
@@ -1930,6 +2095,7 @@ final class UsageStore: ObservableObject {
     }
 
     func setWarmUpSevenDayEnabled(_ enabled: Bool) {
+        guard !pausedAutomationFeatures.contains(.sevenDay) else { return }
         warmUpSelection.sevenDay = enabled
         warmUpSelection.save()
         accountManagerMessage =
@@ -2605,6 +2771,8 @@ final class UsageStore: ObservableObject {
                 self.refreshingProfileIDs.subtract(refreshingIDs)
                 self.warmUpRefreshStartedAt = nil
                 guard self.hasStarted else { return }
+                var savedSuccessfulQuota = false
+                var saveFailed = false
                 for (profileID, snapshot) in snapshots {
                     if snapshot.quotaReadSucceeded,
                         let previous = self.profiles.first(where: { $0.id == profileID }),
@@ -2615,12 +2783,18 @@ final class UsageStore: ObservableObject {
                     do {
                         try self.profileStore.record(snapshot, for: profileID)
                         self.observeOfficialQuotaChanges(snapshot, profileID: profileID)
+                        savedSuccessfulQuota = savedSuccessfulQuota || snapshot.quotaReadSucceeded
                     } catch {
-                        // A failed save must not produce a notification.
+                        saveFailed = true
                     }
                 }
                 self.syncProfiles()
-                completion?(snapshots.contains { $0.1.quotaReadSucceeded })
+                if saveFailed {
+                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "部分额度已读取但未能保存，请重试刷新。",
+                        "Some usage limits were read but could not be saved. Refresh again.")
+                }
+                completion?(savedSuccessfulQuota && !saveFailed)
                 if refreshMembershipDates { self.refreshExpiredMembershipDates() }
                 if performWarmUpAfterRefresh {
                     if self.warmUpSelection.isEnabled {
@@ -2658,12 +2832,32 @@ final class UsageStore: ObservableObject {
             return
         }
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在为 Next 调度刷新账号额度…", "Refreshing limits for the Next account pool…")
+        let requestedAt = Date()
         refreshWarmUpProfilesThenSchedule(
             performWarmUpAfterRefresh: false,
             profileIDs: profileIDs,
             quotaOnly: true,
             retryQuotaReadOnce: true,
-            refreshMembershipDates: false
+            refreshMembershipDates: false,
+            completion: { [weak self] savedSuccessfully in
+                guard let self else { return }
+                let refreshedCount = self.profiles.filter { profile in
+                    guard profileIDs.contains(profile.id),
+                        let snapshot = profile.lastSnapshot,
+                        snapshot.quotaReadSucceeded == true,
+                        snapshot.fetchedAt >= requestedAt
+                    else { return false }
+                    return profile.lastQuotaReadFailureAt.map { $0 < snapshot.fetchedAt } ?? true
+                }.count
+                self.accountManagerMessage =
+                    savedSuccessfully
+                    ? WidgetLanguage.storedOrAutomatic().text(
+                        "调度额度刷新结束：\(refreshedCount)/\(profileIDs.count) 个账号取得新鲜额度。",
+                        "Pool refresh finished: \(refreshedCount)/\(profileIDs.count) accounts have fresh limits.")
+                    : WidgetLanguage.storedOrAutomatic().text(
+                        "调度额度刷新未完成，请查看账号状态后重试。",
+                        "Pool refresh did not complete. Check the account status and try again.")
+            }
         )
     }
 

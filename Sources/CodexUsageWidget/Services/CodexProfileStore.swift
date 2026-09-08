@@ -340,6 +340,7 @@ struct CodexWarmUpSelection: Equatable {
     var isEnabled: Bool { fiveHour || sevenDay }
 
     static let none = CodexWarmUpSelection(fiveHour: false, sevenDay: false)
+    static let all = CodexWarmUpSelection(fiveHour: true, sevenDay: true)
 
     private static let fiveHourKey = "CodexManagerNext.automaticWarmUp.fiveHour"
     private static let sevenDayKey = "CodexManagerNext.automaticWarmUp.sevenDay"
@@ -347,29 +348,30 @@ struct CodexWarmUpSelection: Equatable {
 
     static func load(
         from defaults: UserDefaults = .standard,
-        hasExistingInstallation: Bool = false
+        hasExistingInstallation _: Bool = false
     ) -> CodexWarmUpSelection {
         if defaults.object(forKey: fiveHourKey) != nil || defaults.object(forKey: sevenDayKey) != nil {
             return CodexWarmUpSelection(
-                fiveHour: defaults.bool(forKey: fiveHourKey),
-                sevenDay: defaults.bool(forKey: sevenDayKey)
+                fiveHour: NextFeatureDefaults.isEnabled(fiveHourKey, in: defaults),
+                sevenDay: NextFeatureDefaults.isEnabled(sevenDayKey, in: defaults)
             )
         }
         let selection: CodexWarmUpSelection
         if defaults.object(forKey: legacyKey) != nil {
-            selection = CodexWarmUpSelection(fiveHour: false, sevenDay: defaults.bool(forKey: legacyKey))
+            selection = CodexWarmUpSelection(fiveHour: true, sevenDay: defaults.bool(forKey: legacyKey))
         } else {
-            // Older installations may never have saved their default-off controls.
-            selection = hasExistingInstallation ? .none : CodexWarmUpSelection(fiveHour: true, sevenDay: true)
+            // Explicit saved choices remain authoritative; missing controls default on.
+            selection = .all
         }
         selection.save(to: defaults)
         return selection
     }
 
     func save(to defaults: UserDefaults = .standard) {
-        defaults.set(fiveHour, forKey: Self.fiveHourKey)
-        defaults.set(sevenDay, forKey: Self.sevenDayKey)
-        defaults.removeObject(forKey: Self.legacyKey)
+        let launchOverrides = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+        if launchOverrides[Self.fiveHourKey] == nil { defaults.set(fiveHour, forKey: Self.fiveHourKey) }
+        if launchOverrides[Self.sevenDayKey] == nil { defaults.set(sevenDay, forKey: Self.sevenDayKey) }
+        if launchOverrides[Self.legacyKey] == nil { defaults.removeObject(forKey: Self.legacyKey) }
     }
 }
 
@@ -786,7 +788,7 @@ struct CodexAccountResetCounter: Codable, Equatable {
 }
 
 final class CodexProfileStore {
-    private struct State: Codable {
+    private struct State: Codable, Equatable {
         let schemaVersion: Int
         var profiles: [CodexProfile]
         var selectedMonitorProfileID: String
@@ -800,6 +802,7 @@ final class CodexProfileStore {
     private let managedRootURL: URL
     private let persistenceBlocked: Bool
     let hadSavedStateOnLoad: Bool
+    private var hasObservedPersistedState: Bool
     private var state: State
 
     init(
@@ -819,6 +822,7 @@ final class CodexProfileStore {
             .appendingPathComponent(DispatchParticipationPaths.supportDirectoryName, isDirectory: true)
             .appendingPathComponent(DispatchParticipationPaths.snapshotFileName)
         hadSavedStateOnLoad = fileManager.fileExists(atPath: stateURL.path)
+        hasObservedPersistedState = hadSavedStateOnLoad
 
         let systemProfile = CodexProfile(
             id: "system",
@@ -848,18 +852,19 @@ final class CodexProfileStore {
             persistenceBlocked = true
         }
         guard !persistenceBlocked else { return }
-        var shouldSave = backfillCredentialAccountIDs()
-        if state.resetBackfillCheckedAt == nil {
-            backfillResetCountersFromHistory()
-            state.resetBackfillCheckedAt = Date()
-            shouldSave = true
-        }
-        if shouldSave { try? save() }
+        try? applyStartupBackfill()
     }
 
     /// 一次性回填：用账号组内存量快照还原部署计数功能之前的历史重置。
     /// 已产生过计数（含自动检测）的账号组跳过，避免重复累计。
     func backfillResetCountersFromHistory() {
+        try? mutateState {
+            Self.backfillResetCountersFromHistory(in: &self.state)
+        }
+    }
+
+    @discardableResult
+    private static func backfillResetCountersFromHistory(in state: inout State) -> Bool {
         var additions: [(key: String, count: Int, lastCountedAt: Date, newestWindowEnd: Date?)] = []
         for group in CodexProfile.groupsByRecordedAccount(state.profiles) {
             let windows =
@@ -892,8 +897,9 @@ final class CodexProfileStore {
                     windows.compactMap { $0.window.resetsAt }.max()
                 ))
         }
-        guard !additions.isEmpty else { return }
+        guard !additions.isEmpty else { return false }
         var counters = state.resetCounters ?? [:]
+        var changed = false
         for addition in additions where addition.count > 0 {
             var counter = counters[addition.key] ?? CodexAccountResetCounter()
             counter.automaticCount += addition.count
@@ -902,8 +908,11 @@ final class CodexProfileStore {
                 counter.cardExpiresAt = newestWindowEnd
             }
             counters[addition.key] = counter
+            changed = true
         }
+        guard changed else { return false }
         state.resetCounters = counters
+        return true
     }
 
     var profiles: [CodexProfile] { state.profiles }
@@ -920,33 +929,46 @@ final class CodexProfileStore {
     ) throws -> CodexProfile {
         let id = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)).lowercased()
         let home = managedRootURL.appendingPathComponent(id, isDirectory: true)
-        try fileManager.createDirectory(
-            at: home,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: home.path)
-        let profile = CodexProfile(
-            id: id,
-            name: "账号 \(state.profiles.count + 1)",
-            remark: sourceProfileID.flatMap { sourceID in
-                state.profiles.first(where: { $0.id == sourceID })?.remark
-            },
-            codexHomePath: home.path,
-            isSystemProfile: false,
-            createdAt: Date(),
-            lastSnapshot: nil,
-            chromeProfile: chromeProfile
-        )
-        if let sourceProfileID,
-            let sourceIndex = state.profiles.firstIndex(where: { $0.id == sourceProfileID })
-        {
-            state.profiles.insert(profile, at: sourceIndex)
-        } else {
-            state.profiles.append(profile)
+        var createdHome = false
+        var added: CodexProfile?
+        do {
+            try mutateState {
+                guard !self.fileManager.fileExists(atPath: home.path) else { throw CocoaError(.fileWriteFileExists) }
+                try self.fileManager.createDirectory(
+                    at: home,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                createdHome = true
+                try self.fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: home.path)
+                let profile = CodexProfile(
+                    id: id,
+                    name: "账号 \(self.state.profiles.count + 1)",
+                    remark: sourceProfileID.flatMap { sourceID in
+                        self.state.profiles.first(where: { $0.id == sourceID })?.remark
+                    },
+                    codexHomePath: home.path,
+                    isSystemProfile: false,
+                    createdAt: Date(),
+                    lastSnapshot: nil,
+                    chromeProfile: chromeProfile
+                )
+                if let sourceProfileID,
+                    let sourceIndex = self.state.profiles.firstIndex(where: { $0.id == sourceProfileID })
+                {
+                    self.state.profiles.insert(profile, at: sourceIndex)
+                } else {
+                    self.state.profiles.append(profile)
+                }
+                added = profile
+                return true
+            }
+        } catch {
+            if createdHome { discardNewHomeAfterFailedMutation(home, error: error) }
+            throw error
         }
-        try save()
-        return profile
+        guard let added else { throw CocoaError(.fileWriteUnknown) }
+        return added
     }
 
     @discardableResult
@@ -954,138 +976,178 @@ final class CodexProfileStore {
         expectedEmail: String? = nil,
         expectedAccountID: String? = nil
     ) throws -> CodexProfile {
-        guard let systemIndex = state.profiles.firstIndex(where: \.isSystemProfile) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        let system = state.profiles[systemIndex]
-        guard system.lastSnapshot?.email?.isEmpty == false else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        let sourceAuth = system.codexHomeURL.appendingPathComponent("auth.json")
-        let authData: Data
-        do {
-            authData = try Data(contentsOf: sourceAuth)
-        } catch {
-            throw NSError(
-                domain: "CodexAccountManagerNext.ProfileStore",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text("无法安全读取当前 Codex 凭据", "Could not safely read the current Codex credentials.")]
-            )
-        }
-        let boundEmail = (expectedEmail ?? system.lastSnapshot?.email)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: authData)
-        let boundAccountID = expectedAccountID ?? system.lastSnapshot?.accountID ?? identity?.accountID
-        guard let boundEmail,
-            !boundEmail.isEmpty,
-            let boundAccountID,
-            identity?.email == boundEmail,
-            identity?.accountID == boundAccountID
-        else {
-            throw NSError(
-                domain: "CodexAccountManagerNext.ProfileStore",
-                code: 2,
-                userInfo: [
-                    NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text(
-                        "当前 Codex 凭据身份与系统账号记录不一致", "The current Codex identity does not match the saved system account.")
-                ]
-            )
-        }
-        let boundSnapshot = system.lastSnapshot.map {
-            Self.snapshotByReplacingAccountID($0, accountID: boundAccountID)
-        }
-        if let existing = state.profiles.first(where: {
-            !$0.isSystemProfile
-                && $0.recordedAccountKey == system.recordedAccountKey
-                && $0.lastSnapshot?.accountID == boundAccountID
-        }) {
-            try writeAuth(authData, to: existing.codexHomeURL)
-            return existing
-        }
-
-        let previousState = state
         let id = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)).lowercased()
         let home = managedRootURL.appendingPathComponent(id, isDirectory: true)
-        let preserved = CodexProfile(
-            id: id,
-            name: system.name,
-            remark: system.remark,
-            codexHomePath: home.path,
-            isSystemProfile: false,
-            createdAt: Date(),
-            lastSnapshot: boundSnapshot,
-            officialProfile: system.officialProfile,
-            lastWarmUpAt: system.lastWarmUpAt,
-            lastWarmUpSucceeded: system.lastWarmUpSucceeded,
-            lastWarmUpFailureReason: system.lastWarmUpFailureReason,
-            chromeProfile: system.chromeProfile,
-            automaticSwitchParticipation: system.automaticSwitchParticipation,
-            prioritizeDispatch: system.prioritizeDispatch,
-            proTierMultiplier: system.proTierMultiplier
-        )
+        var createdHome = false
+        var preservedProfile: CodexProfile?
         do {
-            try writeAuth(authData, to: home)
-            state.profiles.insert(preserved, at: systemIndex + 1)
-            try save()
-            return preserved
+            try mutateState {
+                guard let systemIndex = self.state.profiles.firstIndex(where: \.isSystemProfile) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                let system = self.state.profiles[systemIndex]
+                guard system.lastSnapshot?.email?.isEmpty == false else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                let sourceAuth = system.codexHomeURL.appendingPathComponent("auth.json")
+                let authData: Data
+                do {
+                    authData = try Data(contentsOf: sourceAuth)
+                } catch {
+                    throw NSError(
+                        domain: "CodexAccountManagerNext.ProfileStore",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text("无法安全读取当前 Codex 凭据", "Could not safely read the current Codex credentials.")]
+                    )
+                }
+                let boundEmail = (expectedEmail ?? system.lastSnapshot?.email)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: authData)
+                let boundAccountID = expectedAccountID ?? system.lastSnapshot?.accountID ?? identity?.accountID
+                guard let boundEmail,
+                    !boundEmail.isEmpty,
+                    let boundAccountID,
+                    identity?.email == boundEmail,
+                    identity?.accountID == boundAccountID
+                else {
+                    throw NSError(
+                        domain: "CodexAccountManagerNext.ProfileStore",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text(
+                                "当前 Codex 凭据身份与系统账号记录不一致", "The current Codex identity does not match the saved system account.")
+                        ]
+                    )
+                }
+                if let existing = self.state.profiles.first(where: {
+                    !$0.isSystemProfile
+                        && $0.recordedAccountKey == system.recordedAccountKey
+                        && $0.lastSnapshot?.accountID == boundAccountID
+                }) {
+                    try self.writeAuth(authData, to: existing.codexHomeURL)
+                    preservedProfile = existing
+                    return false
+                }
+                try self.fileManager.createDirectory(
+                    at: home,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                createdHome = true
+                try self.fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: home.path)
+                let preserved = CodexProfile(
+                    id: id,
+                    name: system.name,
+                    remark: system.remark,
+                    codexHomePath: home.path,
+                    isSystemProfile: false,
+                    createdAt: Date(),
+                    lastSnapshot: system.lastSnapshot.map {
+                        Self.snapshotByReplacingAccountID($0, accountID: boundAccountID)
+                    },
+                    officialProfile: system.officialProfile,
+                    lastWarmUpAt: system.lastWarmUpAt,
+                    lastWarmUpSucceeded: system.lastWarmUpSucceeded,
+                    lastWarmUpFailureReason: system.lastWarmUpFailureReason,
+                    chromeProfile: system.chromeProfile,
+                    automaticSwitchParticipation: system.automaticSwitchParticipation,
+                    prioritizeDispatch: system.prioritizeDispatch,
+                    proTierMultiplier: system.proTierMultiplier
+                )
+                try self.writeAuth(authData, to: home)
+                self.state.profiles.insert(preserved, at: systemIndex + 1)
+                preservedProfile = preserved
+                return true
+            }
         } catch {
-            state = previousState
-            try? fileManager.removeItem(at: home)
+            if createdHome { discardNewHomeAfterFailedMutation(home, error: error) }
             throw error
         }
+        guard let preservedProfile else { throw CocoaError(.fileWriteUnknown) }
+        return preservedProfile
+    }
+
+    private func discardNewHomeAfterFailedMutation(_ home: URL, error: Error) {
+        // An incomplete atomic-swap rollback may leave the new record on disk.
+        // Preserve its directory until recovery can establish which state won.
+        if let syncError = error as? DispatchParticipationError, case .rollbackFailed = syncError { return }
+        try? fileManager.removeItem(at: home)
     }
 
     func selectMonitor(_ id: String) throws {
-        guard state.profiles.contains(where: { $0.id == id }) else { return }
-        state.selectedMonitorProfileID = id
-        try save()
+        try mutateState {
+            guard self.state.profiles.contains(where: { $0.id == id }) else { return false }
+            self.state.selectedMonitorProfileID = id
+            return true
+        }
     }
 
     @discardableResult
     func selectMonitorForSystemAccount() throws -> String {
-        guard let system = state.profiles.first(where: \.isSystemProfile) else {
-            throw CocoaError(.fileReadCorruptFile)
+        var selectedID: String?
+        try mutateState {
+            guard let system = self.state.profiles.first(where: \.isSystemProfile) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let target =
+                self.state.profiles.first {
+                    !$0.isSystemProfile
+                        && $0.matchesRecordedAccount(email: system.lastSnapshot?.email)
+                        && $0.lastSnapshot?.accountID == system.lastSnapshot?.accountID
+                } ?? system
+            selectedID = target.id
+            guard self.state.selectedMonitorProfileID != target.id else { return false }
+            self.state.selectedMonitorProfileID = target.id
+            return true
         }
-        let target =
-            state.profiles.first {
-                !$0.isSystemProfile
-                    && $0.matchesRecordedAccount(email: system.lastSnapshot?.email)
-                    && $0.lastSnapshot?.accountID == system.lastSnapshot?.accountID
-            } ?? system
-        state.selectedMonitorProfileID = target.id
-        try save()
-        return target.id
+        guard let selectedID else { throw CocoaError(.fileReadCorruptFile) }
+        return selectedID
     }
 
     func selectLaunch(_ id: String) throws {
-        guard state.profiles.contains(where: { $0.id == id }) else { return }
-        state.selectedLaunchProfileID = id
-        try save()
+        try mutateState {
+            guard self.state.profiles.contains(where: { $0.id == id }) else { return false }
+            self.state.selectedLaunchProfileID = id
+            return true
+        }
     }
 
     func setRemark(_ remark: String, for id: String) throws {
-        guard let index = state.profiles.firstIndex(where: { $0.id == id }) else { return }
         let trimmed = remark.trimmingCharacters(in: .whitespacesAndNewlines)
-        state.profiles[index].remark = trimmed.isEmpty ? nil : String(trimmed.prefix(40))
-        try save()
+        try mutateState {
+            guard let index = self.state.profiles.firstIndex(where: { $0.id == id }) else { return false }
+            let next = trimmed.isEmpty ? nil : String(trimmed.prefix(40))
+            guard self.state.profiles[index].remark != next else { return false }
+            self.state.profiles[index].remark = next
+            return true
+        }
     }
 
     func setChromeProfile(_ binding: ChromeProfileBinding?, for id: String) throws {
-        guard let index = state.profiles.firstIndex(where: { $0.id == id }) else { return }
         guard binding?.isValid != false else { throw CocoaError(.validationMissingMandatoryProperty) }
-        state.profiles[index].chromeProfile = binding
-        try save()
+        try mutateState {
+            guard let index = self.state.profiles.firstIndex(where: { $0.id == id }) else { return false }
+            guard self.state.profiles[index].chromeProfile != binding else { return false }
+            self.state.profiles[index].chromeProfile = binding
+            return true
+        }
     }
 
     func setAutomaticSwitchParticipation(_ enabled: Bool, for id: String) throws {
-        guard let profile = state.profiles.first(where: { $0.id == id }) else { return }
-        let accountKey = profile.recordedAccountKey
-        for index in state.profiles.indices
-        where state.profiles[index].recordedAccountKey == accountKey {
-            state.profiles[index].automaticSwitchParticipation = enabled
+        try mutateState {
+            guard let profile = self.state.profiles.first(where: { $0.id == id }) else { return false }
+            let accountKey = profile.recordedAccountKey
+            var changed = false
+            for index in self.state.profiles.indices
+            where self.state.profiles[index].recordedAccountKey == accountKey {
+                if self.state.profiles[index].automaticSwitchParticipation != enabled {
+                    self.state.profiles[index].automaticSwitchParticipation = enabled
+                    changed = true
+                }
+            }
+            return changed
         }
-        try save()
     }
 
     /// External synchronization is an explicit UI action; ordinary persistence,
@@ -1184,26 +1246,38 @@ final class CodexProfileStore {
     }
 
     func setPrioritizeDispatch(_ enabled: Bool, for id: String) throws {
-        guard let profile = state.profiles.first(where: { $0.id == id }) else { return }
-        let accountKey = profile.recordedAccountKey
-        for index in state.profiles.indices
-        where state.profiles[index].recordedAccountKey == accountKey {
-            state.profiles[index].prioritizeDispatch = enabled
+        try mutateState {
+            guard let profile = self.state.profiles.first(where: { $0.id == id }) else { return false }
+            let accountKey = profile.recordedAccountKey
+            var changed = false
+            for index in self.state.profiles.indices
+            where self.state.profiles[index].recordedAccountKey == accountKey {
+                if self.state.profiles[index].prioritizeDispatch != enabled {
+                    self.state.profiles[index].prioritizeDispatch = enabled
+                    changed = true
+                }
+            }
+            return changed
         }
-        try save()
     }
 
     func setProTierMultiplier(_ multiplier: Int?, for id: String) throws {
         guard multiplier == nil || multiplier == 5 || multiplier == 20 else {
             throw CocoaError(.validationMissingMandatoryProperty)
         }
-        guard let profile = state.profiles.first(where: { $0.id == id }) else { return }
-        let accountKey = profile.recordedAccountKey
-        for index in state.profiles.indices
-        where state.profiles[index].recordedAccountKey == accountKey {
-            state.profiles[index].proTierMultiplier = multiplier
+        try mutateState {
+            guard let profile = self.state.profiles.first(where: { $0.id == id }) else { return false }
+            let accountKey = profile.recordedAccountKey
+            var changed = false
+            for index in self.state.profiles.indices
+            where self.state.profiles[index].recordedAccountKey == accountKey {
+                if self.state.profiles[index].proTierMultiplier != multiplier {
+                    self.state.profiles[index].proTierMultiplier = multiplier
+                    changed = true
+                }
+            }
+            return changed
         }
-        try save()
     }
 
     func setExecutionPreference(
@@ -1212,23 +1286,23 @@ final class CodexProfileStore {
         applyToAll: Bool = false
     ) throws {
         let validated = try preference.validated()
-        guard let profile = state.profiles.first(where: { $0.id == id }) else { return }
-        guard !profile.isSystemProfile else {
-            throw CodexExecutionPreferenceError.systemProfileUnsupported
-        }
-        let previousState = state
-        let accountKey = profile.recordedAccountKey
-        for index in state.profiles.indices
-        where !state.profiles[index].isSystemProfile
-            && (applyToAll || state.profiles[index].recordedAccountKey == accountKey)
-        {
-            state.profiles[index].executionPreference = validated
-        }
-        do {
-            try save()
-        } catch {
-            state = previousState
-            throw error
+        try mutateState {
+            guard let profile = self.state.profiles.first(where: { $0.id == id }) else { return false }
+            guard !profile.isSystemProfile else {
+                throw CodexExecutionPreferenceError.systemProfileUnsupported
+            }
+            let accountKey = profile.recordedAccountKey
+            var changed = false
+            for index in self.state.profiles.indices
+            where !self.state.profiles[index].isSystemProfile
+                && (applyToAll || self.state.profiles[index].recordedAccountKey == accountKey)
+            {
+                if self.state.profiles[index].executionPreference != validated {
+                    self.state.profiles[index].executionPreference = validated
+                    changed = true
+                }
+            }
+            return changed
         }
     }
 
@@ -1243,22 +1317,17 @@ final class CodexProfileStore {
     }
 
     func moveProfile(_ id: String, relativeTo targetID: String, before: Bool) throws {
-        guard id != targetID,
-            let sourceIndex = state.profiles.firstIndex(where: { $0.id == id }),
-            state.profiles.contains(where: { $0.id == targetID })
-        else { return }
-        let previousState = state
-        let profile = state.profiles.remove(at: sourceIndex)
-        guard let targetIndex = state.profiles.firstIndex(where: { $0.id == targetID }) else {
-            state = previousState
-            return
-        }
-        state.profiles.insert(profile, at: before ? targetIndex : targetIndex + 1)
-        do {
-            try save()
-        } catch {
-            state = previousState
-            throw error
+        try mutateState {
+            guard id != targetID,
+                let sourceIndex = self.state.profiles.firstIndex(where: { $0.id == id }),
+                self.state.profiles.contains(where: { $0.id == targetID })
+            else { return false }
+            let profile = self.state.profiles.remove(at: sourceIndex)
+            guard let targetIndex = self.state.profiles.firstIndex(where: { $0.id == targetID }) else {
+                return false
+            }
+            self.state.profiles.insert(profile, at: before ? targetIndex : targetIndex + 1)
+            return true
         }
     }
 
@@ -1269,151 +1338,160 @@ final class CodexProfileStore {
         allowSystemAccountChange: Bool = false
     ) throws {
         let hasVerifiedAccount = snapshot.account?.email?.isEmpty == false
-        guard let index = state.profiles.firstIndex(where: { $0.id == profileID })
-        else { return }
-        // Pool and selected-profile reads can finish out of order. Keep both
-        // success and failure observations monotonic, while allowing equal-time
-        // records to enrich account data or recover a failed read.
-        let newestObservationAt = max(
-            state.profiles[index].lastSnapshot?.fetchedAt ?? .distantPast,
-            state.profiles[index].lastQuotaReadFailureAt ?? .distantPast
-        )
-        guard snapshot.refreshedAt >= newestObservationAt else { return }
-        guard snapshot.quotaReadSucceeded || (allowAccountOnly && hasVerifiedAccount) else {
-            let previous = state.profiles[index].lastSnapshot
-            let successfulSnapshotAtSameTime =
-                previous?.fetchedAt == snapshot.refreshedAt
-                && previous?.quotaReadSucceeded != false
-            guard !successfulSnapshotAtSameTime else { return }
-            // 额度读取失败时保留旧数据，但必须留下可见的失败痕迹，
-            // 避免账号凭证失效后快照无限期静默过期。
-            // 失败原因只保留分类标记，不落盘原始服务端消息，避免写入账号标识。
-            let failureReason = Self.quotaFailureReason(from: snapshot.messages)
-            let changed =
-                state.profiles[index].lastQuotaReadFailureAt != snapshot.refreshedAt
-                || state.profiles[index].lastQuotaReadFailureReason != failureReason
-            if changed {
-                state.profiles[index].lastQuotaReadFailureAt = snapshot.refreshedAt
-                state.profiles[index].lastQuotaReadFailureReason = failureReason
-                try save()
-            }
-            return
-        }
-        let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(
-            codexHomeURL: state.profiles[index].codexHomeURL
-        )
-        let snapshotEmail = snapshot.account?.email?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        let identityMatchesSnapshot = credentialIdentity?.email == snapshotEmail
-        let verifiedAccountID = identityMatchesSnapshot ? credentialIdentity?.accountID : nil
-        let previousAccountID = state.profiles[index].lastSnapshot?.accountID
-        let accountChanged =
-            !state.profiles[index].matchesRecordedAccount(email: snapshot.account?.email)
-            || (previousAccountID != nil && verifiedAccountID != nil && previousAccountID != verifiedAccountID)
-        guard !accountChanged || (allowSystemAccountChange && state.profiles[index].isSystemProfile) else { return }
-        if accountChanged {
-            state.profiles[index].officialProfile = nil
-            state.profiles[index].lastWarmUpAt = nil
-            state.profiles[index].lastWarmUpSucceeded = nil
-            state.profiles[index].lastWarmUpFailureReason = nil
-            state.profiles[index].proTierMultiplier = nil
-            if state.profiles[index].isSystemProfile {
-                state.profiles[index].remark = nil
-                let matchingManagedProfile = state.profiles.first {
-                    !$0.isSystemProfile
-                        && $0.matchesRecordedAccount(email: snapshot.account?.email)
-                        && ($0.lastSnapshot?.accountID == nil || $0.lastSnapshot?.accountID == verifiedAccountID)
-                }
-                state.profiles[index].chromeProfile = matchingManagedProfile?.chromeProfile
-                state.profiles[index].automaticSwitchParticipation =
-                    matchingManagedProfile?.automaticSwitchParticipation
-                state.profiles[index].prioritizeDispatch = matchingManagedProfile?.prioritizeDispatch
-                state.profiles[index].proTierMultiplier = matchingManagedProfile?.proTierMultiplier
-            }
-        }
-        let previousSnapshot = state.profiles[index].lastSnapshot
-        let mergesEqualObservation = !accountChanged && previousSnapshot?.fetchedAt == snapshot.refreshedAt
-        let record = CodexAccountSnapshot(
-            accountType: mergesEqualObservation ? previousSnapshot?.accountType ?? snapshot.account?.type : snapshot.account?.type,
-            planType: mergesEqualObservation ? previousSnapshot?.planType ?? snapshot.account?.planType : snapshot.account?.planType,
-            email: mergesEqualObservation ? previousSnapshot?.email ?? snapshot.account?.email : snapshot.account?.email,
-            accountID: verifiedAccountID ?? (accountChanged ? nil : previousAccountID),
-            limitId: mergesEqualObservation ? previousSnapshot?.limitId ?? snapshot.limitId : snapshot.limitId,
-            limitName: mergesEqualObservation ? previousSnapshot?.limitName ?? snapshot.limitName : snapshot.limitName,
-            fiveHour: mergesEqualObservation
-                ? previousSnapshot?.fiveHour ?? snapshot.fiveHourQuota.map(CodexQuotaWindowSnapshot.init)
-                : snapshot.fiveHourQuota.map(CodexQuotaWindowSnapshot.init),
-            sevenDay: mergesEqualObservation
-                ? previousSnapshot?.sevenDay ?? snapshot.sevenDayQuota.map(CodexQuotaWindowSnapshot.init)
-                : snapshot.sevenDayQuota.map(CodexQuotaWindowSnapshot.init),
-            monthly: mergesEqualObservation
-                ? previousSnapshot?.monthly ?? snapshot.monthlyQuota.map(CodexQuotaWindowSnapshot.init)
-                : snapshot.monthlyQuota.map(CodexQuotaWindowSnapshot.init),
-            availableResetCredits: mergesEqualObservation
-                ? previousSnapshot?.availableResetCredits ?? snapshot.credits?.resetCredits
-                : snapshot.credits?.resetCredits,
-            resetCreditExpiries: mergesEqualObservation
-                ? previousSnapshot?.resetCreditExpiries ?? snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted()
-                : snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted(),
-            fetchedAt: snapshot.refreshedAt,
-            appServerVersion: mergesEqualObservation
-                ? previousSnapshot?.appServerVersion ?? CodexExecutable.version()
-                : CodexExecutable.version(),
-            quotaReadSucceeded: snapshot.quotaReadSucceeded
-                || (mergesEqualObservation && (previousSnapshot?.quotaReadSucceeded ?? true))
-        )
-        let previousSevenDay = state.profiles[index].lastSnapshot?.sevenDay
-        state.profiles[index].lastSnapshot = record
-        if snapshot.quotaReadSucceeded {
-            state.profiles[index].lastQuotaReadFailureAt = nil
-            state.profiles[index].lastQuotaReadFailureReason = nil
-        }
-        if !accountChanged,
-            CodexWarmUpPolicy.didConsumeReset(
-                previous: previousSevenDay,
-                current: record.sevenDay,
-                now: snapshot.refreshedAt
-            ),
-            !resetAlreadyObservedInGroup(
-                previous: previousSevenDay,
-                current: record.sevenDay,
-                excludingIndex: index
+        let appServerVersion =
+            snapshot.quotaReadSucceeded || (allowAccountOnly && hasVerifiedAccount)
+            ? CodexExecutable.version() : nil
+        try mutateState {
+            guard let index = self.state.profiles.firstIndex(where: { $0.id == profileID })
+            else { return false }
+            // Pool and selected-profile reads can finish out of order. Keep both
+            // success and failure observations monotonic, while allowing equal-time
+            // records to enrich account data or recover a failed read.
+            let newestObservationAt = max(
+                self.state.profiles[index].lastSnapshot?.fetchedAt ?? .distantPast,
+                self.state.profiles[index].lastQuotaReadFailureAt ?? .distantPast
             )
-        {
-            let key = state.profiles[index].recordedAccountKey
-            var counters = state.resetCounters ?? [:]
-            var counter = counters[key] ?? CodexAccountResetCounter()
-            counter.automaticCount += 1
-            counter.lastCountedResetAt = record.sevenDay?.resetsAt ?? record.fetchedAt
-            if let newWindowEnd = record.sevenDay?.resetsAt {
-                counter.cardExpiresAt = newWindowEnd
+            guard snapshot.refreshedAt >= newestObservationAt else { return false }
+            guard snapshot.quotaReadSucceeded || (allowAccountOnly && hasVerifiedAccount) else {
+                let previous = self.state.profiles[index].lastSnapshot
+                let successfulSnapshotAtSameTime =
+                    previous?.fetchedAt == snapshot.refreshedAt
+                    && previous?.quotaReadSucceeded != false
+                guard !successfulSnapshotAtSameTime else { return false }
+                // 额度读取失败时保留旧数据，但必须留下可见的失败痕迹，
+                // 避免账号凭证失效后快照无限期静默过期。
+                // 失败原因只保留分类标记，不落盘原始服务端消息，避免写入账号标识。
+                let failureReason = Self.quotaFailureReason(from: snapshot.messages)
+                let changed =
+                    self.state.profiles[index].lastQuotaReadFailureAt != snapshot.refreshedAt
+                    || self.state.profiles[index].lastQuotaReadFailureReason != failureReason
+                if changed {
+                    self.state.profiles[index].lastQuotaReadFailureAt = snapshot.refreshedAt
+                    self.state.profiles[index].lastQuotaReadFailureReason = failureReason
+                }
+                return changed
             }
-            counters[key] = counter
-            state.resetCounters = counters
+            let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(
+                codexHomeURL: self.state.profiles[index].codexHomeURL
+            )
+            let snapshotEmail = snapshot.account?.email?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let identityMatchesSnapshot = credentialIdentity?.email == snapshotEmail
+            let verifiedAccountID = identityMatchesSnapshot ? credentialIdentity?.accountID : nil
+            let previousAccountID = self.state.profiles[index].lastSnapshot?.accountID
+            let accountChanged =
+                !self.state.profiles[index].matchesRecordedAccount(email: snapshot.account?.email)
+                || (previousAccountID != nil && verifiedAccountID != nil && previousAccountID != verifiedAccountID)
+            guard !accountChanged || (allowSystemAccountChange && self.state.profiles[index].isSystemProfile) else { return false }
+            if accountChanged {
+                self.state.profiles[index].officialProfile = nil
+                self.state.profiles[index].lastWarmUpAt = nil
+                self.state.profiles[index].lastWarmUpSucceeded = nil
+                self.state.profiles[index].lastWarmUpFailureReason = nil
+                self.state.profiles[index].proTierMultiplier = nil
+                if self.state.profiles[index].isSystemProfile {
+                    self.state.profiles[index].remark = nil
+                    let matchingManagedProfile = self.state.profiles.first {
+                        !$0.isSystemProfile
+                            && $0.matchesRecordedAccount(email: snapshot.account?.email)
+                            && ($0.lastSnapshot?.accountID == nil || $0.lastSnapshot?.accountID == verifiedAccountID)
+                    }
+                    self.state.profiles[index].chromeProfile = matchingManagedProfile?.chromeProfile
+                    self.state.profiles[index].automaticSwitchParticipation =
+                        matchingManagedProfile?.automaticSwitchParticipation
+                    self.state.profiles[index].prioritizeDispatch = matchingManagedProfile?.prioritizeDispatch
+                    self.state.profiles[index].proTierMultiplier = matchingManagedProfile?.proTierMultiplier
+                }
+            }
+            let previousSnapshot = self.state.profiles[index].lastSnapshot
+            let mergesEqualObservation = !accountChanged && previousSnapshot?.fetchedAt == snapshot.refreshedAt
+            let record = CodexAccountSnapshot(
+                accountType: mergesEqualObservation ? previousSnapshot?.accountType ?? snapshot.account?.type : snapshot.account?.type,
+                planType: mergesEqualObservation ? previousSnapshot?.planType ?? snapshot.account?.planType : snapshot.account?.planType,
+                email: mergesEqualObservation ? previousSnapshot?.email ?? snapshot.account?.email : snapshot.account?.email,
+                accountID: verifiedAccountID ?? (accountChanged ? nil : previousAccountID),
+                limitId: mergesEqualObservation ? previousSnapshot?.limitId ?? snapshot.limitId : snapshot.limitId,
+                limitName: mergesEqualObservation ? previousSnapshot?.limitName ?? snapshot.limitName : snapshot.limitName,
+                fiveHour: mergesEqualObservation
+                    ? previousSnapshot?.fiveHour ?? snapshot.fiveHourQuota.map(CodexQuotaWindowSnapshot.init)
+                    : snapshot.fiveHourQuota.map(CodexQuotaWindowSnapshot.init),
+                sevenDay: mergesEqualObservation
+                    ? previousSnapshot?.sevenDay ?? snapshot.sevenDayQuota.map(CodexQuotaWindowSnapshot.init)
+                    : snapshot.sevenDayQuota.map(CodexQuotaWindowSnapshot.init),
+                monthly: mergesEqualObservation
+                    ? previousSnapshot?.monthly ?? snapshot.monthlyQuota.map(CodexQuotaWindowSnapshot.init)
+                    : snapshot.monthlyQuota.map(CodexQuotaWindowSnapshot.init),
+                availableResetCredits: mergesEqualObservation
+                    ? previousSnapshot?.availableResetCredits ?? snapshot.credits?.resetCredits
+                    : snapshot.credits?.resetCredits,
+                resetCreditExpiries: mergesEqualObservation
+                    ? previousSnapshot?.resetCreditExpiries ?? snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted()
+                    : snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted(),
+                fetchedAt: snapshot.refreshedAt,
+                appServerVersion: mergesEqualObservation
+                    ? previousSnapshot?.appServerVersion ?? appServerVersion
+                    : appServerVersion,
+                quotaReadSucceeded: snapshot.quotaReadSucceeded
+                    || (mergesEqualObservation && (previousSnapshot?.quotaReadSucceeded ?? true))
+            )
+            let previousSevenDay = self.state.profiles[index].lastSnapshot?.sevenDay
+            self.state.profiles[index].lastSnapshot = record
+            if snapshot.quotaReadSucceeded {
+                self.state.profiles[index].lastQuotaReadFailureAt = nil
+                self.state.profiles[index].lastQuotaReadFailureReason = nil
+            }
+            if !accountChanged,
+                CodexWarmUpPolicy.didConsumeReset(
+                    previous: previousSevenDay,
+                    current: record.sevenDay,
+                    now: snapshot.refreshedAt
+                ),
+                !self.resetAlreadyObservedInGroup(
+                    previous: previousSevenDay,
+                    current: record.sevenDay,
+                    excludingIndex: index
+                )
+            {
+                let key = self.state.profiles[index].recordedAccountKey
+                var counters = self.state.resetCounters ?? [:]
+                var counter = counters[key] ?? CodexAccountResetCounter()
+                counter.automaticCount += 1
+                counter.lastCountedResetAt = record.sevenDay?.resetsAt ?? record.fetchedAt
+                if let newWindowEnd = record.sevenDay?.resetsAt {
+                    counter.cardExpiresAt = newWindowEnd
+                }
+                counters[key] = counter
+                self.state.resetCounters = counters
+            }
+            if let email = record.email, !email.isEmpty {
+                self.state.profiles[index].name = email
+            }
+            return true
         }
-        if let email = record.email, !email.isEmpty {
-            state.profiles[index].name = email
-        }
-        try save()
     }
 
     func recordOfficialProfile(_ snapshot: CodexOfficialProfileSnapshot, for profileID: String) throws {
-        guard let index = state.profiles.firstIndex(where: { $0.id == profileID }) else { return }
-        guard state.profiles[index].matchesRecordedAccount(email: snapshot.accountEmail) else { return }
-        guard snapshot.fetchedAt >= (state.profiles[index].officialProfile?.fetchedAt ?? .distantPast) else { return }
-        state.profiles[index].officialProfile = snapshot
-        try save()
+        try mutateState {
+            guard let index = self.state.profiles.firstIndex(where: { $0.id == profileID }),
+                self.state.profiles[index].matchesRecordedAccount(email: snapshot.accountEmail),
+                snapshot.fetchedAt >= (self.state.profiles[index].officialProfile?.fetchedAt ?? .distantPast)
+            else { return false }
+            self.state.profiles[index].officialProfile = snapshot
+            return true
+        }
     }
 
     func recordMembershipRefresh(at date: Date, succeeded: Bool, for profileID: String) throws {
-        guard let index = state.profiles.firstIndex(where: { $0.id == profileID }),
-            !state.profiles[index].isSystemProfile,
-            date >= (state.profiles[index].lastMembershipRefreshAt ?? .distantPast)
-        else { return }
-        state.profiles[index].lastMembershipRefreshAt = date
-        state.profiles[index].lastMembershipRefreshSucceeded = succeeded
-        try save()
+        try mutateState {
+            guard let index = self.state.profiles.firstIndex(where: { $0.id == profileID }),
+                !self.state.profiles[index].isSystemProfile,
+                date >= (self.state.profiles[index].lastMembershipRefreshAt ?? .distantPast)
+            else { return false }
+            self.state.profiles[index].lastMembershipRefreshAt = date
+            self.state.profiles[index].lastMembershipRefreshSucceeded = succeeded
+            return true
+        }
     }
 
     func recordWarmUp(
@@ -1422,11 +1500,13 @@ final class CodexProfileStore {
         failureReason: String? = nil,
         for profileID: String
     ) throws {
-        guard let index = state.profiles.firstIndex(where: { $0.id == profileID }) else { return }
-        state.profiles[index].lastWarmUpAt = date
-        state.profiles[index].lastWarmUpSucceeded = succeeded
-        state.profiles[index].lastWarmUpFailureReason = succeeded ? nil : failureReason
-        try save()
+        try mutateState {
+            guard let index = self.state.profiles.firstIndex(where: { $0.id == profileID }) else { return false }
+            self.state.profiles[index].lastWarmUpAt = date
+            self.state.profiles[index].lastWarmUpSucceeded = succeeded
+            self.state.profiles[index].lastWarmUpFailureReason = succeeded ? nil : failureReason
+            return true
+        }
     }
 
     /// 从额度读取的诊断消息中提取可展示的失败分类；只保留标记，不保留原始消息。
@@ -1504,45 +1584,54 @@ final class CodexProfileStore {
     }
 
     func adjustResetManualOffset(accountKey: String, delta: Int, fallbackExpiry: Date? = nil) throws {
-        var counters = state.resetCounters ?? [:]
-        var counter = counters[accountKey] ?? CodexAccountResetCounter()
-        counter.manualOffset = max(-counter.automaticCount, counter.manualOffset + delta)
-        if delta > 0, let fallbackExpiry {
-            if let current = counter.cardExpiresAt {
-                if fallbackExpiry > current {
+        try mutateState {
+            var counters = self.state.resetCounters ?? [:]
+            var counter = counters[accountKey] ?? CodexAccountResetCounter()
+            counter.manualOffset = max(-counter.automaticCount, counter.manualOffset + delta)
+            if delta > 0, let fallbackExpiry {
+                if let current = counter.cardExpiresAt {
+                    if fallbackExpiry > current {
+                        counter.cardExpiresAt = fallbackExpiry
+                    }
+                } else {
                     counter.cardExpiresAt = fallbackExpiry
                 }
-            } else {
-                counter.cardExpiresAt = fallbackExpiry
             }
+            counters[accountKey] = counter
+            guard self.state.resetCounters != counters else { return false }
+            self.state.resetCounters = counters
+            return true
         }
-        counters[accountKey] = counter
-        state.resetCounters = counters
-        try save()
     }
 
     func setResetCardExpiry(accountKey: String, date: Date?) throws {
-        var counters = state.resetCounters ?? [:]
-        var counter = counters[accountKey] ?? CodexAccountResetCounter()
-        counter.cardExpiresAt = date
-        counters[accountKey] = counter
-        state.resetCounters = counters
-        try save()
+        try mutateState {
+            var counters = self.state.resetCounters ?? [:]
+            var counter = counters[accountKey] ?? CodexAccountResetCounter()
+            guard counter.cardExpiresAt != date else { return false }
+            counter.cardExpiresAt = date
+            counters[accountKey] = counter
+            self.state.resetCounters = counters
+            return true
+        }
     }
 
     func discardUnverifiedManagedProfiles() throws {
-        let discarded = state.profiles.filter { !$0.isSystemProfile && $0.lastSnapshot == nil }
-        guard !discarded.isEmpty else { return }
-        let discardedIDs = Set(discarded.map(\.id))
-        state.profiles.removeAll { discardedIDs.contains($0.id) }
-        let fallbackID = state.profiles.first(where: \.isSystemProfile)?.id ?? state.profiles[0].id
-        if discardedIDs.contains(state.selectedMonitorProfileID) {
-            state.selectedMonitorProfileID = fallbackID
+        var discarded: [CodexProfile] = []
+        try mutateState {
+            discarded = self.state.profiles.filter { !$0.isSystemProfile && $0.lastSnapshot == nil }
+            guard !discarded.isEmpty else { return false }
+            let discardedIDs = Set(discarded.map(\.id))
+            self.state.profiles.removeAll { discardedIDs.contains($0.id) }
+            let fallbackID = self.state.profiles.first(where: \.isSystemProfile)?.id ?? self.state.profiles[0].id
+            if discardedIDs.contains(self.state.selectedMonitorProfileID) {
+                self.state.selectedMonitorProfileID = fallbackID
+            }
+            if discardedIDs.contains(self.state.selectedLaunchProfileID) {
+                self.state.selectedLaunchProfileID = fallbackID
+            }
+            return true
         }
-        if discardedIDs.contains(state.selectedLaunchProfileID) {
-            state.selectedLaunchProfileID = fallbackID
-        }
-        try save()
         for profile in discarded {
             let authURL = profile.codexHomeURL.appendingPathComponent("auth.json")
             if !fileManager.fileExists(atPath: authURL.path) {
@@ -1560,38 +1649,54 @@ final class CodexProfileStore {
     }
 
     func removeManagedProfile(_ id: String) throws {
-        guard let profile = state.profiles.first(where: { $0.id == id && !$0.isSystemProfile }) else { return }
+        _ = try removeManagedProfileRecord(id, movingToTrash: true)
+    }
+
+    private func removeManagedProfileRecord(_ id: String, movingToTrash: Bool = false) throws -> CodexProfile? {
+        var removed: CodexProfile?
         var trashedURL: NSURL?
-        if fileManager.fileExists(atPath: profile.codexHomePath) {
-            try fileManager.trashItem(at: profile.codexHomeURL, resultingItemURL: &trashedURL)
-        }
         do {
-            _ = try removeManagedProfileRecord(id)
+            try mutateState {
+                guard let index = self.state.profiles.firstIndex(where: { $0.id == id && !$0.isSystemProfile }) else {
+                    return false
+                }
+                let profile = self.state.profiles[index]
+                removed = profile
+                if movingToTrash, self.fileManager.fileExists(atPath: profile.codexHomePath) {
+                    try self.fileManager.trashItem(at: profile.codexHomeURL, resultingItemURL: &trashedURL)
+                }
+                self.state.profiles.remove(at: index)
+                let fallbackID = self.state.profiles.first(where: \.isSystemProfile)?.id ?? self.state.profiles[0].id
+                if self.state.selectedMonitorProfileID == id { self.state.selectedMonitorProfileID = fallbackID }
+                if self.state.selectedLaunchProfileID == id { self.state.selectedLaunchProfileID = fallbackID }
+                return true
+            }
         } catch {
-            if let trashedURL {
+            if let trashedURL, let profile = removed {
                 try? fileManager.moveItem(at: trashedURL as URL, to: profile.codexHomeURL)
             }
             throw error
         }
+        return removed
     }
 
-    private func removeManagedProfileRecord(_ id: String) throws -> CodexProfile? {
-        guard let index = state.profiles.firstIndex(where: { $0.id == id && !$0.isSystemProfile }) else { return nil }
-        let previousState = state
-        let profile = state.profiles.remove(at: index)
-        let fallbackID = state.profiles.first(where: \.isSystemProfile)?.id ?? state.profiles[0].id
-        if state.selectedMonitorProfileID == id { state.selectedMonitorProfileID = fallbackID }
-        if state.selectedLaunchProfileID == id { state.selectedLaunchProfileID = fallbackID }
-        do {
-            try save()
-        } catch {
-            state = previousState
-            throw error
+    private func applyStartupBackfill() throws {
+        try mutateState {
+            var changed = self.backfillCredentialAccountIDs()
+            if self.state.resetBackfillCheckedAt == nil {
+                changed = Self.backfillResetCountersFromHistory(in: &self.state) || changed
+                self.state.resetBackfillCheckedAt = Date()
+                changed = true
+            }
+            return changed
         }
-        return profile
     }
 
-    private func save() throws {
+    /// Every state change starts from the bytes currently on disk while holding
+    /// the same cross-process lock as DispatchParticipationSync. Atomic writes
+    /// alone prevent torn JSON, but cannot prevent a second Next process from
+    /// replacing a newer whole snapshot with its startup-era cache.
+    private func mutateState(_ mutation: () throws -> Bool) throws {
         guard !persistenceBlocked else {
             throw NSError(
                 domain: "CodexAccountManagerNext.ProfileStore",
@@ -1602,16 +1707,63 @@ final class CodexProfileStore {
                 ]
             )
         }
+        let previousState = state
         let directory = stateURL.deletingLastPathComponent()
         try fileManager.createDirectory(
             at: directory,
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(state).write(to: stateURL, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateURL.path)
+        do {
+            try DispatchParticipationSync.withSnapshotLock(at: stateURL) {
+                let original = try DispatchParticipationSync.readSnapshot(at: stateURL)
+                if let original {
+                    guard let decoded = try? JSONDecoder().decode(State.self, from: original),
+                        Self.isValid(
+                            decoded,
+                            systemPath: previousState.profiles.first(where: \.isSystemProfile)?.codexHomePath ?? "",
+                            managedRoot: self.managedRootURL
+                        )
+                    else {
+                        throw NSError(
+                            domain: "CodexAccountManagerNext.ProfileStore",
+                            code: 4,
+                            userInfo: [
+                                NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text(
+                                    "账号状态文件已被其他实例改为无效内容，已阻止覆盖",
+                                    "The account state was made invalid by another instance. Writing was blocked."
+                                )
+                            ]
+                        )
+                    }
+                    self.state = decoded
+                    self.hasObservedPersistedState = true
+                } else {
+                    guard !self.hasObservedPersistedState else {
+                        throw NSError(
+                            domain: "CodexAccountManagerNext.ProfileStore",
+                            code: 5,
+                            userInfo: [
+                                NSLocalizedDescriptionKey: WidgetLanguage.storedOrAutomatic().text(
+                                    "账号状态文件在运行期间丢失，已阻止覆盖",
+                                    "The account state disappeared while Next was running. Writing was blocked."
+                                )
+                            ]
+                        )
+                    }
+                    self.state = previousState
+                }
+                guard try mutation() else { return }
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let encoded = try encoder.encode(self.state)
+                try DispatchParticipationSync.writeSnapshot(encoded, at: self.stateURL, replacing: original)
+                self.hasObservedPersistedState = true
+            }
+        } catch {
+            state = previousState
+            throw error
+        }
     }
 
     @discardableResult
@@ -1712,6 +1864,8 @@ enum CodexProfileStoreSelfTest {
         defer { try? fileManager.removeItem(at: root) }
         do {
             guard try testQuotaObservationOrdering(root: root, fileManager: fileManager) else { return false }
+            guard try testCrossInstanceStateTransactions(root: root, fileManager: fileManager) else { return false }
+            guard try testStateTransactionFailures(root: root, fileManager: fileManager) else { return false }
             let home = root.appendingPathComponent("home", isDirectory: true)
             let support = root.appendingPathComponent("support", isDirectory: true)
             try fileManager.createDirectory(at: home, withIntermediateDirectories: true)
@@ -2111,6 +2265,10 @@ enum CodexProfileStoreSelfTest {
                 print("Codex profile store self-test failed: invalid execution preference was overwritten")
                 return false
             }
+            // Repair the deliberately invalid fixture before using a live store
+            // again. A stale instance must not be allowed to overwrite it.
+            legacyState["profiles"] = legacyProfiles
+            try JSONSerialization.data(withJSONObject: legacyState).write(to: stateURL, options: .atomic)
             try restored.moveProfile(added.id, relativeTo: "system", before: true)
             let reordered = CodexProfileStore(
                 fileManager: fileManager,
@@ -2747,7 +2905,8 @@ enum CodexProfileStoreSelfTest {
                 return false
             }
             try restored.discardManagedProfile(added.id)
-            guard restored.profiles.count == 1,
+            guard Set(restored.profiles.map(\.id)) == ["system", preserved.id],
+                try Data(contentsOf: preserved.codexHomeURL.appendingPathComponent("auth.json")) == systemAuth,
                 restored.selectedMonitorProfileID == "system",
                 restored.selectedLaunchProfileID == "system"
             else {
@@ -2810,6 +2969,178 @@ enum CodexProfileStoreSelfTest {
         guard expect(!due(at: Date(timeIntervalSince1970: 399)), "future membership date is not renewed") else { return false }
         profile.officialProfile = nil
         return expect(!due(), "unknown membership date is not treated as expired")
+    }
+
+    /// Recreates the real dual-window sequence: both instances start with the
+    /// same cache, then one writes a setting while the other finishes a refresh.
+    /// Each later writer must retain the setting committed by the earlier one.
+    private static func testCrossInstanceStateTransactions(root: URL, fileManager: FileManager) throws -> Bool {
+        let home = root.appendingPathComponent("cross-instance-home", isDirectory: true)
+        let support = root.appendingPathComponent("cross-instance-support", isDirectory: true)
+        let seed = CodexProfileStore(
+            fileManager: fileManager,
+            homeDirectory: home,
+            applicationSupportDirectory: support
+        )
+        let profile = try seed.addManagedProfile()
+        let base = Date(timeIntervalSince1970: 3_000_000)
+        try seed.record(
+            testSnapshot(email: "cross-instance@example.invalid", usedPercent: 10, at: base),
+            for: profile.id
+        )
+        func reload() -> CodexProfileStore {
+            CodexProfileStore(
+                fileManager: fileManager,
+                homeDirectory: home,
+                applicationSupportDirectory: support
+            )
+        }
+        func current(_ store: CodexProfileStore) -> CodexProfile? {
+            store.profiles.first(where: { $0.id == profile.id })
+        }
+        func expect(_ condition: Bool, _ label: String) -> Bool {
+            if !condition { print("Codex cross-instance self-test failed: \(label)") }
+            return condition
+        }
+
+        let fast = CodexExecutionPreference(model: .terra, reasoningEffort: .high, serviceTier: .fast)
+        let standard = CodexExecutionPreference(model: .sol, reasoningEffort: .max, serviceTier: .standard)
+        let high = CodexExecutionPreference(model: .astra, reasoningEffort: .ultra, serviceTier: .fast)
+
+        // A settings write must survive B's stale successful quota refresh.
+        let settingWriter = reload()
+        let quotaWriter = reload()
+        try settingWriter.setExecutionPreference(fast, for: profile.id)
+        try quotaWriter.record(
+            testSnapshot(
+                email: "cross-instance@example.invalid",
+                usedPercent: 20,
+                at: base.addingTimeInterval(1)
+            ),
+            for: profile.id
+        )
+        let afterQuota = reload()
+        guard expect(current(afterQuota)?.executionPreference == fast, "quota refresh reverted execution preference"),
+            expect(current(afterQuota)?.lastSnapshot?.fetchedAt == base.addingTimeInterval(1), "quota refresh was lost")
+        else { return false }
+
+        // The same must hold for the independent official-profile observer.
+        let officialSettingWriter = reload()
+        let officialWriter = reload()
+        try officialSettingWriter.setExecutionPreference(standard, for: profile.id)
+        let official = CodexOfficialProfileSnapshot(
+            accountEmail: "cross-instance@example.invalid",
+            displayName: "Cross instance",
+            username: "cross-instance",
+            lifetimeTokens: nil,
+            peakDailyTokens: nil,
+            planType: "plus",
+            subscriptionActiveUntil: nil,
+            statsAsOf: nil,
+            fetchedAt: base.addingTimeInterval(2)
+        )
+        try officialWriter.recordOfficialProfile(official, for: profile.id)
+        let afterOfficial = reload()
+        guard expect(current(afterOfficial)?.executionPreference == standard, "official observer reverted execution preference"),
+            expect(current(afterOfficial)?.officialProfile == official, "official observer was lost")
+        else { return false }
+
+        // Failed quota observations persist a marker without restoring stale UI state.
+        let failureSettingWriter = reload()
+        let failureWriter = reload()
+        try failureSettingWriter.setExecutionPreference(high, for: profile.id)
+        let failedSnapshot = UsageSnapshot(
+            refreshedAt: base.addingTimeInterval(3),
+            account: AccountInfo(
+                type: "chatgpt",
+                planType: "plus",
+                emailPresent: true,
+                email: "cross-instance@example.invalid"
+            ),
+            limitId: nil,
+            limitName: nil,
+            quotaReadSucceeded: false,
+            fiveHourQuota: nil,
+            sevenDayQuota: nil,
+            monthlyQuota: nil,
+            credits: nil,
+            cloudLifetimeTokens: nil,
+            local: nil,
+            taskBoard: nil,
+            messages: ["401 Unauthorized"]
+        )
+        try failureWriter.record(failedSnapshot, for: profile.id)
+        let afterFailure = reload()
+        guard expect(current(afterFailure)?.executionPreference == high, "quota failure reverted execution preference"),
+            expect(
+                current(afterFailure)?.lastQuotaReadFailureAt == base.addingTimeInterval(3)
+                    && current(afterFailure)?.lastQuotaReadFailureReason == "oauth-invalidated",
+                "quota failure marker was lost"
+            )
+        else { return false }
+
+        // Reset-card corrections use the same transaction, so they preserve a
+        // setting written by an instance with an equally stale startup cache.
+        let resetSettingWriter = reload()
+        let resetWriter = reload()
+        try resetSettingWriter.setExecutionPreference(fast, for: profile.id)
+        let accountKey = current(afterFailure)?.recordedAccountKey ?? ""
+        try resetWriter.adjustResetManualOffset(accountKey: accountKey, delta: 1)
+        let afterReset = reload()
+        guard expect(current(afterReset)?.executionPreference == fast, "reset correction reverted execution preference"),
+            expect(afterReset.resetCounter(accountKey: accountKey).manualOffset == 1, "reset correction was lost")
+        else { return false }
+
+        print("Codex cross-instance state transaction self-test passed")
+        return true
+    }
+
+    private static func testStateTransactionFailures(root: URL, fileManager: FileManager) throws -> Bool {
+        let home = root.appendingPathComponent("transaction-failures-home", isDirectory: true)
+        let support = root.appendingPathComponent("transaction-failures-support", isDirectory: true)
+        let store = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        let stateURL = support.appendingPathComponent(DispatchParticipationPaths.supportDirectoryName)
+            .appendingPathComponent(DispatchParticipationPaths.snapshotFileName)
+        let profile = try store.addManagedProfile()
+        let permissions = try fileManager.attributesOfItem(atPath: stateURL.path)[.posixPermissions] as? NSNumber
+        guard !store.hadSavedStateOnLoad, permissions?.intValue == 0o600 else {
+            print("Codex transaction failure self-test failed: initial commit permissions")
+            return false
+        }
+        let persisted = try Data(contentsOf: stateURL)
+        try fileManager.removeItem(at: stateURL)
+        do {
+            try store.setRemark("must stay missing", for: profile.id)
+            print("Codex transaction failure self-test failed: missing state was recreated")
+            return false
+        } catch {}
+        do {
+            _ = try store.addManagedProfile()
+            print("Codex transaction failure self-test failed: add accepted missing state")
+            return false
+        } catch {}
+        guard !fileManager.fileExists(atPath: stateURL.path),
+            try fileManager.contentsOfDirectory(atPath: profile.codexHomeURL.deletingLastPathComponent().path) == [profile.id]
+        else {
+            print("Codex transaction failure self-test failed: rejected write left files")
+            return false
+        }
+
+        try persisted.write(to: stateURL)
+        let stale = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        let retained = Data("synthetic-preserved-home".utf8)
+        let marker = profile.codexHomeURL.appendingPathComponent("auth.json")
+        try retained.write(to: marker)
+        try store.discardManagedProfile(profile.id)
+        try stale.removeManagedProfile(profile.id)
+        guard try Data(contentsOf: marker) == retained,
+            !stale.profiles.contains(where: { $0.id == profile.id })
+        else {
+            print("Codex transaction failure self-test failed: stale removal moved preserved home")
+            return false
+        }
+        print("Codex state transaction failure self-test passed")
+        return true
     }
 
     private static func testQuotaObservationOrdering(root: URL, fileManager: FileManager) throws -> Bool {
@@ -3256,16 +3587,35 @@ enum CodexWarmUpPolicySelfTest {
         for legacy in [false, true] {
             defaults.removePersistentDomain(forName: suite)
             defaults.set(legacy, forKey: "CodexManagerNext.automaticWarmUp")
-            let expected = CodexWarmUpSelection(fiveHour: false, sevenDay: legacy)
-            guard expect(CodexWarmUpSelection.load(from: defaults) == expected, "legacy off and on migrate without enabling five-hour"),
+            let expected = CodexWarmUpSelection(fiveHour: true, sevenDay: legacy)
+            guard expect(CodexWarmUpSelection.load(from: defaults) == expected, "legacy weekly choices persist while the missing five-hour control defaults on"),
                 expect(CodexWarmUpSelection.load(from: defaults) == expected, "legacy migration persists")
             else { return false }
         }
         defaults.removePersistentDomain(forName: suite)
-        guard expect(CodexWarmUpSelection.load(from: defaults, hasExistingInstallation: true) == .none, "upgrade preserves unsaved default-off choice") else { return false }
+        guard expect(CodexWarmUpSelection.load(from: defaults, hasExistingInstallation: true) == .all, "missing upgrade preferences default on") else { return false }
         defaults.removePersistentDomain(forName: suite)
         defaults.set(false, forKey: "CodexManagerNext.automaticWarmUp.fiveHour")
-        guard expect(CodexWarmUpSelection.load(from: defaults) == .none, "partial preferences never enable the missing window") else { return false }
+        guard
+            expect(
+                CodexWarmUpSelection.load(from: defaults) == CodexWarmUpSelection(fiveHour: false, sevenDay: true),
+                "partial preferences preserve explicit off and default the missing window on")
+        else { return false }
+        enabled.save(to: defaults)
+        defaults.setVolatileDomain(["CodexManagerNext.automaticWarmUp.fiveHour": "NO"], forName: UserDefaults.argumentDomain)
+        let temporary = CodexWarmUpSelection.load(from: defaults)
+        guard expect(temporary == CodexWarmUpSelection(fiveHour: false, sevenDay: true), "maintenance override affects this launch") else { return false }
+        CodexWarmUpSelection.none.save(to: defaults)
+        // NSArgumentDomain can remain cached for the life of the process on macOS.
+        // Inspect durable values; a normal launch has no maintenance arguments.
+        let persistedWarmUp = defaults.persistentDomain(forName: suite) ?? [:]
+        guard
+            expect(
+                persistedWarmUp["CodexManagerNext.automaticWarmUp.fiveHour"] as? Bool == true
+                    && persistedWarmUp["CodexManagerNext.automaticWarmUp.sevenDay"] as? Bool == false,
+                "changing another switch never persists a temporary maintenance override"
+            )
+        else { return false }
         guard
             expect(
                 CodexWarmUpPolicy.maintenanceRefreshInterval(warmUpEnabled: true) == 10 * 60
