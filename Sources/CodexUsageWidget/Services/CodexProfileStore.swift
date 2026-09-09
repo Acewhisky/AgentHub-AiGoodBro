@@ -187,8 +187,8 @@ struct CodexExecutionPreference: Codable, Equatable {
     var serviceTier: ServiceTier
 
     static let defaultValue = CodexExecutionPreference(
-        model: .sol,
-        reasoningEffort: .high,
+        model: .astra,
+        reasoningEffort: .low,
         serviceTier: .standard
     )
 
@@ -380,14 +380,38 @@ enum CodexWarmUpWindowKind: String, Equatable {
     case sevenDay
 }
 
+/// A successful request acknowledges the reset event it actually handled even
+/// when quota usage still rounds to zero. A later reset keeps its own ticket.
+struct CodexWarmUpResetTracker {
+    typealias Ticket = [CodexWarmUpWindowKind: UUID]
+    private var events: [String: Ticket] = [:]
+
+    func ticket(for account: String) -> Ticket { events[account] ?? [:] }
+    func kinds(for account: String) -> Set<CodexWarmUpWindowKind> { Set(ticket(for: account).keys) }
+
+    mutating func note(_ kinds: Set<CodexWarmUpWindowKind>, for account: String) {
+        for kind in kinds { events[account, default: [:]][kind] = UUID() }
+    }
+
+    mutating func acknowledge(_ handled: Ticket, for account: String) {
+        for (kind, id) in handled where events[account]?[kind] == id {
+            events[account]?.removeValue(forKey: kind)
+        }
+        if events[account]?.isEmpty == true { events.removeValue(forKey: account) }
+    }
+
+    mutating func removeAll() { events.removeAll() }
+}
+
 enum CodexWarmUpPolicy {
     static let resetGrace: TimeInterval = 8
     static let fiveHourSuccessInterval: TimeInterval = 5 * 60 * 60
     static let sevenDaySuccessInterval: TimeInterval = 7 * 24 * 60 * 60
+    static let failureRetryInterval: TimeInterval = 5 * 60
     static let maximumQuotaAge: TimeInterval = 15 * 60
     static let idleUsedPercentThreshold = 0.5
     static let unexpectedResetDrop = 8.0
-    static let minimumWeeklyRemaining = 5.0
+    static let minimumWeeklyRemaining = 0.0
     static let resetStartTolerance: TimeInterval = 10 * 60
 
     static func maintenanceRefreshInterval(warmUpEnabled: Bool, quotaNotificationsEnabled: Bool = false) -> TimeInterval {
@@ -432,9 +456,8 @@ enum CodexWarmUpPolicy {
 
     static func isWindowIdle(_ window: CodexQuotaWindowSnapshot?, now: Date = Date()) -> Bool {
         guard let window else { return true }
-        if let resetsAt = window.resetsAt, resetsAt > now {
-            return false
-        }
+        // A cold account can report a sliding future reset with no usage.
+        // Its own successful warm-up interval must remain the scheduling anchor.
         return window.usedPercent < idleUsedPercentThreshold
     }
 
@@ -443,9 +466,8 @@ enum CodexWarmUpPolicy {
         current: CodexQuotaWindowSnapshot?,
         now: Date = Date()
     ) -> Bool {
-        guard let previous, !isWindowIdle(previous, now: now) else { return false }
+        guard let previous, let current, !isWindowIdle(previous, now: now) else { return false }
         if isWindowIdle(current, now: now) { return true }
-        guard let current else { return true }
         if current.usedPercent + unexpectedResetDrop <= previous.usedPercent {
             return true
         }
@@ -555,8 +577,8 @@ enum CodexWarmUpPolicy {
     static func hasFreshQuotaEvidence(_ profile: CodexProfile, now: Date = Date()) -> Bool {
         guard let snapshot = profile.lastSnapshot,
             snapshot.email?.isEmpty == false,
-            snapshot.quotaReadSucceeded != false,
-            (profile.lastQuotaReadFailureAt ?? .distantPast) <= snapshot.fetchedAt
+            snapshot.quotaReadSucceeded == true,
+            (profile.lastQuotaReadFailureAt ?? .distantPast) < snapshot.fetchedAt
         else { return false }
         let age = now.timeIntervalSince(snapshot.fetchedAt)
         return age >= -60 && age <= maximumQuotaAge
@@ -599,11 +621,13 @@ enum CodexWarmUpPolicy {
         blockIdleRetry: Bool,
         now: Date
     ) -> Date? {
+        if blockIdleRetry, let lastWarmUpAt, unexpected || isWindowIdle(window, now: now) {
+            return max(now, lastWarmUpAt.addingTimeInterval(failureRetryInterval))
+        }
         if unexpected { return now }
         if isWindowIdle(window, now: now) {
-            if blockIdleRetry { return nil }
             if lastWarmUpSucceeded == true, let lastWarmUpAt {
-                let retryAt = lastWarmUpAt.addingTimeInterval(successfulInterval)
+                let retryAt = lastWarmUpAt.addingTimeInterval(successfulInterval + resetGrace)
                 if retryAt > now { return retryAt }
             }
             return now
@@ -2057,9 +2081,9 @@ enum CodexProfileStoreSelfTest {
                 executable: "/usr/local/bin/codex",
                 preference: fastPreference
             )
-            guard standardCommand.contains("--model 'gpt-5.6-sol'"),
-                standardCommand.contains("'agents.default_subagent_model=\"gpt-5.6-sol\"'"),
-                standardCommand.contains("'agents.default_subagent_reasoning_effort=\"high\"'"),
+            guard standardCommand.contains("--model 'gpt-6-astra'"),
+                standardCommand.contains("'agents.default_subagent_model=\"gpt-6-astra\"'"),
+                standardCommand.contains("'agents.default_subagent_reasoning_effort=\"low\"'"),
                 standardCommand.contains("'service_tier=\"default\"' --disable fast_mode"),
                 fastCommand.contains("--model 'gpt-5.6-terra'"),
                 fastCommand.contains("'model_reasoning_effort=\"ultra\"'"),
@@ -2539,7 +2563,7 @@ enum CodexProfileStoreSelfTest {
                     )),
                 sevenDay: CodexQuotaWindowSnapshot(
                     RateWindow(
-                        usedPercent: 97,
+                        usedPercent: 100,
                         windowDurationMins: 10_080,
                         resetsAt: sevenDayReset
                     )),
@@ -2548,11 +2572,11 @@ enum CodexProfileStoreSelfTest {
                 appServerVersion: nil
             )
             guard CodexWarmUpPolicy.shouldSkipFiveHourToProtectWeekly(lowWeekly, now: now) else {
-                print("Codex profile store self-test failed: 5-hour warm-up should yield to low weekly remaining")
+                print("Codex profile store self-test failed: 5-hour warm-up waits for exhausted weekly limits")
                 return false
             }
             guard CodexWarmUpPolicy.nextEligibleDate(for: lowWeekly, selection: fiveHourOnly, now: now) == nil else {
-                print("Codex profile store self-test failed: 5-hour switch pauses when weekly remaining is low")
+                print("Codex profile store self-test failed: 5-hour switch waits when weekly limits are exhausted")
                 return false
             }
             guard
@@ -2592,9 +2616,9 @@ enum CodexProfileStoreSelfTest {
             idleWeek.lastWarmUpSucceeded = true
             guard
                 CodexWarmUpPolicy.nextEligibleDate(for: idleWeek, selection: sevenDayOnly, now: now)
-                    == Date(timeIntervalSince1970: 980 + CodexWarmUpPolicy.sevenDaySuccessInterval),
+                    == Date(timeIntervalSince1970: 980 + CodexWarmUpPolicy.sevenDaySuccessInterval + CodexWarmUpPolicy.resetGrace),
                 CodexWarmUpPolicy.nextEligibleDate(for: idleWeek, selection: fiveHourOnly, now: now)
-                    == Date(timeIntervalSince1970: 980 + CodexWarmUpPolicy.fiveHourSuccessInterval),
+                    == Date(timeIntervalSince1970: 980 + CodexWarmUpPolicy.fiveHourSuccessInterval + CodexWarmUpPolicy.resetGrace),
                 CodexWarmUpPolicy.nextEligibleDate(
                     for: idleWeek,
                     selection: fiveHourOnly,
@@ -2603,6 +2627,83 @@ enum CodexProfileStoreSelfTest {
                 ) == now
             else {
                 print("Codex profile store self-test failed: successful warm-up interval")
+                return false
+            }
+            // Reproduce a cold account whose official reset slides on every read.
+            func changedQuota(_ profile: CodexProfile, changes: (inout [String: Any]) -> Void) throws -> CodexProfile {
+                var result = profile
+                var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile.lastSnapshot!)) as! [String: Any]
+                changes(&object)
+                result.lastSnapshot = try JSONDecoder().decode(CodexAccountSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+                return result
+            }
+            var cold = try changedQuota(idleWeek) { snapshot in
+                snapshot["fetchedAt"] = now.timeIntervalSinceReferenceDate
+                for key in ["fiveHour", "sevenDay"] {
+                    var window = snapshot[key] as! [String: Any]
+                    window["resetsAt"] = now.addingTimeInterval(key == "fiveHour" ? 18_000 : 604_800).timeIntervalSinceReferenceDate
+                    snapshot[key] = window
+                }
+            }
+            cold.lastWarmUpAt = now.addingTimeInterval(-18_100)
+            cold.lastWarmUpSucceeded = true
+            cold.automaticSwitchParticipation = false
+            guard CodexWarmUpPolicy.isDue(cold, selection: fiveHourOnly, now: now),
+                !CodexWarmUpPolicy.isDue(cold, selection: sevenDayOnly, now: now)
+            else {
+                print("Codex profile store self-test failed: cold sliding reset must not postpone dispatch-independent warm-up")
+                return false
+            }
+            cold = try changedQuota(cold) { snapshot in
+                var window = snapshot["fiveHour"] as! [String: Any]
+                window["resetsAt"] = now.addingTimeInterval(36_000).timeIntervalSinceReferenceDate
+                snapshot["fiveHour"] = window
+            }
+            guard CodexWarmUpPolicy.isDue(cold, selection: fiveHourOnly, now: now) else {
+                print("Codex profile store self-test failed: a later reported reset cannot move the cold-account deadline")
+                return false
+            }
+            var retry = cold
+            retry.lastWarmUpAt = now.addingTimeInterval(-20)
+            retry.lastWarmUpSucceeded = false
+            let retryAt = retry.lastWarmUpAt!.addingTimeInterval(CodexWarmUpPolicy.failureRetryInterval)
+            guard CodexWarmUpPolicy.nextEligibleDate(for: retry, selection: bothWindows, unexpected: [.fiveHour], now: now) == retryAt,
+                !CodexWarmUpPolicy.isDue(retry, selection: bothWindows, now: now),
+                CodexWarmUpPolicy.isDue(retry, selection: bothWindows, now: retryAt)
+            else {
+                print("Codex profile store self-test failed: failed warm-up retries after a bounded cooldown")
+                return false
+            }
+            let exhaustedRetry = try changedQuota(retry) { snapshot in
+                var weekly = snapshot["sevenDay"] as! [String: Any]
+                weekly["usedPercent"] = 100
+                snapshot["sevenDay"] = weekly
+            }
+            guard !CodexWarmUpPolicy.isDue(exhaustedRetry, selection: bothWindows, now: retryAt),
+                CodexWarmUpPolicy.nextEligibleDate(for: exhaustedRetry, selection: bothWindows, now: retryAt)
+                    == exhaustedRetry.lastSnapshot!.sevenDay!.resetsAt!.addingTimeInterval(CodexWarmUpPolicy.resetGrace)
+            else {
+                print("Codex profile store self-test failed: a failed idle window must not bypass an exhausted weekly window")
+                return false
+            }
+            let missingReadFlag = try changedQuota(cold) { $0.removeValue(forKey: "quotaReadSucceeded") }
+            var equalFailure = cold
+            equalFailure.lastQuotaReadFailureAt = now
+            guard !CodexWarmUpPolicy.hasFreshQuotaEvidence(missingReadFlag, now: now),
+                !CodexWarmUpPolicy.hasFreshQuotaEvidence(equalFailure, now: now)
+            else {
+                print("Codex profile store self-test failed: missing success evidence and tied failure time must block a request")
+                return false
+            }
+            let lowButAvailable = try changedQuota(cold) { snapshot in
+                var weekly = snapshot["sevenDay"] as! [String: Any]
+                weekly["usedPercent"] = 97
+                snapshot["sevenDay"] = weekly
+            }
+            guard !CodexWarmUpPolicy.shouldSkipFiveHourToProtectWeekly(lowButAvailable, now: now),
+                CodexWarmUpPolicy.isDue(lowButAvailable, selection: fiveHourOnly, now: now)
+            else {
+                print("Codex profile store self-test failed: dispatch quota reserves must not stop available warm-up")
                 return false
             }
             let payload = try JSONSerialization.data(withJSONObject: [
@@ -3748,7 +3849,9 @@ enum CodexWarmUpPolicySelfTest {
         // isWindowIdle
         guard expect(CodexWarmUpPolicy.isWindowIdle(nil, now: now), "idle nil window") else { return false }
         guard expect(CodexWarmUpPolicy.isWindowIdle(window(used: 0.2), now: now), "idle low usage") else { return false }
-        guard expect(!CodexWarmUpPolicy.isWindowIdle(window(used: 0.2, resetsIn: 600), now: now), "active future reset") else { return false }
+        guard expect(CodexWarmUpPolicy.isWindowIdle(window(used: 0.2, resetsIn: 600), now: now), "future reset with negligible usage stays on the cold-account schedule") else {
+            return false
+        }
         guard expect(!CodexWarmUpPolicy.isWindowIdle(window(used: 3), now: now), "active usage") else { return false }
 
         // didResetUnexpectedly
@@ -3822,7 +3925,7 @@ enum CodexWarmUpPolicySelfTest {
                 five: window(used: 10, resetsIn: 600),
                 seven: window(used: 95, resetsIn: 86_400)
             ))
-        guard expect(CodexWarmUpPolicy.shouldSkipFiveHourToProtectWeekly(scarce, now: now), "skip five-hour when weekly scarce") else { return false }
+        guard expect(!CodexWarmUpPolicy.shouldSkipFiveHourToProtectWeekly(scarce, now: now), "low but available weekly limits do not disable warm-up") else { return false }
         let plenty = profile(
             snapshot(
                 five: window(used: 10, resetsIn: 600),
@@ -3839,8 +3942,8 @@ enum CodexWarmUpPolicySelfTest {
         guard
             expect(
                 CodexWarmUpPolicy.nextEligibleDate(for: succeeded, selection: fiveHourOnly, now: now)
-                    == now.addingTimeInterval(4 * 3_600),
-                "successful warm-up waits one interval"
+                    == now.addingTimeInterval(4 * 3_600 + CodexWarmUpPolicy.resetGrace),
+                "successful warm-up waits one interval plus grace"
             )
         else { return false }
         var failed = idleProfile
@@ -3848,8 +3951,8 @@ enum CodexWarmUpPolicySelfTest {
         failed.lastWarmUpAt = now.addingTimeInterval(-600)
         guard
             expect(
-                CodexWarmUpPolicy.nextEligibleDate(for: failed, selection: fiveHourOnly, now: now) == nil,
-                "failed warm-up requires manual retry"
+                CodexWarmUpPolicy.nextEligibleDate(for: failed, selection: fiveHourOnly, now: now) == now,
+                "failed warm-up resumes automatically after the retry interval"
             )
         else { return false }
         guard
@@ -3918,6 +4021,37 @@ enum CodexWarmUpPolicySelfTest {
         guard expect(!CodexWarmUpPolicy.isDue(stale, selection: fiveHourOnly, now: now), "stale evidence is not due") else { return false }
         let fresh = profile(snapshot(five: window(used: 0.2), at: now.addingTimeInterval(-60)))
         guard expect(CodexWarmUpPolicy.isDue(fresh, selection: fiveHourOnly, now: now), "fresh idle evidence is due") else { return false }
+
+        // A successful minimal request can leave the displayed quota at 100%.
+        // Rechecking that same reset must not keep issuing immediate requests.
+        var tracker = CodexWarmUpResetTracker()
+        tracker.note([.fiveHour], for: "fixture-account")
+        let handled = tracker.ticket(for: "fixture-account")
+        var justSucceeded = fresh
+        justSucceeded.lastWarmUpAt = now
+        justSucceeded.lastWarmUpSucceeded = true
+        tracker.acknowledge(handled, for: "fixture-account")
+        guard
+            expect(
+                !CodexWarmUpPolicy.isDue(
+                    justSucceeded, selection: fiveHourOnly,
+                    unexpected: tracker.kinds(for: "fixture-account"), now: now),
+                "acknowledged reset with unchanged full quota waits for its next cycle")
+        else { return false }
+        tracker.note([.fiveHour], for: "fixture-account")
+        let earlier = tracker.ticket(for: "fixture-account")
+        tracker.note([.fiveHour, .sevenDay], for: "fixture-account")
+        tracker.acknowledge(earlier, for: "fixture-account")
+        guard
+            expect(
+                tracker.kinds(for: "fixture-account") == [.fiveHour, .sevenDay],
+                "completion cannot acknowledge a newer reset received in flight")
+        else { return false }
+        guard
+            expect(
+                !CodexWarmUpPolicy.didResetUnexpectedly(previous: window(used: 30), current: nil, now: now),
+                "missing official window is not proof of a reset")
+        else { return false }
 
         // nextScheduledResetDate
         let dual = profile(

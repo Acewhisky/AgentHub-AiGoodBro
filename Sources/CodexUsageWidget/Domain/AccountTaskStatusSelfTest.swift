@@ -13,8 +13,8 @@ enum AccountTaskStatusSelfTest {
         }
         let stateMappingPassed = [
             ("awaiting_approval", "待批准"),
-            ("starting", "准备中"),
-            ("running", "工作进行中"),
+            ("starting", "在线·准备中"),
+            ("running", "在线·运行中"),
             ("cancel_requested", "正在请求取消"),
             ("uncertain", "状态待确认"),
             ("succeeded", "任务成功"),
@@ -85,6 +85,8 @@ enum AccountTaskStatusSelfTest {
         let passed =
             stateMappingPassed
             && busyPassed
+            && HubAccountTaskStatus(phase: .maintenance, updatedAt: now).blocksLocalCLI
+            && !HubAccountTaskStatus(phase: .awaitingAcceptance, updatedAt: now).blocksLocalCLI
             && freshTerminal.phase == .succeeded
             && expiredTerminal.phase == .idle
             && staleActive.phase == .running

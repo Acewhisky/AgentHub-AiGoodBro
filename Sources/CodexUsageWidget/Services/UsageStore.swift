@@ -61,6 +61,7 @@ final class UsageStore: ObservableObject {
     @Published private(set) var selectedMonitorProfileID: String
     @Published private(set) var selectedLaunchProfileID: String
     @Published private(set) var accountManagerMessage: String?
+    @Published private(set) var operationsIssueJournalMessage: String?
     @Published private(set) var accountSwitchAlertMessage: String?
     @Published private(set) var forcedAccountSwitchProfileID: String?
     @Published private(set) var isLoggingIn = false
@@ -105,7 +106,7 @@ final class UsageStore: ObservableObject {
     private var isRefreshingWarmUpProfiles = false
     private var hasPendingDispatchQuotaRefresh = false
     private var warmUpRefreshStartedAt: Date?
-    private var unexpectedWarmUpKindsByAccount: [String: Set<CodexWarmUpWindowKind>] = [:]
+    private var warmUpResetTracker = CodexWarmUpResetTracker()
     private var hubWarmUpDeferredUntilByAccount: [String: Date] = [:]
     private var hubWarmUpUnavailableUntil: Date?
     private var refreshGeneration: UInt64 = 0
@@ -137,6 +138,7 @@ final class UsageStore: ObservableObject {
     private let accountActions = CodexAccountActions()
     private let taskClient = CodexAppServerTaskClient()
     private let feishuWebhookService = FeishuWebhookService()
+    private var feishuConfigurationRevision = 0
     private let automationAuditStore = AccountAutomationAuditStore()
     private let terminalLauncher = TerminalAppLauncher()
     let isPreview: Bool
@@ -167,12 +169,7 @@ final class UsageStore: ObservableObject {
         selectedMonitorProfileID = profileStore.selectedMonitorProfileID
         selectedLaunchProfileID = profileStore.selectedLaunchProfileID
         automationEvents = automationAuditStore.load()
-        do {
-            feishuWebhookConfigured = try feishuWebhookService.hasStoredWebhook()
-        } catch {
-            feishuWebhookConfigured = false
-            feishuNotificationMessage = error.localizedDescription
-        }
+        refreshFeishuWebhookConfiguration()
     }
 
     /// Documentation fixtures never load account credentials, Keychain, audit logs or
@@ -227,6 +224,14 @@ final class UsageStore: ObservableObject {
         }
         let accountName = AccountDisplay.profileName(profile, allProfiles: profiles)
         Task { @MainActor in
+            guard let alias = self.configuredHubAccountAlias(for: profile),
+                await HubConsoleModel.warmUpAvailability(for: alias) == .idle
+            else {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "账号已有准备或运行占用，或状态尚未确认；请稍后再打开 CLI",
+                    "The account is reserved, running, or unverified. Open CLI after its status is clear.")
+                return
+            }
             do {
                 try await terminalLauncher.launch(
                     codexHome: profile.codexHomeURL,
@@ -488,10 +493,10 @@ final class UsageStore: ObservableObject {
             accountManagerMessage =
                 enabled
                 ? WidgetLanguage.storedOrAutomatic().text(
-                    "该账号已加入调度；Next、Hub 配置与编号已同步（Hub 重载后生效）", "Account added to the pool. Next, Hub config and pool code are synced; Hub reload is required.")
+                    "该账号已加入调度；Next、Hub 配置与编号已同步", "Account added to the pool. Next, Hub config and pool code are synced.")
                 : WidgetLanguage.storedOrAutomatic().text(
-                    "该账号已排除调度并移除编号；额度刷新、5 小时与 7 天暖号照常（Hub 重载后调度设置生效）",
-                    "Account removed from the pool and its code cleared. Limit refresh and both warm-up windows continue; Hub reload applies the dispatch change.")
+                    "该账号已退出调度并保留原编号；Next 与 Hub 配置已同步，额度刷新和两种暖号照常",
+                    "Account excluded from the pool with its code retained. Next and Hub config are synced; limit refresh and both warm-up windows continue.")
             debugLog("dispatch participation: three-source sync succeeded")
             refreshWarmUpProfilesThenSchedule()
         } catch {
@@ -1744,6 +1749,7 @@ final class UsageStore: ObservableObject {
                     "已开启飞书通知；可分别选择额度重置和 Reset 卡提醒", "Feishu notifications enabled. Limit reset and new reset credit alerts can be selected separately.")
                 : WidgetLanguage.storedOrAutomatic().text("功能已开启；保存飞书机器人地址后开始接收通知。", "Enabled. Save a Feishu bot webhook to receive notifications."))
             : WidgetLanguage.storedOrAutomatic().text("飞书推送已关闭", "Feishu notifications disabled.")
+        if enabled, !feishuWebhookConfigured { refreshFeishuWebhookConfiguration() }
     }
 
     func setFeishuQuotaResetEnabled(_ enabled: Bool) {
@@ -1767,10 +1773,29 @@ final class UsageStore: ObservableObject {
             && (feishuQuotaResetEnabled || feishuResetCreditEnabled)
     }
 
+    private func refreshFeishuWebhookConfiguration() {
+        guard !isPreview else { return }
+        feishuConfigurationRevision += 1
+        let revision = feishuConfigurationRevision
+        feishuWebhookService.hasStoredWebhook { [weak self] result in
+            guard let self, self.feishuConfigurationRevision == revision else { return }
+            switch result {
+            case .success(let configured):
+                self.feishuWebhookConfigured = configured
+            case .failure(let error):
+                self.feishuWebhookConfigured = false
+                self.feishuNotificationMessage = error.localizedDescription
+            }
+            self.quotaEventTracker.reset()
+            if self.hasStarted { self.scheduleWarmUpMaintenanceTimer() }
+        }
+    }
+
     @discardableResult
     func saveFeishuWebhook(_ value: String) -> Bool {
         do {
             try feishuWebhookService.storeWebhook(value)
+            feishuConfigurationRevision += 1
             feishuWebhookConfigured = true
             quotaEventTracker.reset()
             scheduleWarmUpMaintenanceTimer()
@@ -1785,6 +1810,7 @@ final class UsageStore: ObservableObject {
     func removeFeishuWebhook() {
         do {
             try feishuWebhookService.removeStoredWebhook()
+            feishuConfigurationRevision += 1
             feishuWebhookConfigured = false
             feishuNotificationsEnabled = false
             UserDefaults.standard.set(false, forKey: Self.feishuNotificationsEnabledKey)
@@ -1978,25 +2004,40 @@ final class UsageStore: ObservableObject {
                 isTest
                 ? WidgetLanguage.storedOrAutomatic().text("正在发送飞书测试通知…", "Sending a Feishu test notification…")
                 : WidgetLanguage.storedOrAutomatic().text("正在推送飞书通知…", "Sending a Feishu notification…")
-            feishuWebhookService.send(notification) { [weak self] result in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    switch result {
-                    case .success:
-                        self.feishuNotificationMessage =
-                            isTest
-                            ? WidgetLanguage.storedOrAutomatic().text("飞书测试通知已送达", "Feishu test notification delivered.")
-                            : WidgetLanguage.storedOrAutomatic().text("通知已推送到飞书", "Notification delivered to Feishu.")
-                    case .failure(let error):
-                        self.feishuNotificationMessage = error.localizedDescription
-                        self.recordAutomationEvent(
-                            level: .warning,
-                            title: WidgetLanguage.storedOrAutomatic().text("飞书推送失败", "Feishu notification failed"),
-                            detail: error.localizedDescription
-                        )
+            let configurationRevision = feishuConfigurationRevision
+            feishuWebhookService.send(
+                notification,
+                shouldSend: { [weak self] in
+                    guard let self, self.feishuConfigurationRevision == configurationRevision,
+                        self.feishuWebhookConfigured, isTest || self.feishuNotificationsEnabled
+                    else { return false }
+                    switch event {
+                    case .quotaChange(.quotaReset): return self.feishuQuotaResetEnabled
+                    case .quotaChange(.resetCreditsAdded): return self.feishuResetCreditEnabled
+                    default: return true
                     }
-                }
-            }
+                },
+                completion: { [weak self] result in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        switch result {
+                        case .success:
+                            self.feishuNotificationMessage =
+                                isTest
+                                ? WidgetLanguage.storedOrAutomatic().text("飞书测试通知已送达", "Feishu test notification delivered.")
+                                : WidgetLanguage.storedOrAutomatic().text("通知已推送到飞书", "Notification delivered to Feishu.")
+                        case .failure(.cancelled):
+                            break
+                        case .failure(let error):
+                            self.feishuNotificationMessage = error.localizedDescription
+                            self.recordAutomationEvent(
+                                level: .warning,
+                                title: WidgetLanguage.storedOrAutomatic().text("飞书推送失败", "Feishu notification failed"),
+                                detail: error.localizedDescription
+                            )
+                        }
+                    }
+                })
         } catch {
             feishuNotificationMessage = error.localizedDescription
         }
@@ -2170,7 +2211,7 @@ final class UsageStore: ObservableObject {
         if !warmUpSelection.isEnabled {
             warmUpTimer?.invalidate()
             warmUpTimer = nil
-            unexpectedWarmUpKindsByAccount.removeAll()
+            warmUpResetTracker.removeAll()
             return
         }
         refreshWarmUpProfilesThenSchedule()
@@ -2315,7 +2356,7 @@ final class UsageStore: ObservableObject {
         }
         if selection.fiveHour {
             if CodexWarmUpPolicy.shouldSkipFiveHourToProtectWeekly(profile) {
-                parts.append(language.text("5 小时已暂停 · 7 天额度不足", "5h warm-up paused · weekly limit low"))
+                parts.append(language.text("5 小时等待恢复 · 7 天额度已用尽", "5h waiting for recovery · weekly limit exhausted"))
             } else {
                 parts.append(
                     warmUpWindowStatus(
@@ -2363,17 +2404,23 @@ final class UsageStore: ObservableObject {
     ) -> String {
         if CodexWarmUpPolicy.isWindowIdle(window) {
             if profile.lastWarmUpSucceeded == true, let lastWarmUpAt = profile.lastWarmUpAt {
-                let next = lastWarmUpAt.addingTimeInterval(successfulInterval)
+                let next = lastWarmUpAt.addingTimeInterval(successfulInterval + CodexWarmUpPolicy.resetGrace)
                 if next > Date() {
                     return language.text("下次暖号 \(label) ", "Next \(label) warm-up ") + language.dateTime(next)
                 }
             }
-            return language.text("\(label)等待额度刷新确认", "\(label) awaiting limit refresh")
+            if profile.lastWarmUpSucceeded == false, let attemptedAt = profile.lastWarmUpAt {
+                let retryAt = attemptedAt.addingTimeInterval(CodexWarmUpPolicy.failureRetryInterval)
+                if retryAt > Date() {
+                    return language.text("\(label)自动复核重试 ", "\(label) recheck and retry ") + language.dateTime(retryAt)
+                }
+            }
+            return language.text("\(label)等待额度刷新后自动继续", "\(label) continues after limit refresh")
         }
         if let resetsAt = window?.resetsAt, resetsAt > Date() {
             return language.text("下次暖号 \(label) ", "Next \(label) warm-up ") + language.dateTime(resetsAt)
         }
-        return language.text("下次暖号 \(label) 未知；请点刷新检查", "Next \(label) warm-up unknown; refresh to check")
+        return language.text("\(label)等待官方窗口，自动复核中", "\(label) awaiting the official window; rechecking automatically")
     }
 
     private func runDueWarmUp() {
@@ -2382,7 +2429,8 @@ final class UsageStore: ObservableObject {
     }
 
     private func performWarmUp(_ profile: CodexProfile, manual: Bool = false) {
-        let unexpected = unexpectedWarmUpKindsByAccount[profile.recordedAccountKey] ?? []
+        let resetTicket = warmUpResetTracker.ticket(for: profile.recordedAccountKey)
+        let unexpected = Set(resetTicket.keys)
         guard manual || warmUpSelection.isEnabled,
             warmingProfileID == nil,
             !isRefreshingWarmUpProfiles,
@@ -2401,34 +2449,54 @@ final class UsageStore: ObservableObject {
             "正在确认 \(AccountDisplay.profileName(profile)) 是否空闲…", "Checking whether \(AccountDisplay.profileName(profile)) is idle…")
         guard let alias = hubAccountAlias(for: profile) else {
             warmingProfileID = nil
-            hubWarmUpUnavailableUntil = Date().addingTimeInterval(hubWarmUpRetryDelay)
+            hubWarmUpDeferredUntilByAccount[profile.recordedAccountKey] = Date().addingTimeInterval(hubWarmUpRetryDelay)
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("无法确认账号在 Hub 中的身份，已阻止暖号", "Could not verify the account's Hub mapping. Warm-up was blocked.")
             scheduleWarmUpTimer()
             return
         }
         Task { @MainActor [weak self] in
-            let availability = await HubConsoleModel.warmUpAvailability(for: alias)
-            self?.continueWarmUp(profile, manual: manual, availability: availability)
+            guard let self else { return }
+            let activityLease: String
+            do {
+                activityLease = try DispatchActivityStore.live.reserveWarmUp(account: profile.recordedAccountKey, alias: alias)
+            } catch {
+                self.warmingProfileID = nil
+                self.hubWarmUpDeferredUntilByAccount[profile.recordedAccountKey] = Date().addingTimeInterval(self.hubWarmUpRetryDelay)
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "账号已有准备或运行占用，或占用状态待核实；暖号保留并稍后复核",
+                    "The account is reserved, running, or unverified. Warm-up remains queued.")
+                self.scheduleWarmUpTimer()
+                return
+            }
+            let availability = await HubConsoleModel.warmUpAvailability(for: alias, excludingLocalLease: activityLease)
+            self.continueWarmUp(profile, manual: manual, availability: availability, resetTicket: resetTicket, activityLease: activityLease)
         }
     }
 
     private func continueWarmUp(
         _ profile: CodexProfile,
         manual: Bool,
-        availability: HubWarmUpAvailability
+        availability: HubWarmUpAvailability,
+        resetTicket: CodexWarmUpResetTracker.Ticket,
+        activityLease: String
     ) {
-        guard warmingProfileID == profile.id else { return }
+        guard warmingProfileID == profile.id else {
+            finishWarmUpActivity(activityLease, succeeded: false, cancelled: true)
+            return
+        }
         let accountKey = profile.recordedAccountKey
         switch availability {
         case .busy:
+            finishWarmUpActivity(activityLease, succeeded: false, cancelled: true)
             hubWarmUpUnavailableUntil = nil
             hubWarmUpDeferredUntilByAccount[accountKey] = Date().addingTimeInterval(hubWarmUpRetryDelay)
             warmingProfileID = nil
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "Hub 正在使用 \(AccountDisplay.profileName(profile))，已跳过暖号", "Hub is using \(AccountDisplay.profileName(profile)). Warm-up was skipped.")
+                "Hub 正在使用 \(AccountDisplay.profileName(profile))，暖号保留并稍后重试", "Hub is using \(AccountDisplay.profileName(profile)). Warm-up remains queued for retry.")
             scheduleWarmUpTimer()
             return
         case .unavailable:
+            finishWarmUpActivity(activityLease, succeeded: false, cancelled: true)
             hubWarmUpUnavailableUntil = Date().addingTimeInterval(hubWarmUpRetryDelay)
             warmingProfileID = nil
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("暂时无法确认 Hub 账号状态，已阻止暖号", "Hub account status is unverified. Warm-up was blocked.")
@@ -2445,7 +2513,15 @@ final class UsageStore: ObservableObject {
                 guard let self else { return }
                 switch result {
                 case .success:
-                    try? self.profileStore.recordWarmUp(at: Date(), succeeded: true, for: profile.id)
+                    do {
+                        try self.profileStore.recordWarmUp(at: Date(), succeeded: true, for: profile.id)
+                    } catch {
+                        self.hubWarmUpDeferredUntilByAccount[accountKey] = Date().addingTimeInterval(CodexWarmUpPolicy.failureRetryInterval)
+                        self.recordOperationsIssue(
+                            id: "warmup-state-save-failed", summary: "Warm-up returned successfully but its saved state could not be updated. Automatic retry was deferred.")
+                    }
+                    self.warmUpResetTracker.acknowledge(resetTicket, for: accountKey)
+                    self.finishWarmUpActivity(activityLease, succeeded: true)
                     self.syncProfiles()
                     self.warmingProfileID = nil
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -2453,6 +2529,10 @@ final class UsageStore: ObservableObject {
                         "Minimal request sent for \(AccountDisplay.profileName(profile)). Checking whether a usage window started…")
                     self.refreshProfileAfterWarmUp(profile, manual: manual)
                 case .failure(let error):
+                    self.finishWarmUpActivity(activityLease, succeeded: false)
+                    self.recordOperationsIssue(
+                        id: "warmup-request-failed",
+                        summary: "An automatic or manual warm-up request failed. The account retains its bounded retry plan; inspect the account detail for its failure category.")
                     try? self.profileStore.recordWarmUp(
                         at: Date(),
                         succeeded: false,
@@ -2462,12 +2542,14 @@ final class UsageStore: ObservableObject {
                     self.syncProfiles()
                     self.warmingProfileID = nil
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                        "\(AccountDisplay.profileName(profile)) 暖号失败：\(error.localizedDescription)；本窗口不会自动重试",
-                        "Warm-up failed for \(AccountDisplay.profileName(profile)): \(error.localizedDescription). No automatic retry in this window.")
+                        "\(AccountDisplay.profileName(profile)) 暖号失败：\(error.localizedDescription)；5 分钟后自动复核重试",
+                        "Warm-up failed for \(AccountDisplay.profileName(profile)): \(error.localizedDescription). Rechecking for retry in 5 minutes.")
                     self.scheduleWarmUpTimer()
                 }
             }
         } catch {
+            finishWarmUpActivity(activityLease, succeeded: false)
+            recordOperationsIssue(id: "warmup-start-failed", summary: "A warm-up request could not start. The account retains its bounded retry plan.")
             try? profileStore.recordWarmUp(
                 at: Date(),
                 succeeded: false,
@@ -2477,9 +2559,42 @@ final class UsageStore: ObservableObject {
             syncProfiles()
             warmingProfileID = nil
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "暖号启动失败：\(error.localizedDescription)；本窗口不会自动重试", "Could not start warm-up: \(error.localizedDescription). No automatic retry in this window.")
+                "暖号启动失败：\(error.localizedDescription)；5 分钟后自动复核重试", "Could not start warm-up: \(error.localizedDescription). Rechecking for retry in 5 minutes.")
             scheduleWarmUpTimer()
         }
+    }
+
+    private func finishWarmUpActivity(_ lease: String, succeeded: Bool, cancelled: Bool = false) {
+        do {
+            try DispatchActivityStore.live.finishWarmUp(lease, succeeded: succeeded, cancelled: cancelled)
+        } catch {
+            recordOperationsIssue(
+                id: "warmup-reservation-release-failed",
+                summary: "Warm-up ended but its shared reservation could not be released. Preserve the occupied state until process and ownership are verified.")
+        }
+    }
+
+    private func recordOperationsIssue(id: String, summary: String) {
+        guard !isPreview else { return }
+        do {
+            let code = warmingProfileID.flatMap { DispatchCodeCatalog.code(for: $0) }
+            try DispatchActivityStore.live.appendIssue(id: id, phase: "observed", summary: summary, code: code)
+            operationsIssueJournalMessage = nil
+        } catch {
+            operationsIssueJournalMessage = WidgetLanguage.storedOrAutomatic().text(
+                "运行问题日志写入失败；请保留当前问题信息，稍后复核日志权限",
+                "The shared issue journal could not be updated. Preserve the issue details and check journal access.")
+        }
+    }
+
+    func openOperationsIssueJournal() {
+        guard !isPreview else { return }
+        let url = DispatchActivityStore.live.directory.appendingPathComponent(DispatchActivityStore.issueName)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("暂无运行问题记录", "No operational issues have been recorded.")
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     private func hubAccountAlias(for profile: CodexProfile) -> String? {
@@ -2494,7 +2609,7 @@ final class UsageStore: ObservableObject {
             else { return nil }
             guard
                 group.allSatisfy({
-                    let unexpected = unexpectedWarmUpKindsByAccount[$0.recordedAccountKey] ?? []
+                    let unexpected = warmUpResetTracker.kinds(for: $0.recordedAccountKey)
                     return CodexWarmUpPolicy.isDue(
                         $0,
                         selection: effectiveWarmUpSelection(for: $0, unexpected: unexpected),
@@ -2545,19 +2660,16 @@ final class UsageStore: ObservableObject {
                 return deferredUntil
             }
             let dates = group.compactMap { profile -> Date? in
-                let unexpected = unexpectedWarmUpKindsByAccount[profile.recordedAccountKey] ?? []
+                let unexpected = warmUpResetTracker.kinds(for: profile.recordedAccountKey)
                 let selection = effectiveWarmUpSelection(for: profile, unexpected: unexpected)
-                let successfulNext =
-                    profile.lastWarmUpSucceeded == true
-                    ? CodexWarmUpPolicy.nextEligibleDate(
-                        for: profile,
-                        selection: selection,
-                        unexpected: unexpected,
-                        now: now
-                    ).flatMap { $0 > now ? $0 : nil }
-                    : nil
+                let eligibleNext = CodexWarmUpPolicy.nextEligibleDate(
+                    for: profile,
+                    selection: selection,
+                    unexpected: unexpected,
+                    now: now
+                ).flatMap { $0 > now ? $0 : nil }
                 return [
-                    successfulNext,
+                    eligibleNext,
                     CodexWarmUpPolicy.nextScheduledResetDate(
                         for: profile,
                         selection: selection,
@@ -2593,26 +2705,10 @@ final class UsageStore: ObservableObject {
             kinds.insert(.sevenDay)
         }
         guard !kinds.isEmpty else { return }
-        unexpectedWarmUpKindsByAccount[previous.recordedAccountKey, default: []].formUnion(kinds)
+        warmUpResetTracker.note(kinds, for: previous.recordedAccountKey)
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
             "检测到 \(AccountDisplay.profileName(previous)) 官方额度提前重置；暖号调度将独立执行一次",
             "An early limit reset was detected for \(AccountDisplay.profileName(previous)). Warm-up will be scheduled separately once.")
-    }
-
-    private func clearResolvedUnexpectedWarmUp(for profile: CodexProfile) {
-        let key = profile.recordedAccountKey
-        guard var kinds = unexpectedWarmUpKindsByAccount[key] else { return }
-        if !CodexWarmUpPolicy.isWindowIdle(profile.lastSnapshot?.fiveHour) {
-            kinds.remove(.fiveHour)
-        }
-        if !CodexWarmUpPolicy.isWindowIdle(profile.lastSnapshot?.sevenDay) {
-            kinds.remove(.sevenDay)
-        }
-        if kinds.isEmpty {
-            unexpectedWarmUpKindsByAccount.removeValue(forKey: key)
-        } else {
-            unexpectedWarmUpKindsByAccount[key] = kinds
-        }
     }
 
     private func refreshProfileAfterWarmUp(_ profile: CodexProfile, manual: Bool = false) {
@@ -2648,16 +2744,15 @@ final class UsageStore: ObservableObject {
                 }
                 let selection = self.effectiveWarmUpSelection(
                     for: updated,
-                    unexpected: self.unexpectedWarmUpKindsByAccount[updated.recordedAccountKey] ?? []
+                    unexpected: self.warmUpResetTracker.kinds(for: updated.recordedAccountKey)
                 )
-                self.clearResolvedUnexpectedWarmUp(for: updated)
                 let stillIdle =
                     (selection.fiveHour && CodexWarmUpPolicy.isWindowIdle(updated.lastSnapshot?.fiveHour))
                     || (selection.sevenDay && CodexWarmUpPolicy.isWindowIdle(updated.lastSnapshot?.sevenDay))
                 if stillIdle {
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                        "\(AccountDisplay.profileName(profile)) 已发送最小请求，官方尚未出现新窗口；不会自动重试",
-                        "Minimal request sent for \(AccountDisplay.profileName(profile)), but no new window was reported. It will not retry automatically.")
+                        "\(AccountDisplay.profileName(profile)) 已发送最小请求，继续按暖号周期复核",
+                        "Minimal request sent for \(AccountDisplay.profileName(profile)). Scheduled warm-up checks will continue.")
                 } else {
                     let resetTexts = [
                         selection.fiveHour

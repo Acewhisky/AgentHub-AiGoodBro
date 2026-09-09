@@ -283,7 +283,9 @@ struct DispatchParticipationSync {
         let matches = accounts.indices.filter { index in
             group.contains { canonicalHome($0["codexHomePath"]) == canonicalHome(accounts[index]["home"]) }
         }
-        guard matches.count == 1, let accountIndex = matches.first,
+        // Exclusion can safely cover every validated home of the same identity.
+        // Joining still requires one unambiguous execution home.
+        guard matches.count == 1 || (!enabled && !matches.isEmpty), let accountIndex = matches.first,
             let alias = nonempty(accounts[accountIndex]["alias"])
         else { throw DispatchParticipationError.ambiguousAccount }
         let homeProfiles = group.filter { canonicalHome($0["codexHomePath"]) == canonicalHome(accounts[accountIndex]["home"]) }
@@ -330,7 +332,7 @@ struct DispatchParticipationSync {
             if let priority { profiles[index]["prioritizeDispatch"] = priority }
         }
         next["profiles"] = profiles
-        accounts[accountIndex]["dispatchDisabled"] = !enabled
+        for index in matches { accounts[index]["dispatchDisabled"] = !enabled }
         hubObject["accounts"] = accounts
         catalog["accounts"] = entries
         try validatePreflightCatalog(catalog)

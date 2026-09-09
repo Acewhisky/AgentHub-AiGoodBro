@@ -52,7 +52,7 @@ struct GlobalShortcut: Hashable {
     }
 
     static func load(defaults: UserDefaults = .standard) -> GlobalShortcut? {
-        guard let enabledValue = defaults.object(forKey: enabledStorageKey) else { return nil }
+        guard let enabledValue = defaults.object(forKey: enabledStorageKey) else { return .default }
         guard let enabledNumber = enabledValue as? NSNumber,
             CFGetTypeID(enabledNumber) == CFBooleanGetTypeID()
         else { return repairToDisabled(defaults: defaults) }

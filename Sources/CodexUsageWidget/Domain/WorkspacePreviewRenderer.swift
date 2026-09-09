@@ -50,7 +50,7 @@ enum WorkspacePreviewRenderer {
                     subscriptionActiveUntil: now.addingTimeInterval(1_814_400), statsAsOf: now, fetchedAt: now
                 ),
                 proTierMultiplier: isPro ? 20 : nil,
-                executionPreference: accountCount == 0 ? nil : .init(model: .astra, reasoningEffort: .max, serviceTier: .standard)
+                executionPreference: accountCount == 0 ? nil : .defaultValue
             )
         }
         // Seed the real persistence path in the fixture sandbox, so drag/drop tests

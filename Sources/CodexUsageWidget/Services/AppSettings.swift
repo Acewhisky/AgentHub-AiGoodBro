@@ -37,7 +37,7 @@ enum WidgetLanguage: String, CaseIterable, Equatable {
     static func storedOrAutomatic(defaults: UserDefaults = .standard) -> WidgetLanguage {
         guard let rawValue = defaults.string(forKey: storageKey),
             let language = WidgetLanguage(rawValue: rawValue)
-        else { return .automatic }
+        else { return .zh }
         return language
     }
 

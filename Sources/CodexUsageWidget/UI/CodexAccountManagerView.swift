@@ -261,7 +261,10 @@ struct CodexAccountManagerView: View {
     @ViewBuilder
     private var focusedExecutionPanel: some View {
         if let profile = presentation.focusedProfile, !profile.isSystemProfile {
-            let status = hubTaskStatusModel.status(forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview))
+            let status = hubTaskStatusModel.status(
+                forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
+                accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+            )
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Label(language.text("下一次任务", "Next CLI session"), systemImage: "terminal")
@@ -740,7 +743,8 @@ struct CodexAccountManagerView: View {
         hubTaskStatusModel.status(
             forAccountAlias: store.selectedMonitorProfile.flatMap {
                 DispatchCodeCatalog.alias(for: $0.id, allowsLocalRead: !store.isPreview)
-            }
+            },
+            accountKey: store.selectedMonitorProfile?.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
         )
     }
 
@@ -818,8 +822,9 @@ struct CodexAccountManagerView: View {
                 .disabled(store.pausedAutomationFeatures.contains(.fiveHour))
                 .help(
                     language.text(
-                        "打开后，各账号按自己的 5 小时重置时间串行执行；7 天剩余额度不高于 5% 时暂停到周窗口重置。",
-                        "Sends a minimal request after each account's 5h reset, one account at a time. Pauses when weekly remaining is 5% or less."))
+                        "所有账号按自己的 5 小时窗口维护，不受参与调度开关影响；忙碌或失败会自动复核，周额度用尽后等待恢复。",
+                        "Maintains every account on its own 5h schedule regardless of dispatch participation. Busy or failed accounts are rechecked; exhausted weekly limits wait for recovery."
+                    ))
                 Toggle(
                     language.text("7 天", "7d"),
                     isOn: Binding(
@@ -831,7 +836,9 @@ struct CodexAccountManagerView: View {
                 .controlSize(.small)
                 .disabled(store.pausedAutomationFeatures.contains(.sevenDay))
                 .help(
-                    language.text("打开后，各账号分别跟随自己的 7 天重置时间执行；失败不会自动重试。", "Sends a minimal request after each account's weekly reset. Failed requests are not retried automatically.")
+                    language.text(
+                        "所有账号按自己的 7 天窗口维护，不受参与调度开关影响；失败 5 分钟后自动复核重试。",
+                        "Maintains every account on its weekly schedule regardless of dispatch participation. Failed requests are rechecked for retry after 5 minutes.")
                 )
             }
 
@@ -845,7 +852,8 @@ struct CodexAccountManagerView: View {
                             executionPreference: profile.effectiveExecutionPreference,
                             dispatchCode: DispatchCodeCatalog.code(for: profile.id, allowsLocalRead: !store.isPreview),
                             cliTaskStatus: hubTaskStatusModel.status(
-                                forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview)
+                                forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
+                                accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
                             ),
                             isMonitoring: profile.id == store.selectedMonitorProfileID,
                             isLaunchProfile: profile.id == store.selectedLaunchProfileID,
@@ -857,7 +865,8 @@ struct CodexAccountManagerView: View {
                             isEditing: isEditingProfiles,
                             layout: settings.accountWorkspaceLayout,
                             isLoggingIn: store.isLoggingIn,
-                            isLaunching: store.isLaunchingCodex || store.isRefreshing,
+                            isLaunching: store.isLaunchingCodex,
+                            isRefreshingStatistics: store.isRefreshing,
                             isRefreshingProfile: store.refreshingProfileIDs.contains(profile.id),
                             isWarmingProfile: store.warmingProfileID == profile.id,
                             canMoveUp: index > 0,
@@ -991,6 +1000,18 @@ struct CodexAccountManagerView: View {
             )
             .font(.caption.weight(.semibold))
             .foregroundStyle(store.automaticAccountSwitchEnabled ? Color.green : Color.secondary)
+
+            Button(language.text("运行问题日志", "Issue journal")) {
+                store.openOperationsIssueJournal()
+            }
+            .buttonStyle(.bordered)
+
+            if let message = store.operationsIssueJournalMessage {
+                Label(language.text("日志写入失败", "Journal write failed"), systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .help(message)
+            }
 
             Button(language.text("自动化中心", "Automation")) {
                 isAutomationCenterPresented = true
@@ -1551,7 +1572,8 @@ struct CodexAccountMenuView: View {
 
     private func hubTaskStatus(for profile: CodexProfile) -> HubAccountTaskStatus {
         hubTaskStatusModel.status(
-            forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview)
+            forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
+            accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
         )
     }
 
@@ -1998,7 +2020,8 @@ struct CodexAccountMenuView: View {
     private func homeProfileRow(_ profile: CodexProfile) -> some View {
         let remaining = sevenDayRemaining(for: profile)
         let cliTaskStatus = hubTaskStatusModel.status(
-            forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview)
+            forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
+            accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
         )
         return HStack(spacing: 6) {
             Button {
@@ -2104,7 +2127,8 @@ struct CodexAccountMenuView: View {
         let remaining = sevenDayRemaining(for: profile)
         let isCurrent = isCurrentCodexAccount(profile)
         let cliTaskStatus = hubTaskStatusModel.status(
-            forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview)
+            forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
+            accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
         )
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 10) {
@@ -2516,6 +2540,7 @@ private struct QuotaDetailTile: View {
                     .accessibilityHidden(true)
                 Text(title)
                     .font(.caption.weight(.semibold))
+                    .lineLimit(1)
                 Spacer()
                 if !prominent {
                     Text(QuotaAvailabilityPresentation.percentText(window?.remainingPercent))
@@ -2627,6 +2652,7 @@ private struct ProfileRow: View {
     let layout: AccountWorkspaceLayout
     let isLoggingIn: Bool
     let isLaunching: Bool
+    let isRefreshingStatistics: Bool
     let isRefreshingProfile: Bool
     let isWarmingProfile: Bool
     let canMoveUp: Bool
@@ -2939,7 +2965,8 @@ private struct ProfileRow: View {
                     .font(prominent ? .system(size: 40, weight: .medium, design: .rounded).monospacedDigit() : .subheadline.weight(.bold).monospacedDigit())
                     .foregroundStyle(remainingPercent == nil ? Color.secondary : Color.primary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minHeight: prominent ? 48 : nil, alignment: .bottom)
             }
             QuotaProgressTrack(percent: remainingPercent)
             Text(
@@ -3063,8 +3090,8 @@ private struct ProfileRow: View {
             .accessibilityValue(participatesInAutomaticSwitch ? language.text("已加入", "Included") : language.text("已排除", "Excluded"))
             .help(
                 language.text(
-                    "只控制派单与低额度推荐，同步 Hub 配置和账号编号（Hub 重载后生效）；关闭后仍刷新额度、会员日期，并按全局开关执行 5 小时与 7 天暖号",
-                    "Controls task assignment and low-limit suggestions; syncs Hub config and pool code after reload. Limit and subscription refresh, plus both warm-up windows, remain independent."
+                    "只控制派单与低额度推荐，同步 Hub 配置和账号编号；关闭后保留原编号，仍刷新额度、会员日期，并按全局开关执行 5 小时与 7 天暖号",
+                    "Controls task assignment and low-limit suggestions; syncs Hub config and retains the pool code when excluded. Limit and subscription refresh, plus both warm-up windows, remain independent."
                 )
             )
             .frame(maxWidth: .infinity)
@@ -3077,7 +3104,7 @@ private struct ProfileRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(language.text("优先标记", "Priority"))
                         .font(.caption.weight(.semibold))
-                    Text(language.text("仅保存偏好", "Saved only"))
+                    Text(language.text("供 Skill 选号", "For Skill selection"))
                         .font(.system(size: 8))
                 }
                 .foregroundStyle(prioritizesDispatch ? Color.red : Color.secondary)
@@ -3085,12 +3112,13 @@ private struct ProfileRow: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             .tint(prioritizesDispatch ? .red : .accentColor)
-            .accessibilityLabel(language.text("优先标记，仅保存偏好，暂不影响选号", "Priority preference. Saved only; not yet used for account selection."))
+            .accessibilityLabel(language.text("优先标记，供 Skill 在门禁通过后选号使用", "Priority preference for Skill selection after eligibility checks."))
             .accessibilityValue(prioritizesDispatch ? language.text("已开启", "On") : language.text("已关闭", "Off"))
             .help(
                 language.text(
-                    "开启时同步加入调度、分配编号并保存优先偏好；取消优先保留参与设置。当前 Hub 尚未消费优先标记，需 Hub 后续支持后才会影响选号",
-                    "Saves a priority preference and adds this account to the pool. Turning it off keeps pool membership. Hub does not yet use this preference to pick accounts.")
+                    "开启时同步加入调度并保存优先偏好；新版调度 Skill 在额度和占用门禁通过后优先选择。Hub 自主选号仍取决于其版本，指定账号不受排序覆盖。",
+                    "Adds the account to the pool and saves its priority. The updated dispatch Skill honors it after quota and occupancy checks. Hub selection depends on its version; an explicit account choice is preserved."
+                )
             )
             .frame(maxWidth: .infinity)
         }
@@ -3140,7 +3168,7 @@ private struct ProfileRow: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(isLoggingIn || isLaunching || cliTaskStatus.blocksLocalCLI)
+                .disabled(isLoggingIn || isLaunching || isRefreshingStatistics || cliTaskStatus.blocksLocalCLI)
                 .help(
                     cliTaskStatus.blocksLocalCLI
                         ? language.text("Hub 状态未确认或同账号有活跃任务，暂不能登录", "Sign-in is blocked while Hub status is unverified or this account has an active task.")
@@ -3165,7 +3193,7 @@ private struct ProfileRow: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .disabled(isLaunching || linkedAccountName != nil || isCurrentCodexAccount || cliTaskStatus.blocksLocalCLI)
+            .disabled(isLaunching || isRefreshingStatistics || linkedAccountName != nil || isCurrentCodexAccount || cliTaskStatus.blocksLocalCLI)
             .help(
                 cliTaskStatus.blocksLocalCLI
                     ? language.text("Hub 状态未确认或同账号有活跃任务，暂不能切换 Desktop", "Desktop switching is blocked while Hub status is unverified or this account has an active task.")
@@ -3417,7 +3445,8 @@ private struct HubCLITaskStatusBadge: View {
         case .succeeded: return .green
         case .failed, .cancelled: return .red
         case .uncertain, .unavailable, .cancelRequested: return .orange
-        case .awaitingApproval, .starting, .running: return .accentColor
+        case .awaitingApproval, .starting, .running, .maintenance: return .accentColor
+        case .awaitingAcceptance: return .orange
         case .idle: return .secondary
         }
     }

@@ -670,6 +670,27 @@ test("multiple hub homes for one account fail closed") {
     try require(f.contents() == originals)
 }
 
+test("excluding one identity disables all of its validated hub homes") {
+    let f = try DispatchFixture()
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    try mutate(f.paths.hubConfig) { hub in
+        var accounts = hub["accounts"] as! [[String: Any]]
+        accounts.append(["alias": "fixture-mirror", "home": f.root.appendingPathComponent("system-home").path, "dispatchDisabled": false])
+        hub["accounts"] = accounts
+    }
+    _ = try f.sync.setParticipation(false, identity: f.identity)
+    let accounts = try object(f.paths.hubConfig)["accounts"] as! [[String: Any]]
+    try require(accounts[0]["dispatchDisabled"] as? Bool == true)
+    try require(accounts[2]["dispatchDisabled"] as? Bool == true)
+    try require(accounts[1]["dispatchDisabled"] as? Bool == false)
+    let profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+    try require(profiles[0]["automaticSwitchParticipation"] as? Bool == false)
+    try require(profiles[1]["automaticSwitchParticipation"] as? Bool == false)
+    try require(profiles[2]["automaticSwitchParticipation"] as? Bool == true)
+    let catalog = try object(f.paths.codes)["accounts"] as! [[String: Any]]
+    try require(catalog.first { $0["profileId"] as? String == f.identity.profileID }?["active"] as? Bool == false)
+}
+
 test("mismatched account ID in an email mirror fails closed") {
     let f = try DispatchFixture()
     try mutate(f.paths.snapshot) { snapshot in

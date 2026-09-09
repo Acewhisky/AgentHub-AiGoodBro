@@ -5,6 +5,9 @@ enum FeishuWebhookError: LocalizedError {
     case invalidWebhook
     case missingWebhook
     case keychain(OSStatus)
+    case keychainTimedOut
+    case keychainBusy
+    case cancelled
     case invalidMaskedAccount
     case invalidNotification
     case encodingFailed
@@ -21,6 +24,13 @@ enum FeishuWebhookError: LocalizedError {
             return WidgetLanguage.storedOrAutomatic().text("尚未保存飞书 Webhook。", "No Feishu webhook has been saved.")
         case .keychain(let status):
             return WidgetLanguage.storedOrAutomatic().text("无法访问飞书 Webhook 凭据（\(status)）。", "Could not access the Feishu webhook credential (\(status)).")
+        case .keychainTimedOut:
+            return WidgetLanguage.storedOrAutomatic().text("读取飞书配置超时；账号刷新与暖号继续运行。", "Reading the Feishu configuration timed out. Account refresh and warm-up continue.")
+        case .keychainBusy:
+            return WidgetLanguage.storedOrAutomatic().text(
+                "飞书配置仍在等待系统响应；账号刷新与暖号继续运行。", "The Feishu configuration is still waiting for the system. Account refresh and warm-up continue.")
+        case .cancelled:
+            return WidgetLanguage.storedOrAutomatic().text("飞书通知已取消。", "The Feishu notification was cancelled.")
         case .invalidMaskedAccount:
             return WidgetLanguage.storedOrAutomatic().text("通知中的账号名称必须先脱敏。", "Account names must be masked before sending a notification.")
         case .invalidNotification:
@@ -157,6 +167,35 @@ private final class FeishuRedirectGuard: NSObject, URLSessionTaskDelegate {
     }
 }
 
+/// A timed-out Security call cannot be cancelled. Discard its eventual result,
+/// including the endpoint, so an old notification is never sent after recovery.
+private final class FeishuKeychainRead<Value> {
+    private let lock = NSLock()
+    private let deadline: DispatchTime
+    private var completion: ((Result<Value, FeishuWebhookError>) -> Void)?
+
+    init(timeout: TimeInterval, completion: @escaping (Result<Value, FeishuWebhookError>) -> Void) {
+        deadline = .now() + timeout
+        self.completion = completion
+    }
+
+    var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return completion == nil || DispatchTime.now() >= deadline
+    }
+
+    func finish(_ result: Result<Value, FeishuWebhookError>) {
+        lock.lock()
+        let callback = completion
+        completion = nil
+        lock.unlock()
+        guard let callback else { return }
+        let delivered: Result<Value, FeishuWebhookError> = DispatchTime.now() >= deadline ? .failure(.keychainTimedOut) : result
+        DispatchQueue.main.async { callback(delivered) }
+    }
+}
+
 final class FeishuWebhookService {
     static let keychainService = "com.blackielf.codex-account-manager-next.feishu-webhook"
 
@@ -167,9 +206,22 @@ final class FeishuWebhookService {
 
     private let redirectGuard: FeishuRedirectGuard
     private let session: URLSession
+    fileprivate let keychainQueue = DispatchQueue(label: "com.blackielf.codex-account-manager-next.feishu-keychain", qos: .utility)
+    private let keychainCapacity: DispatchSemaphore
+    private let keychainReadTimeout: TimeInterval
+    private let copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
 
-    init() {
-        let configuration = URLSessionConfiguration.ephemeral
+    init(
+        keychainReadTimeout: TimeInterval = 5,
+        maximumPendingReads: Int = 16,
+        sessionConfiguration: URLSessionConfiguration = .ephemeral,
+        copyMatching: @escaping (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching
+    ) {
+        precondition(keychainReadTimeout > 0 && maximumPendingReads > 0)
+        self.keychainReadTimeout = keychainReadTimeout
+        keychainCapacity = DispatchSemaphore(value: maximumPendingReads)
+        self.copyMatching = copyMatching
+        let configuration = sessionConfiguration
         configuration.timeoutIntervalForRequest = 12
         configuration.timeoutIntervalForResource = 20
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -221,27 +273,76 @@ final class FeishuWebhookService {
         }
     }
 
-    func hasStoredWebhook() throws -> Bool {
-        var query = Self.keychainQuery
-        query[kSecReturnAttributes as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return false }
-        guard status == errSecSuccess else {
-            throw FeishuWebhookError.keychain(status)
-        }
-        return true
+    func hasStoredWebhook(completion: @escaping (Result<Bool, FeishuWebhookError>) -> Void) {
+        readCredential(
+            {
+                var query = Self.keychainQuery
+                query[kSecReturnAttributes as String] = true
+                query[kSecMatchLimit as String] = kSecMatchLimitOne
+                var result: CFTypeRef?
+                let status = self.copyMatching(query as CFDictionary, &result)
+                if status == errSecItemNotFound { return false }
+                guard status == errSecSuccess else { throw FeishuWebhookError.keychain(status) }
+                return true
+            }, completion: completion)
     }
 
     func send(
         _ notification: FeishuSwitchNotification,
+        shouldSend: @escaping () -> Bool = { true },
         completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
     ) {
-        let endpoint: URL
+        readCredential(
+            { try self.loadStoredWebhook() },
+            completion: { result in
+                guard shouldSend() else {
+                    completion(.failure(.cancelled))
+                    return
+                }
+                switch result {
+                case .success(let endpoint):
+                    self.send(notification, to: endpoint, completion: completion)
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            })
+    }
+
+    private func readCredential<Value>(
+        _ operation: @escaping () throws -> Value,
+        completion: @escaping (Result<Value, FeishuWebhookError>) -> Void
+    ) {
+        guard keychainCapacity.wait(timeout: .now()) == .success else {
+            DispatchQueue.main.async { completion(.failure(.keychainBusy)) }
+            return
+        }
+        let read = FeishuKeychainRead<Value>(timeout: keychainReadTimeout, completion: completion)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + keychainReadTimeout) {
+            read.finish(.failure(.keychainTimedOut))
+        }
+        keychainQueue.async {
+            defer { self.keychainCapacity.signal() }
+            guard !read.isFinished else {
+                read.finish(.failure(.keychainTimedOut))
+                return
+            }
+            do {
+                read.finish(.success(try operation()))
+            } catch let error as FeishuWebhookError {
+                read.finish(.failure(error))
+            } catch {
+                read.finish(.failure(.invalidWebhook))
+            }
+        }
+    }
+
+    private func send(
+        _ notification: FeishuSwitchNotification,
+        to endpoint: URL,
+        completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
+    ) {
         let body: Data
         do {
-            endpoint = try loadStoredWebhook()
             body = try Self.payloadData(for: notification)
         } catch let error as FeishuWebhookError {
             completion(.failure(error))
@@ -408,7 +509,7 @@ final class FeishuWebhookService {
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = copyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { throw FeishuWebhookError.missingWebhook }
         guard status == errSecSuccess else { throw FeishuWebhookError.keychain(status) }
         guard let data = result as? Data,
@@ -455,6 +556,32 @@ final class FeishuWebhookService {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         return formatter
     }()
+}
+
+private final class FeishuWebhookTestProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var count = 0
+
+    static var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock()
+        Self.count += 1
+        Self.lock.unlock()
+        guard let url = request.url,
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)
+        else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"code":0}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 
 enum FeishuWebhookServiceSelfTest {
@@ -527,6 +654,7 @@ enum FeishuWebhookServiceSelfTest {
                 String(data: testPayload, encoding: .utf8)?.contains("Codex 自动化测试通知") == true,
                 "test notification mislabeled"
             )
+            failures += credentialIsolationTests(notification: testNotification, endpoint: valid[0])
             for change in [
                 CodexQuotaEvent.quotaReset(fiveHour: true, sevenDay: true),
                 .resetCreditsAdded(added: 2, available: 3),
@@ -577,6 +705,112 @@ enum FeishuWebhookServiceSelfTest {
         }
         failures.forEach { print("Feishu webhook self-test failed: \($0)") }
         return false
+    }
+
+    private static func credentialIsolationTests(notification: FeishuSwitchNotification, endpoint: String) -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+            if !condition() { failures.append(message) }
+        }
+        func waitUntil(_ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(2)
+            while !condition(), Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FeishuWebhookTestProtocol.self]
+        let requestsBefore = FeishuWebhookTestProtocol.requestCount
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let exited = DispatchSemaphore(value: 0)
+        let readLock = NSLock()
+        var readCount = 0
+        var readOnMain = false
+        let service = FeishuWebhookService(
+            keychainReadTimeout: 0.15, maximumPendingReads: 2,
+            sessionConfiguration: configuration,
+            copyMatching: { _, result in
+                readLock.lock()
+                readCount += 1
+                readOnMain = readOnMain || Thread.isMainThread
+                readLock.unlock()
+                entered.signal()
+                _ = release.wait(timeout: .now() + 2)
+                result?.pointee = Data(endpoint.utf8) as CFData
+                exited.signal()
+                return errSecSuccess
+            }
+        )
+        var sendResults: [Result<Void, FeishuWebhookError>] = []
+        var probeResults: [Result<Bool, FeishuWebhookError>] = []
+        service.send(notification) { sendResults.append($0) }
+        expect(entered.wait(timeout: .now() + 1) == .success, "credential read did not begin in background")
+        readLock.lock()
+        let initialReadOnMain = readOnMain
+        readLock.unlock()
+        expect(!initialReadOnMain, "credential read blocked main thread")
+        service.hasStoredWebhook { probeResults.append($0) }
+        service.hasStoredWebhook { probeResults.append($0) }
+        var mainThreadProgressed = false
+        DispatchQueue.main.async { mainThreadProgressed = true }
+        waitUntil { sendResults.count == 1 && probeResults.count == 2 && mainThreadProgressed }
+        expect(mainThreadProgressed, "main queue stalled behind credential read")
+        expect(sendResults.count == 1, "blocked send did not complete once")
+        expect(probeResults.count == 2, "queued probes did not finish")
+        expect(
+            sendResults.contains {
+                if case .failure(.keychainTimedOut) = $0 { return true }
+                return false
+            }, "blocked send did not time out")
+        expect(
+            probeResults.contains {
+                if case .failure(.keychainTimedOut) = $0 { return true }
+                return false
+            }, "queued probe did not time out")
+        expect(
+            probeResults.contains {
+                if case .failure(.keychainBusy) = $0 { return true }
+                return false
+            }, "pending reads were not bounded")
+        release.signal()
+        expect(exited.wait(timeout: .now() + 1) == .success, "mock credential read did not exit")
+        service.keychainQueue.sync {}
+        var recoveredResults: [Result<Bool, FeishuWebhookError>] = []
+        // The timed-out queued probe must be discarded before another Security call.
+        service.hasStoredWebhook { recoveredResults.append($0) }
+        release.signal()
+        waitUntil { !recoveredResults.isEmpty }
+        expect(
+            recoveredResults.contains {
+                if case .success(true) = $0 { return true }
+                return false
+            }, "credential probe did not recover")
+        readLock.lock()
+        let completedReadCount = readCount
+        readLock.unlock()
+        expect(completedReadCount == 2, "expired queued probe accessed Keychain")
+        expect(sendResults.count == 1 && probeResults.count == 2, "late credential result completed twice")
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore, "timed-out send issued a late request")
+
+        let successService = FeishuWebhookService(sessionConfiguration: configuration) { _, result in
+            result?.pointee = Data(endpoint.utf8) as CFData
+            return errSecSuccess
+        }
+        var successfulSend: Result<Void, FeishuWebhookError>?
+        successService.send(notification) { result in
+            DispatchQueue.main.async { successfulSend = result }
+        }
+        waitUntil { successfulSend != nil }
+        expect(successfulSend?.isSuccess == true, "background credential read broke valid sends")
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore + 1, "valid send did not use isolated transport")
+        var cancelledSend: Result<Void, FeishuWebhookError>?
+        successService.send(notification, shouldSend: { false }, completion: { cancelledSend = $0 })
+        waitUntil { cancelledSend != nil }
+        if case .failure(.cancelled)? = cancelledSend {} else { failures.append("send did not recheck opt-in after credential read") }
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore + 1, "cancelled send issued a request")
+        withExtendedLifetime((service, successService)) {}
+        return failures
     }
 }
 

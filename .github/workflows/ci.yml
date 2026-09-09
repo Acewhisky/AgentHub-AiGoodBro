@@ -22,6 +22,11 @@ jobs:
         run: make lint
       - name: Build, verify runtime resources, and run self-tests
         run: make test
+      - name: Check shared dispatch coordination and Swift interoperability
+        run: |
+          python3 scripts/next_dispatch_preflight.py --self-test
+          python3 tests/test_dispatch_activity.py
+          python3 tests/test-dispatch-activity-interop.py
 
   windows-rust-format:
     if: github.event_name == 'workflow_dispatch' && inputs.windows == true

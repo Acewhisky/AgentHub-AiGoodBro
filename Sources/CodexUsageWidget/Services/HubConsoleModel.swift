@@ -50,6 +50,8 @@ enum HubAccountTaskPhase: Equatable {
     case awaitingApproval
     case starting
     case running
+    case maintenance
+    case awaitingAcceptance
     case cancelRequested
     case uncertain
     case succeeded
@@ -70,8 +72,10 @@ struct HubAccountTaskStatus: Equatable {
         switch phase {
         case .idle: return language.text("未运行", "Idle")
         case .awaitingApproval: return language.text("待批准", "Awaiting approval")
-        case .starting: return language.text("准备中", "Starting")
-        case .running: return language.text("工作进行中", "Working")
+        case .starting: return language.text("在线·准备中", "Online · preparing")
+        case .running: return language.text("在线·运行中", "Online · running")
+        case .maintenance: return language.text("在线·维护中", "Online · maintenance")
+        case .awaitingAcceptance: return language.text("已结束·待验收", "Finished · awaiting review")
         case .cancelRequested: return language.text("正在请求取消", "Cancelling")
         case .uncertain, .unavailable: return language.text("状态待确认", "Unverified")
         case .succeeded: return language.text("任务成功", "Completed")
@@ -83,9 +87,9 @@ struct HubAccountTaskStatus: Equatable {
     /// Hub 明确报告的占用状态。连接不可用另由 `blocksLocalCLI` fail-closed。
     var isBusy: Bool {
         switch phase {
-        case .awaitingApproval, .starting, .running, .cancelRequested, .uncertain:
+        case .awaitingApproval, .starting, .running, .maintenance, .cancelRequested, .uncertain:
             return true
-        case .idle, .succeeded, .failed, .cancelled, .unavailable:
+        case .idle, .succeeded, .failed, .cancelled, .unavailable, .awaitingAcceptance:
             return false
         }
     }
@@ -212,6 +216,8 @@ final class HubAccountTaskStatusModel: ObservableObject {
     @Published private(set) var lastSuccessfulRefreshAt: Date?
 
     private var tasksByAlias: [String: HubTask] = [:]
+    private var localActivity = DispatchActivityStore.Snapshot(schemaVersion: 1, leases: [])
+    private var localActivityAvailable = true
     private var pollingTask: Task<Void, Never>?
 
     deinit {
@@ -244,20 +250,31 @@ final class HubAccountTaskStatusModel: ObservableObject {
         startPolling()
     }
 
-    func status(forAccountAlias accountAlias: String?, now: Date = Date()) -> HubAccountTaskStatus {
-        HubAccountTaskStatusResolver.status(
+    func status(forAccountAlias accountAlias: String?, accountKey: String? = nil, now: Date = Date()) -> HubAccountTaskStatus {
+        guard localActivityAvailable else { return HubAccountTaskStatus(phase: .unavailable, updatedAt: nil) }
+        let local = localActivity.latest(forAlias: accountAlias, accountKey: accountKey)
+        if let local, local.occupied { return local.taskStatus(now: now) }
+        let hub = HubAccountTaskStatusResolver.status(
             forAccountAlias: accountAlias,
             tasksByAlias: tasksByAlias,
             connectionState: connectionState,
             lastSuccessfulRefreshAt: lastSuccessfulRefreshAt,
             now: now
         )
+        if hub.blocksLocalCLI { return hub }
+        return local?.taskStatus(now: now) ?? hub
     }
 
     private func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+        do {
+            localActivity = try DispatchActivityStore.live.read()
+            localActivityAvailable = true
+        } catch {
+            localActivityAvailable = false
+        }
         do {
             let overview = try await HubConsoleModel.fetchInspectionOverview()
             guard !Task.isCancelled else { return }
@@ -275,10 +292,15 @@ final class HubAccountTaskStatusModel: ObservableObject {
 enum HubConsoleModel {
     private static let overviewURL = URL(string: "http://127.0.0.1:8787/api/overview")!
 
-    static func warmUpAvailability(for accountAlias: String) async -> HubWarmUpAvailability {
+    static func warmUpAvailability(for accountAlias: String, excludingLocalLease: String? = nil) async -> HubWarmUpAvailability {
         let alias = HubAccountTaskStatusResolver.canonicalAlias(accountAlias)
         guard !alias.isEmpty else { return .unavailable }
         do {
+            let local = try DispatchActivityStore.live.read()
+            let aliasKey = DispatchActivityStore.hash(alias)
+            if local.leases.contains(where: { $0.aliasKey == aliasKey && $0.occupied && $0.leaseId != excludingLocalLease }) {
+                return .busy
+            }
             let overview = try await fetchInspectionOverview()
             return HubWarmUpAvailability.resolve(for: alias, overview: overview)
         } catch {
@@ -316,6 +338,7 @@ enum HubConsoleModel {
 
 enum HubWarmUpGateSelfTest {
     static func run() -> Bool {
+        guard DispatchActivityStoreSelfTest.run() else { return false }
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         var failures: [String] = []
 

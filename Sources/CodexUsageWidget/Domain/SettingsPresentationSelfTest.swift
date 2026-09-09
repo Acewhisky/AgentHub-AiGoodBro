@@ -23,6 +23,13 @@ enum SettingsPresentationSelfTest {
 
         let catalog = PaletteCatalog.loadFromMainBundle()
         let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
+        expect(settings.language == .zh && settings.themeMode == .system, "fresh installs use Chinese and follow system appearance")
+        expect(settings.accountWorkspaceLayout == .rows && settings.paletteID == PaletteCatalog.defaultPaletteID, "fresh installs use the list and standard palette")
+        expect(settings.statusItemPreferences == .accountRing && settings.globalShortcut == .default, "fresh installs show weekly remaining quota and enable Command-U")
+        expect(settings.setupProgress.shouldPresentAutomatically, "general defaults must not copy another user's completed setup")
+        expect(
+            CodexExecutionPreference.defaultValue == .init(model: .astra, reasoningEffort: .low, serviceTier: .standard),
+            "new account task defaults use Astra Low at standard speed")
         for mode in WidgetThemeMode.allCases {
             settings.themeMode = mode
             expect(WidgetThemeMode.storedOrAutomatic(defaults: defaults) == mode, "theme tiles preserve existing persistence")
@@ -42,11 +49,13 @@ enum SettingsPresentationSelfTest {
         settings.keepMainWindowOnTop = true
         settings.keepRunningWhenMainWindowClosed = false
         settings.automaticUpdateChecksEnabled = false
+        GlobalShortcut.clear(defaults: defaults)
         let restored = AppSettings(defaults: defaults, paletteCatalog: catalog)
         expect(restored.keepMainWindowOnTop, "window pin setting survives reopen")
         expect(!restored.keepRunningWhenMainWindowClosed, "background setting survives reopen")
         expect(!restored.automaticUpdateChecksEnabled, "update opt-out survives reopen")
         expect(restored.themeMode == settings.themeMode && restored.language == settings.language, "appearance and language survive reopen")
+        expect(restored.globalShortcut == nil, "a saved shortcut opt-out survives the new defaults")
 
         if failures.isEmpty {
             print("settings presentation self-test passed")

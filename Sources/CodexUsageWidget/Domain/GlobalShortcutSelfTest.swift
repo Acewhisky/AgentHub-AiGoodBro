@@ -93,8 +93,8 @@ enum GlobalShortcutSelfTest {
 
     private static func checkPersistence(failures: inout [String]) {
         withDefaults { defaults in
-            if GlobalShortcut.load(defaults: defaults) != nil {
-                failures.append("missing shortcut settings should remain disabled")
+            if GlobalShortcut.load(defaults: defaults) != .default {
+                failures.append("fresh installs should use Command-U without changing a saved opt-out")
             }
 
             let shortcut = self.shortcut(kVK_ANSI_K, cmdKey | shiftKey, "K")
