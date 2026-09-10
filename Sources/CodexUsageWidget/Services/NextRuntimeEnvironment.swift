@@ -53,11 +53,12 @@ enum NextRuntimeEnvironment {
         }
         let hub = resources.appendingPathComponent("CompanionHub/agent-remote-control")
         let hubVersion = version(of: hub)
-        return Snapshot(components: [
-            Component(id: "codex", version: detectedCodexVersion, state: codex != nil ? "ready" : foundCodexVersion ? "incompatible" : "missing"),
-            Component(id: "python", version: detectedPythonVersion, state: python == nil ? "missing" : "ready"),
-            Component(id: "hub", version: hubVersion ?? "", state: hubVersion == nil ? "missing" : "ready"),
-        ], python: python, codex: codex)
+        return Snapshot(
+            components: [
+                Component(id: "codex", version: detectedCodexVersion, state: codex != nil ? "ready" : foundCodexVersion ? "incompatible" : "missing"),
+                Component(id: "python", version: detectedPythonVersion, state: python == nil ? "missing" : "ready"),
+                Component(id: "hub", version: hubVersion ?? "", state: hubVersion == nil ? "missing" : "ready"),
+            ], python: python, codex: codex)
     }
 
     static func supportedPython(_ text: String) -> Bool {
@@ -73,7 +74,8 @@ enum NextRuntimeEnvironment {
 
     private static func pythonVersion(of executable: URL) -> String? {
         guard FileManager.default.isExecutableFile(atPath: executable.path),
-            let data = try? BoundedLocalProcess.run(executable: executable,
+            let data = try? BoundedLocalProcess.run(
+                executable: executable,
                 arguments: ["-I", "-B", "-c", "import sys,ssl,sqlite3,ctypes,fcntl,zoneinfo; zoneinfo.ZoneInfo('Asia/Shanghai'); print('.'.join(map(str,sys.version_info[:3])))"],
                 environment: environment, maximumOutputBytes: 1_024, timeout: 2),
             let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), supportedPython(text)
@@ -82,7 +84,9 @@ enum NextRuntimeEnvironment {
     }
 
     private static func codexCapabilitiesReady(_ executable: URL) -> Bool {
-        guard let data = try? BoundedLocalProcess.run(executable: executable, arguments: ["exec", "--help"], environment: environment,
+        guard
+            let data = try? BoundedLocalProcess.run(
+                executable: executable, arguments: ["exec", "--help"], environment: environment,
                 maximumOutputBytes: 64 * 1_024, timeout: 3), let help = String(data: data, encoding: .utf8)
         else { return false }
         return ["--output-last-message", "--sandbox", "--model"].allSatisfy(help.contains)
@@ -90,7 +94,8 @@ enum NextRuntimeEnvironment {
 
     private static func version(of executable: URL) -> String? {
         guard FileManager.default.isExecutableFile(atPath: executable.path),
-            let data = try? BoundedLocalProcess.run(executable: executable, arguments: ["--version"], environment: environment,
+            let data = try? BoundedLocalProcess.run(
+                executable: executable, arguments: ["--version"], environment: environment,
                 maximumOutputBytes: 1_024, timeout: 2),
             let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
             let value = text.split(whereSeparator: \.isWhitespace).last,
@@ -101,10 +106,12 @@ enum NextRuntimeEnvironment {
     }
 
     private static func pythonCandidates(preferred: String?, home: URL) -> [URL] {
-        var paths = [preferred, "/opt/homebrew/bin/python3", "/usr/local/bin/python3",
-                     "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
-                     "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3",
-                     home.appendingPathComponent(".local/bin/python3").path].compactMap { $0 }
+        var paths = [
+            preferred, "/opt/homebrew/bin/python3", "/usr/local/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+            "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3",
+            home.appendingPathComponent(".local/bin/python3").path,
+        ].compactMap { $0 }
         // Common python.org and uv installations; never recursively scan the user's home.
         let roots = [URL(fileURLWithPath: "/Library/Frameworks/Python.framework/Versions"), home.appendingPathComponent(".local/share/uv/python")]
         for root in roots {

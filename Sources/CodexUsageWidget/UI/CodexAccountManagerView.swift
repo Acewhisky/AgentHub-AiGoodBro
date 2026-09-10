@@ -370,7 +370,8 @@ struct CodexAccountManagerView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .accessibilityHint(language.text("重新显示平台总览、当前监控额度、Codex 账号以及用量与自动化。", "Shows platform overview, monitored account limits, Codex accounts, and usage and automation again."))
+                    .accessibilityHint(
+                        language.text("重新显示平台总览、当前监控额度、Codex 账号以及用量与自动化。", "Shows platform overview, monitored account limits, Codex accounts, and usage and automation again."))
                 }
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -494,7 +495,8 @@ struct CodexAccountManagerView: View {
         guard let result = localCLIAccounts.quotas[profile.id] else {
             return ("—", language.text("额度未读到", "Limits not read"))
         }
-        let staleNote = localCLIAccounts.stale.contains(profile.id)
+        let staleNote =
+            localCLIAccounts.stale.contains(profile.id)
             ? language.text("刷新失败 · 上次快照", "Refresh failed · Previous snapshot")
             : nil
         if !result.windows.isEmpty {
@@ -624,10 +626,12 @@ struct CodexAccountManagerView: View {
                     guard !store.isPreview else { return }
                     localCLIAccounts.discover()
                     if showingHome { refreshMissingLocalCLIQuotas() }
-                } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.borderless).padding(.horizontal, 6)
-                    .help(language.text("重新检测本机 CLI", "Scan installed CLIs"))
-                    .accessibilityLabel(language.text("重新检测本机 CLI", "Scan installed CLIs"))
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless).padding(.horizontal, 6)
+                .help(language.text("重新检测本机 CLI", "Scan installed CLIs"))
+                .accessibilityLabel(language.text("重新检测本机 CLI", "Scan installed CLIs"))
                 if !showingHome {
                     Button(language.text("使用引导", "Getting started")) {
                         isSetupGuidePresented = true

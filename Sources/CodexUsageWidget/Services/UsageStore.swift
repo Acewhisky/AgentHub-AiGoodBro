@@ -3014,9 +3014,11 @@ final class UsageStore: ObservableObject {
             hubWarmUpDeferredUntilByAccount.removeValue(forKey: accountKey)
         }
         // Re-read the in-memory profile after the asynchronous Hub check; the captured quota may have changed.
-        guard let currentProfile = profiles.first(where: {
-            $0.id == profile.id && $0.recordedAccountKey == profile.recordedAccountKey
-        }), CodexWarmUpPolicy.canSendWarmUpRequest(currentProfile) else {
+        guard
+            let currentProfile = profiles.first(where: {
+                $0.id == profile.id && $0.recordedAccountKey == profile.recordedAccountKey
+            }), CodexWarmUpPolicy.canSendWarmUpRequest(currentProfile)
+        else {
             finishWarmUpActivity(activityLease, succeeded: false, cancelled: true)
             warmingProfileID = nil
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(

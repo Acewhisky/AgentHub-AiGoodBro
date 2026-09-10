@@ -30,7 +30,9 @@ struct LocalCLIWorkspaceView: View {
                     .disabled(!model.signingIn.isEmpty)
                 }
                 if kind.supportsLinkedEnvironments {
-                    Button { linkAccount() } label: {
+                    Button {
+                        linkAccount()
+                    } label: {
                         Label(language.text("关联已有配置", "Link existing configuration"), systemImage: "folder")
                     }
                     .buttonStyle(.bordered)
@@ -59,7 +61,7 @@ struct LocalCLIWorkspaceView: View {
                             model.signIn(profile)
                         }
                     }.keyboardShortcut(.defaultAction)
-                    .disabled(newAccountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(newAccountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
             }.padding(24).frame(width: 400)
@@ -72,8 +74,11 @@ struct LocalCLIWorkspaceView: View {
                 HStack {
                     Spacer()
                     Button(language.text("取消", "Cancel")) { editing = nil }
-                    Button(language.text("保存", "Save")) { model.rename(profile, name: nameDraft); editing = nil }
-                        .keyboardShortcut(.defaultAction)
+                    Button(language.text("保存", "Save")) {
+                        model.rename(profile, name: nameDraft)
+                        editing = nil
+                    }
+                    .keyboardShortcut(.defaultAction)
                 }
             }.padding(24).frame(width: 360)
         }
@@ -97,17 +102,26 @@ struct LocalCLIWorkspaceView: View {
                 }
                 Spacer()
                 if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
-                Button { model.refresh(profile) } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.borderless)
-                    .help(language.text("刷新账号与额度", "Refresh account and limits"))
-                    .accessibilityLabel(language.text("刷新账号与额度", "Refresh account and limits"))
-                    .disabled(model.refreshing.contains(profile.id))
+                Button {
+                    model.refresh(profile)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help(language.text("刷新账号与额度", "Refresh account and limits"))
+                .accessibilityLabel(language.text("刷新账号与额度", "Refresh account and limits"))
+                .disabled(model.refreshing.contains(profile.id))
                 Menu {
-                    Button(language.text("重命名", "Rename")) { nameDraft = profile.displayName; editing = profile }
+                    Button(language.text("重命名", "Rename")) {
+                        nameDraft = profile.displayName
+                        editing = profile
+                    }
                     if !profile.isDefault {
                         Button(language.text("取消关联", "Unlink")) { model.unlink(profile) }
                     }
-                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 20)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }.menuStyle(.borderlessButton).frame(width: 20)
             }
             if model.canSignIn(profile) || model.canOpen(profile) {
                 HStack(spacing: 12) {
@@ -121,7 +135,9 @@ struct LocalCLIWorkspaceView: View {
                         .disabled(!model.signingIn.isEmpty)
                     }
                     if model.canOpen(profile) {
-                        Button { openNative(profile) } label: {
+                        Button {
+                            openNative(profile)
+                        } label: {
                             Label(openTitle, systemImage: profile.kind == .trae ? "macwindow" : "terminal")
                         }.buttonStyle(.bordered).disabled(model.signingIn.contains(profile.id))
                     }
@@ -135,8 +151,9 @@ struct LocalCLIWorkspaceView: View {
                     language.text(
                         "此链接环境仅用于额度读取；隔离启动尚未验证，不会借用默认 ZCode 身份。",
                         "This linked environment is quota-only. Isolated launch is not verified and will not borrow the default ZCode identity."),
-                    systemImage: "lock.shield")
-                    .font(.caption).foregroundStyle(.secondary)
+                    systemImage: "lock.shield"
+                )
+                .font(.caption).foregroundStyle(.secondary)
             }
             if let result, !result.windows.isEmpty {
                 HStack(alignment: .top, spacing: 20) {
@@ -193,8 +210,12 @@ struct LocalCLIWorkspaceView: View {
             }
             if let result {
                 HStack(spacing: 6) {
-                    if isStale { Image(systemName: "clock.badge.exclamationmark"); Text(language.text("刷新失败 · 上次快照", "Refresh failed · Previous snapshot")) }
-                    else { Text(result.sourceLabel) }
+                    if isStale {
+                        Image(systemName: "clock.badge.exclamationmark")
+                        Text(language.text("刷新失败 · 上次快照", "Refresh failed · Previous snapshot"))
+                    } else {
+                        Text(result.sourceLabel)
+                    }
                     Spacer()
                     Text(result.fetchedAt, style: .time)
                 }.font(.caption2).foregroundStyle(.secondary)
@@ -289,11 +310,13 @@ struct LocalCLIWorkspaceView: View {
         case .zcode:
             language.text(
                 "默认环境可打开官方 ZCode 登录与 TUI。链接环境仅展示额度；CLI 与桌面模型配置彼此独立，登录成功不等于指定模型可用。",
-                "The default environment can open official ZCode sign-in and TUI. Linked environments are quota-only. CLI and desktop model settings are separate, and sign-in does not prove a requested model is available.")
+                "The default environment can open official ZCode sign-in and TUI. Linked environments are quota-only. CLI and desktop model settings are separate, and sign-in does not prove a requested model is available."
+            )
         case .trae:
             language.text(
                 "仅打开已安装的 TRAE SOLO 个人版桌面。独立 traecli 属于企业产品，本页不把它显示为个人版登录、执行或额度能力。",
-                "Only the installed TRAE SOLO personal desktop is opened. Standalone traecli is an enterprise product and is not presented here as personal sign-in, execution, or quota support.")
+                "Only the installed TRAE SOLO personal desktop is opened. Standalone traecli is an enterprise product and is not presented here as personal sign-in, execution, or quota support."
+            )
         case .claudeCode, .kimi, .mimo, .gemini:
             language.text(
                 "本机登录会自动显示；已有其他独立环境时，可关联该 CLI 的配置目录。",

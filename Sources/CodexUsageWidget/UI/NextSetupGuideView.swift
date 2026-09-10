@@ -104,7 +104,8 @@ struct NextSetupGuideView: View {
 
     private var runtimePage: some View {
         VStack(alignment: .leading, spacing: 18) {
-            heading(language.text("让现有工具就绪", "Get your tools ready"),
+            heading(
+                language.text("让现有工具就绪", "Get your tools ready"),
                 language.text("优先复用已安装的工具。缺少时按需安装，回到这里会自动重新检查。", "Use the tools already on your Mac. Install missing tools when needed; Next checks again when you return."))
             VStack(spacing: 12) {
                 ForEach(["codex", "python", "hub"], id: \.self) { id in
@@ -134,26 +135,44 @@ struct NextSetupGuideView: View {
                 }
             }
             if runtime.isBusy {
-                HStack(spacing: 8) { ProgressView().controlSize(.small); Text(language.text("正在验证组件…", "Checking components…")).font(.caption) }
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(language.text("正在验证组件…", "Checking components…")).font(.caption)
+                }
             }
             if runtime.failed {
                 Text(runtime.failureMessage(language))
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             if runtime.selectionFailed {
-                Text(language.text("所选程序未通过版本或能力检查，已保留原有选择。请从官方安装入口准备后重试。", "The selected executable did not pass the version or capability check. Your previous choice is preserved. Install from the official source and try again."))
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "所选程序未通过版本或能力检查，已保留原有选择。请从官方安装入口准备后重试。",
+                        "The selected executable did not pass the version or capability check. Your previous choice is preserved. Install from the official source and try again.")
+                )
+                .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
                 Button(language.text("重新检查", "Check again")) { runtime.refresh() }.disabled(runtime.isBusy)
                 Spacer()
-                Button(runtime.report?.skill == "ready" ? language.text("配套工具已安装", "Companion tools installed") : language.text("安装配套调用工具", "Install companion tools")) { runtime.installTools() }
-                    .disabled(!runtime.toolsReady || runtime.isBusy || runtime.report?.skill == "ready")
+                Button(runtime.report?.skill == "ready" ? language.text("配套工具已安装", "Companion tools installed") : language.text("安装配套调用工具", "Install companion tools")) {
+                    runtime.installTools()
+                }
+                .disabled(!runtime.toolsReady || runtime.isBusy || runtime.report?.skill == "ready")
             }
-            Text(language.text("Codex CLI 用于账号命令；Python 3.9+ 只用于配套 Skill。Python 未安装时，基础账号管理仍可使用。", "Codex CLI runs account commands. Python 3.9+ is only required for the companion Skill; basic account management works without it."))
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text(language.text("“可执行”只代表本机程序与能力检查通过，不代表已登录。账号身份、额度新鲜度、服务连通和任务审批会在实际调度时分别校验。", "Executable means only that the local program and required capabilities passed. Sign-in, account identity, fresh limits, service connectivity, and task approval are checked separately when dispatching."))
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "Codex CLI 用于账号命令；Python 3.9+ 只用于配套 Skill。Python 未安装时，基础账号管理仍可使用。",
+                    "Codex CLI runs account commands. Python 3.9+ is only required for the companion Skill; basic account management works without it.")
+            )
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "“可执行”只代表本机程序与能力检查通过，不代表已登录。账号身份、额度新鲜度、服务连通和任务审批会在实际调度时分别校验。",
+                    "Executable means only that the local program and required capabilities passed. Sign-in, account identity, fresh limits, service connectivity, and task approval are checked separately when dispatching."
+                )
+            )
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Divider()
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
@@ -164,10 +183,19 @@ struct NextSetupGuideView: View {
                 Button(language.text("选择工作目录并启用", "Choose workspace and enable")) { runtime.chooseProjectAndSetUpHub() }
                     .disabled(!runtime.canSetUpHub || store.profiles.filter { !$0.isSystemProfile }.isEmpty)
             }
-            Text(language.text("先在工作台添加账号，再启用调度。账号登录、macOS 通知和飞书连接由后续步骤引导完成；已有服务与个人配置会保留。", "Add an account in the workspace before enabling dispatch. The next steps cover sign-in and alerts. Existing services and personal settings are preserved."))
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text(language.text("首次调度先用配套入口生成 plan；启动中断时按原预约查看 status，再用 result 收取并校验结果。服务不会跳过审批。", "For the first dispatch, create a plan with the companion entry point. If interrupted, check status using the original lease, then collect and verify it with result. Service approval is never skipped."))
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "先在工作台添加账号，再启用调度。账号登录、macOS 通知和飞书连接由后续步骤引导完成；已有服务与个人配置会保留。",
+                    "Add an account in the workspace before enabling dispatch. The next steps cover sign-in and alerts. Existing services and personal settings are preserved.")
+            )
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "首次调度先用配套入口生成 plan；启动中断时按原预约查看 status，再用 result 收取并校验结果。服务不会跳过审批。",
+                    "For the first dispatch, create a plan with the companion entry point. If interrupted, check status using the original lease, then collect and verify it with result. Service approval is never skipped."
+                )
+            )
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -189,7 +217,10 @@ struct NextSetupGuideView: View {
         switch runtime.report?.hub {
         case "ready": return language.text("已验证现有本机服务连通且版本匹配", "Existing local service is reachable and its version matches")
         case "existing_stopped": return language.text("发现现有配置，服务未运行。请从原部署入口恢复。", "Existing configuration found; the service is stopped. Restore it from its original deployment.")
-        case "setup_incomplete": return language.text("上次启用已写入配置但未确认服务健康。请先核实现有服务，不要重复启动。", "The previous setup wrote configuration but did not confirm service health. Verify the existing service; do not start another one.")
+        case "setup_incomplete":
+            return language.text(
+                "上次启用已写入配置但未确认服务健康。请先核实现有服务，不要重复启动。",
+                "The previous setup wrote configuration but did not confirm service health. Verify the existing service; do not start another one.")
         case "port_conflict": return language.text("服务地址已被占用或无法验证。请先检查现有服务。", "The service address is occupied or could not be verified. Check the existing service first.")
         default: return language.text("组件已随包提供，启用后仅在本机运行，任务仍需批准。", "Included with Next. Enable it for local use; tasks still require approval.")
         }
@@ -208,7 +239,9 @@ struct NextSetupGuideView: View {
                 instruction(
                     "2", title: language.text("为新任务选账号", "Choose an account for new work"),
                     detail: language.text(
-                        "新账号需先完成独立登录，再确认参与开关、模型与推理强度。新添加的账号默认参与调度；退出后暖号和额度维护仍会继续。", "Finish isolated sign-in first, then confirm participation, model, and reasoning settings. New accounts join dispatch by default; opting out keeps maintenance active."))
+                        "新账号需先完成独立登录，再确认参与开关、模型与推理强度。新添加的账号默认参与调度；退出后暖号和额度维护仍会继续。",
+                        "Finish isolated sign-in first, then confirm participation, model, and reasoning settings. New accounts join dispatch by default; opting out keeps maintenance active."
+                    ))
                 instruction(
                     "3", title: language.text("从账号卡打开终端", "Open a terminal from the account card"),
                     detail: language.text("确认账号空闲后开始。桌面切换有独立入口，由你主动确认。", "Start once the account is idle. Desktop switching has its own action and confirmation."))
@@ -390,7 +423,10 @@ struct NextSetupGuideView: View {
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             instruction(
                 "→", title: language.text("从一次新任务开始", "Start with your next task"),
-                detail: language.text("回到工作台，确认独立账号已登录、额度为新鲜读取且当前空闲。配套调度先生成 plan，启动后仍需批准；中断时沿用原任务查看 status/result。", "Return to the workspace and confirm the isolated account is signed in, limits are fresh, and it is idle. Companion dispatch starts with a plan and still requires approval; after interruption, use the original task for status/result."))
+                detail: language.text(
+                    "回到工作台，确认独立账号已登录、额度为新鲜读取且当前空闲。配套调度先生成 plan，启动后仍需批准；中断时沿用原任务查看 status/result。",
+                    "Return to the workspace and confirm the isolated account is signed in, limits are fresh, and it is idle. Companion dispatch starts with a plan and still requires approval; after interruption, use the original task for status/result."
+                ))
             Text(language.text("“使用引导”入口一直保留；自动化中心可以随时调整全部开关。", "Getting started stays available. Adjust feature switches anytime in Automation."))
                 .font(.caption).foregroundStyle(.secondary)
         }

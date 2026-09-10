@@ -88,18 +88,21 @@ struct ZCodeCLIQuotaReader {
         } catch let failure as Failure {
             switch failure {
             case .unsupportedConfiguration:
-                return result(state: .unsupported, now: now,
-                              messageCode: "local_cli_zcode_coding_plan_unsupported")
+                return result(
+                    state: .unsupported, now: now,
+                    messageCode: "local_cli_zcode_coding_plan_unsupported")
             case .credentialsMissing, .unauthorized:
                 return result(state: .needsLogin, now: now, messageCode: "local_cli_needs_login")
             case .rateLimited:
                 return result(state: .rateLimited, now: now, messageCode: "local_cli_rate_limited")
             case .invalidConfiguration:
-                return result(state: .unavailable, now: now,
-                              messageCode: "local_cli_invalid_credentials")
+                return result(
+                    state: .unavailable, now: now,
+                    messageCode: "local_cli_invalid_credentials")
             case .invalidResponse:
-                return result(state: .unavailable, now: now,
-                              messageCode: "local_cli_invalid_response")
+                return result(
+                    state: .unavailable, now: now,
+                    messageCode: "local_cli_invalid_response")
             case .unavailable:
                 return result(state: .unavailable, now: now, messageCode: "local_cli_unavailable")
             }
@@ -110,11 +113,12 @@ struct ZCodeCLIQuotaReader {
 
     private func credential(profile: LocalCLIProfile) throws -> Credential {
         let directory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true).standardizedFileURL
-        guard let data = try fileReader(
-            directory.appendingPathComponent("v2/config.json"), Self.maximumBytes, true)
+        guard
+            let data = try fileReader(
+                directory.appendingPathComponent("v2/config.json"), Self.maximumBytes, true)
         else { throw Failure.unsupportedConfiguration }
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let providers = root["provider"] as? [String: Any]
+            let providers = root["provider"] as? [String: Any]
         else { throw Failure.invalidConfiguration }
 
         let enabled = providers.compactMap { key, raw -> String? in
@@ -122,40 +126,40 @@ struct ZCodeCLIQuotaReader {
             return key
         }
         guard enabled == [Self.providerID],
-              let entry = providers[Self.providerID] as? [String: Any],
-              let options = entry["options"] as? [String: Any]
+            let entry = providers[Self.providerID] as? [String: Any],
+            let options = entry["options"] as? [String: Any]
         else { throw Failure.unsupportedConfiguration }
         guard let apiKey = Self.nonempty(options["apiKey"]) else { throw Failure.credentialsMissing }
         guard apiKey.utf8.count <= 16 * 1_024,
-              !apiKey.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            !apiKey.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
         else { throw Failure.invalidConfiguration }
         guard let rawBaseURL = Self.nonempty(options["baseURL"]),
-              let components = URLComponents(string: rawBaseURL),
-              components.scheme?.lowercased() == "https",
-              let host = components.host?.lowercased(), Self.officialHosts.contains(host),
-              components.user == nil, components.password == nil, components.port == nil,
-              components.query == nil, components.fragment == nil
+            let components = URLComponents(string: rawBaseURL),
+            components.scheme?.lowercased() == "https",
+            let host = components.host?.lowercased(), Self.officialHosts.contains(host),
+            components.user == nil, components.password == nil, components.port == nil,
+            components.query == nil, components.fragment == nil
         else { throw Failure.unsupportedConfiguration }
         return Credential(apiKey: apiKey, host: host)
     }
 
     private static func parse(_ data: Data, now: Date) throws -> (plan: String?, windows: [LocalCLIQuotaWindow]) {
         guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let code = strictDouble(envelope["code"]), code == 200,
-              strictBool(envelope["success"]) == true,
-              let payload = envelope["data"] as? [String: Any],
-              let limits = payload["limits"] as? [[String: Any]],
-              !limits.isEmpty, limits.count <= 16
+            let code = strictDouble(envelope["code"]), code == 200,
+            strictBool(envelope["success"]) == true,
+            let payload = envelope["data"] as? [String: Any],
+            let limits = payload["limits"] as? [[String: Any]],
+            !limits.isEmpty, limits.count <= 16
         else { throw Failure.invalidResponse }
 
         var identifiers = Set<String>()
         let windows = try limits.map { item -> LocalCLIQuotaWindow in
             guard let type = nonempty(item["type"]),
-                  let unit = strictInteger(item["unit"]),
-                  let number = strictInteger(item["number"]),
-                  let used = strictNonnegative(item["currentValue"]),
-                  let allowance = strictNonnegative(item["usage"]), allowance > 0,
-                  used <= allowance
+                let unit = strictInteger(item["unit"]),
+                let number = strictInteger(item["number"]),
+                let used = strictNonnegative(item["currentValue"]),
+                let allowance = strictNonnegative(item["usage"]), allowance > 0,
+                used <= allowance
             else { throw Failure.invalidResponse }
             if let rawPercent = item["percentage"] {
                 guard let percent = strictNonnegative(rawPercent), percent <= 100 else {
@@ -167,11 +171,14 @@ struct ZCodeCLIQuotaReader {
             let label: String
             switch (type, unit, number) {
             case ("CREDIT_LIMIT", 3, 5), ("TOKENS_LIMIT", _, 5):
-                id = "zai-coding-plan-5-hour"; label = "5-hour"
+                id = "zai-coding-plan-5-hour"
+                label = "5-hour"
             case ("CREDIT_LIMIT", 6, 1), ("TOKENS_LIMIT", _, 7):
-                id = "zai-coding-plan-weekly"; label = "Weekly"
+                id = "zai-coding-plan-weekly"
+                label = "Weekly"
             case ("MCP_LIMIT", _, _), ("TIME_LIMIT", _, _):
-                id = "zai-coding-plan-mcp"; label = "MCP"
+                id = "zai-coding-plan-mcp"
+                label = "MCP"
             default:
                 throw Failure.invalidResponse
             }
@@ -180,7 +187,7 @@ struct ZCodeCLIQuotaReader {
             let reset: Date?
             if let rawReset = item["nextResetTime"] {
                 guard let milliseconds = strictNonnegative(rawReset), milliseconds > 0,
-                      milliseconds / 1_000 <= Date.distantFuture.timeIntervalSince1970
+                    milliseconds / 1_000 <= Date.distantFuture.timeIntervalSince1970
                 else { throw Failure.invalidResponse }
                 let parsed = Date(timeIntervalSince1970: milliseconds / 1_000)
                 guard parsed.timeIntervalSince1970.isFinite, parsed >= now else {
@@ -191,7 +198,7 @@ struct ZCodeCLIQuotaReader {
                 reset = nil
             }
             let percent = used / allowance * 100
-            guard percent.isFinite, 0 ... 100 ~= percent else { throw Failure.invalidResponse }
+            guard percent.isFinite, 0...100 ~= percent else { throw Failure.invalidResponse }
             return LocalCLIQuotaWindow(id: id, label: label, usedPercent: percent, resetsAt: reset)
         }
         return (boundedLabel(payload["level"]), windows)
@@ -219,14 +226,14 @@ struct ZCodeCLIQuotaReader {
 
     private static func nonempty(_ value: Any?) -> String? {
         guard let value = value as? String, !value.isEmpty,
-              value == value.trimmingCharacters(in: .whitespacesAndNewlines)
+            value == value.trimmingCharacters(in: .whitespacesAndNewlines)
         else { return nil }
         return value
     }
 
     private static func strictDouble(_ value: Any?) -> Double? {
         guard let number = value as? NSNumber,
-              CFGetTypeID(number) != CFBooleanGetTypeID()
+            CFGetTypeID(number) != CFBooleanGetTypeID()
         else { return nil }
         let result = number.doubleValue
         return result.isFinite ? result : nil
@@ -234,7 +241,7 @@ struct ZCodeCLIQuotaReader {
 
     private static func strictBool(_ value: Any?) -> Bool? {
         guard let number = value as? NSNumber,
-              CFGetTypeID(number) == CFBooleanGetTypeID()
+            CFGetTypeID(number) == CFBooleanGetTypeID()
         else { return nil }
         return number.boolValue
     }
@@ -251,7 +258,7 @@ struct ZCodeCLIQuotaReader {
 
     private static func boundedLabel(_ value: Any?) -> String? {
         guard let value = nonempty(value), value.utf8.count <= 64,
-              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
         else { return nil }
         return value
     }

@@ -38,8 +38,10 @@ struct DispatchParticipationPaths {
         if let override = environment[hubConfigEnvironmentKey], !override.isEmpty {
             guard override.hasPrefix("/") else { throw DispatchParticipationError.hubLocation }
             hubConfig = URL(fileURLWithPath: override)
-        } else if FileManager.default.fileExists(atPath: snapshot.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("CodexAccountManagerNextHub/config.json").path) {
+        } else if FileManager.default.fileExists(
+            atPath: snapshot.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("CodexAccountManagerNextHub/config.json").path)
+        {
             hubConfig = snapshot.deletingLastPathComponent().deletingLastPathComponent()
                 .appendingPathComponent("CodexAccountManagerNextHub/config.json")
         } else {

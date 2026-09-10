@@ -1,5 +1,5 @@
-import Darwin
 import CoreFoundation
+import Darwin
 import Foundation
 
 struct AgentTokenShare: Equatable, Identifiable {
@@ -378,7 +378,8 @@ private enum LocalSQLiteQuery {
     static func rows(executable: URL, database: URL, sql: String, timeout: TimeInterval = 5) throws -> [[String: Any]] {
         let data: Data
         do {
-            data = try BoundedLocalProcess.run(executable: executable,
+            data = try BoundedLocalProcess.run(
+                executable: executable,
                 arguments: ["-readonly", "-json", database.path, sql], timeout: timeout)
         } catch {
             throw CCSwitchUsageError.queryFailed
@@ -674,11 +675,16 @@ enum GrokUsageReader {
             rootValues.isDirectory == true
         else { return nil }
         var enumerationFailed = false
-        guard let entries = fileManager.enumerator(
-            at: sessionsRoot,
-            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-            errorHandler: { _, _ in enumerationFailed = true; return false }
-        ) else { return nil }
+        guard
+            let entries = fileManager.enumerator(
+                at: sessionsRoot,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                errorHandler: { _, _ in
+                    enumerationFailed = true
+                    return false
+                }
+            )
+        else { return nil }
         let started = ProcessInfo.processInfo.systemUptime
         var entryCount = 0
         var remainingBytes = limits.maximumTotalBytes
@@ -695,11 +701,13 @@ enum GrokUsageReader {
                 guard entries.level == 2, values.isDirectory == true else { continue }
                 let updates = entry.appendingPathComponent("updates.jsonl")
                 guard remainingBytes > 0 else { return nil }
-                guard let data = try DispatchParticipationSync.readBoundedRegularFile(
-                    updates,
-                    maximumBytes: min(limits.maximumFileBytes, remainingBytes),
-                    allowMissing: true
-                ) else { continue }
+                guard
+                    let data = try DispatchParticipationSync.readBoundedRegularFile(
+                        updates,
+                        maximumBytes: min(limits.maximumFileBytes, remainingBytes),
+                        allowMissing: true
+                    )
+                else { continue }
                 remainingBytes -= data.count
                 var start = data.startIndex
                 while start < data.endIndex {

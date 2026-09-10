@@ -98,10 +98,11 @@ enum AccountAutomationAuditStoreSelfTest {
                 applicationSupportDirectory: root.appendingPathComponent("ordering", isDirectory: true)
             )
             for index in 0...100 {
-                _ = try orderingStore.append(AccountAutomationEvent(
-                    id: UUID(), occurredAt: Date(timeIntervalSince1970: TimeInterval(index)),
-                    level: .info, title: "event-\(index)", detail: "bounded"
-                ))
+                _ = try orderingStore.append(
+                    AccountAutomationEvent(
+                        id: UUID(), occurredAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                        level: .info, title: "event-\(index)", detail: "bounded"
+                    ))
             }
             let ordered = orderingStore.load()
             guard ordered.count == 100, ordered.first?.title == "event-100",
@@ -110,7 +111,8 @@ enum AccountAutomationAuditStoreSelfTest {
                 print("Account automation audit store self-test failed: retention order")
                 return false
             }
-            let archive = root
+            let archive =
+                root
                 .appendingPathComponent("CodexAccountManagerNext", isDirectory: true)
                 .appendingPathComponent("automation-events-v1.json")
             let original = try Data(contentsOf: archive)

@@ -4,7 +4,7 @@ import Foundation
 import Security
 
 #if canImport(FoundationNetworking)
-import FoundationNetworking
+    import FoundationNetworking
 #endif
 
 struct LocalCLIHTTPResponse: Sendable {
@@ -112,10 +112,12 @@ private final class LocalCLIURLSessionDelegate: NSObject, URLSessionDataDelegate
                     headers[key.lowercased()] = value
                 }
             }
-            finish(.success(LocalCLIHTTPResponse(
-                statusCode: storedResponse.statusCode,
-                headers: headers,
-                data: storedData)))
+            finish(
+                .success(
+                    LocalCLIHTTPResponse(
+                        statusCode: storedResponse.statusCode,
+                        headers: headers,
+                        data: storedData)))
         } else {
             finish(.failure(LocalCLIReaderFailure.invalidResponse))
         }
@@ -221,8 +223,8 @@ struct LocalCLIQuotaReader {
             return (key, entry)
         }
         guard candidates.count == 1,
-              let entry = candidates.first?.1,
-              let token = Self.nonempty(entry["key"])
+            let entry = candidates.first?.1,
+            let token = Self.nonempty(entry["key"])
         else {
             throw LocalCLIReaderFailure.invalidCredentials
         }
@@ -255,9 +257,10 @@ struct LocalCLIQuotaReader {
     }
 
     private func loadKimi(profile: LocalCLIProfile, now: Date) async throws -> LocalCLIQuotaResult {
-        let root = try Self.object(credentialData(
-            profile: profile,
-            relativePath: "credentials/kimi-code.json"))
+        let root = try Self.object(
+            credentialData(
+                profile: profile,
+                relativePath: "credentials/kimi-code.json"))
         guard let token = Self.nonempty(root["access_token"]) else {
             throw LocalCLIReaderFailure.credentialsMissing
         }
@@ -267,10 +270,11 @@ struct LocalCLIQuotaReader {
         guard expiry > now.addingTimeInterval(60).timeIntervalSince1970 else {
             throw LocalCLIReaderFailure.credentialsExpired
         }
-        guard let deviceData = try fileReader(
-            directoryURL(profile).appendingPathComponent("device_id"),
-            Self.maximumCredentialBytes,
-            true),
+        guard
+            let deviceData = try fileReader(
+                directoryURL(profile).appendingPathComponent("device_id"),
+                Self.maximumCredentialBytes,
+                true),
             let deviceID = String(data: deviceData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             !deviceID.isEmpty
@@ -332,12 +336,12 @@ struct LocalCLIQuotaReader {
         }
         let root = try Self.object(credentialsData)
         guard let oauth = root["claudeAiOauth"] as? [String: Any],
-              let token = Self.nonempty(oauth["accessToken"])
+            let token = Self.nonempty(oauth["accessToken"])
         else {
             throw LocalCLIReaderFailure.invalidCredentials
         }
         guard let expiryMilliseconds = Self.strictDouble(oauth["expiresAt"], allowString: false),
-              expiryMilliseconds > now.timeIntervalSince1970 * 1_000
+            expiryMilliseconds > now.timeIntervalSince1970 * 1_000
         else {
             throw LocalCLIReaderFailure.credentialsExpired
         }
@@ -370,8 +374,8 @@ struct LocalCLIQuotaReader {
                 messageCode: "local_cli_opencode_go_not_connected")
         }
         guard let entry = rawEntry as? [String: Any],
-              Self.nonempty(entry["type"])?.lowercased() == "api",
-              let key = Self.nonempty(entry["key"])
+            Self.nonempty(entry["type"])?.lowercased() == "api",
+            let key = Self.nonempty(entry["key"])
         else { throw LocalCLIReaderFailure.invalidCredentials }
         var request = fixedRequest("https://opencode.ai/zen/go/v1/usage")
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
@@ -409,10 +413,11 @@ struct LocalCLIQuotaReader {
     }
 
     private func credentialData(profile: LocalCLIProfile, relativePath: String) throws -> Data {
-        guard let data = try fileReader(
-            directoryURL(profile).appendingPathComponent(relativePath),
-            Self.maximumCredentialBytes,
-            true)
+        guard
+            let data = try fileReader(
+                directoryURL(profile).appendingPathComponent(relativePath),
+                Self.maximumCredentialBytes,
+                true)
         else { throw LocalCLIReaderFailure.credentialsMissing }
         return data
     }
@@ -424,7 +429,8 @@ struct LocalCLIQuotaReader {
     private func isDefaultClaudeDirectory(_ profile: LocalCLIProfile) -> Bool {
         guard profile.kind == .claudeCode, profile.isDefault else { return false }
         let expected = LocalCLIKind.claudeCode.defaultConfigDirectory(
-            home: FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
+            home: FileManager.default.homeDirectoryForCurrentUser
+        ).standardizedFileURL
         return directoryURL(profile) == expected
     }
 
@@ -525,16 +531,17 @@ extension LocalCLIQuotaReader {
             throw LocalCLIReaderFailure.invalidResponse
         }
         let plan = nonempty(config["subscriptionTier"]) ?? nonempty(root["subscriptionTier"])
-        let resetsAt = ((config["currentPeriod"] as? [String: Any]).flatMap { parseDate($0["end"]) })
+        let resetsAt =
+            ((config["currentPeriod"] as? [String: Any]).flatMap { parseDate($0["end"]) })
             ?? parseDate(config["billingPeriodEnd"])
         let percent: Double?
         if let rawPercent = config["creditUsagePercent"], !(rawPercent is NSNull) {
             percent = try requiredPercent(rawPercent)
         } else if let cap = config["onDemandCap"] as? [String: Any],
-                  let used = config["onDemandUsed"] as? [String: Any]
+            let used = config["onDemandUsed"] as? [String: Any]
         {
             guard let capValue = strictDouble(cap["val"]), capValue >= 0,
-                  let usedValue = strictDouble(used["val"]), usedValue >= 0
+                let usedValue = strictDouble(used["val"]), usedValue >= 0
             else { throw LocalCLIReaderFailure.invalidResponse }
             // A disabled on-demand allowance is valid. It says nothing about
             // subscription usage when the credits percentage is absent.
@@ -549,9 +556,10 @@ extension LocalCLIQuotaReader {
         } else {
             percent = nil
         }
-        let windows = percent.map {
-            [LocalCLIQuotaWindow(id: "credits", label: "Credits", usedPercent: $0, resetsAt: resetsAt)]
-        } ?? []
+        let windows =
+            percent.map {
+                [LocalCLIQuotaWindow(id: "credits", label: "Credits", usedPercent: $0, resetsAt: resetsAt)]
+            } ?? []
         return (plan, windows)
     }
 
@@ -575,9 +583,7 @@ extension LocalCLIQuotaReader {
                 let detail = (item["detail"] as? [String: Any]) ?? item
                 let minutes = try kimiWindowMinutes(item["window"])
                 let label: String
-                if minutes == 300 { label = "5-hour" }
-                else if minutes == 10_080 { label = "7-day" }
-                else { label = "Usage" }
+                if minutes == 300 { label = "5-hour" } else if minutes == 10_080 { label = "7-day" } else { label = "Usage" }
                 windows.append(try quotaWindow(id: "limit-\(index)-\(minutes ?? 0)", label: label, detail: detail))
             }
         }
@@ -598,11 +604,12 @@ extension LocalCLIQuotaReader {
             guard let raw = root[key] else { continue }
             if raw is NSNull { continue }
             guard let window = raw as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
-            windows.append(LocalCLIQuotaWindow(
-                id: key,
-                label: label,
-                usedPercent: try requiredPercent(window["utilization"]),
-                resetsAt: parseDate(window["resets_at"])))
+            windows.append(
+                LocalCLIQuotaWindow(
+                    id: key,
+                    label: label,
+                    usedPercent: try requiredPercent(window["utilization"]),
+                    resetsAt: parseDate(window["resets_at"])))
         }
         if let rawLimits = root["limits"] {
             guard let limits = rawLimits as? [[String: Any]] else {
@@ -618,11 +625,12 @@ extension LocalCLIQuotaReader {
                 }
                 let model = ((limit["scope"] as? [String: Any])?["model"] as? [String: Any])
                 let label = nonempty(model?["display_name"]) ?? nonempty(limit["kind"]) ?? "Scoped usage"
-                windows.append(LocalCLIQuotaWindow(
-                    id: "limit-\(index)",
-                    label: label,
-                    usedPercent: try requiredPercent(limit["percent"]),
-                    resetsAt: parseDate(limit["resets_at"])))
+                windows.append(
+                    LocalCLIQuotaWindow(
+                        id: "limit-\(index)",
+                        label: label,
+                        usedPercent: try requiredPercent(limit["percent"]),
+                        resetsAt: parseDate(limit["resets_at"])))
             }
         }
         return windows
@@ -646,11 +654,12 @@ extension LocalCLIQuotaReader {
             } else {
                 percent = try requiredPercent(window["percent"])
             }
-            windows.append(LocalCLIQuotaWindow(
-                id: key,
-                label: label,
-                usedPercent: percent,
-                resetsAt: parseDate(window["resetsAt"])))
+            windows.append(
+                LocalCLIQuotaWindow(
+                    id: key,
+                    label: label,
+                    usedPercent: percent,
+                    resetsAt: parseDate(window["resetsAt"])))
         }
         return windows
     }
@@ -669,7 +678,7 @@ extension LocalCLIQuotaReader {
             used = parsed
         } else {
             guard let remaining = strictDouble(detail["remaining"], allowString: true),
-                  remaining >= 0, remaining <= limit
+                remaining >= 0, remaining <= limit
             else { throw LocalCLIReaderFailure.invalidResponse }
             used = limit - remaining
         }
@@ -683,8 +692,8 @@ extension LocalCLIQuotaReader {
     private static func kimiWindowMinutes(_ raw: Any?) throws -> Int? {
         guard let raw else { return nil }
         guard let window = raw as? [String: Any],
-              let duration = strictDouble(window["duration"], allowString: true),
-              duration > 0, duration.rounded() == duration
+            let duration = strictDouble(window["duration"], allowString: true),
+            duration > 0, duration.rounded() == duration
         else { throw LocalCLIReaderFailure.invalidResponse }
         let multiplier: Double
         switch nonempty(window["timeUnit"]) ?? "" {
@@ -701,7 +710,7 @@ extension LocalCLIQuotaReader {
 
     private static func object(_ data: Data) throws -> [String: Any] {
         guard let value = try? JSONSerialization.jsonObject(with: data),
-              let object = value as? [String: Any]
+            let object = value as? [String: Any]
         else { throw LocalCLIReaderFailure.invalidResponse }
         return object
     }
@@ -757,11 +766,11 @@ extension LocalCLIQuotaReader {
 
     private static var architectureName: String {
         #if arch(arm64)
-        "arm64"
+            "arm64"
         #elseif arch(x86_64)
-        "x86_64"
+            "x86_64"
         #else
-        "unknown"
+            "unknown"
         #endif
     }
 

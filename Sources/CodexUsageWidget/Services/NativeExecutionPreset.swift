@@ -6,7 +6,8 @@ import Foundation
 /// Names and user task text never enter this configuration.
 enum NativeExecutionPreset {
     static let roleName = "next_preset_worker"
-    static let initialPrompt = "Next collaboration preset: act as the primary planner and final reviewer. Delegate implementation when useful using only the next_preset_worker role, without fork_context=true or explicit model or reasoning-effort overrides. Keep one child active at a time and review its result. This is a workflow convention, not a guaranteed whole-tree security boundary. Preserve the user's existing instructions. Wait for my task; do not execute commands yet."
+    static let initialPrompt =
+        "Next collaboration preset: act as the primary planner and final reviewer. Delegate implementation when useful using only the next_preset_worker role, without fork_context=true or explicit model or reasoning-effort overrides. Keep one child active at a time and review its result. This is a workflow convention, not a guaranteed whole-tree security boundary. Preserve the user's existing instructions. Wait for my task; do not execute commands yet."
 
     static func supports(version: String, features: String) -> Bool {
         let words = version.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ")
@@ -22,9 +23,11 @@ enum NativeExecutionPreset {
         var environment = ProcessInfo.processInfo.environment
         environment["CODEX_HOME"] = codexHome.path
         do {
-            let version = try BoundedLocalProcess.run(executable: executable, arguments: ["--version"], environment: environment,
+            let version = try BoundedLocalProcess.run(
+                executable: executable, arguments: ["--version"], environment: environment,
                 maximumOutputBytes: 4096, timeout: 2)
-            let features = try BoundedLocalProcess.run(executable: executable, arguments: ["features", "list"], environment: environment,
+            let features = try BoundedLocalProcess.run(
+                executable: executable, arguments: ["features", "list"], environment: environment,
                 maximumOutputBytes: 32 * 1024, timeout: 3)
             guard supports(version: String(decoding: version, as: UTF8.self), features: String(decoding: features, as: UTF8.self)) else {
                 throw TerminalLauncherError.presetCapabilityUnavailable
@@ -51,7 +54,10 @@ enum NativeExecutionPreset {
         let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         if fd >= 0 {
             var complete = false
-            defer { Darwin.close(fd); if !complete { try? FileManager.default.removeItem(at: url) } }
+            defer {
+                Darwin.close(fd)
+                if !complete { try? FileManager.default.removeItem(at: url) }
+            }
             let written = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
             guard written == data.count, fsync(fd) == 0 else { throw TerminalLauncherError.launchFileFailed }
             complete = true

@@ -122,7 +122,7 @@ require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
 require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
   'maximumOutputBytes >= 0' '本地子进程输出上限参数缺少安全校验'
 require_literal Sources/CodexUsageWidget/Services/CCSwitchUsageReader.swift \
-  'BoundedLocalProcess.run(executable: executable,' 'SQLite 读取必须在子进程运行时持续排空输出'
+  'data = try BoundedLocalProcess.run(' 'SQLite 读取必须在子进程运行时持续排空输出'
 require_literal Sources/CodexUsageWidget/Services/CCSwitchUsageReader.swift \
   'WITH RECURSIVE x(n)' 'SQLite 超时回归覆盖缺失'
 require_literal Sources/CodexUsageWidget/Services/FeishuWebhookService.swift \

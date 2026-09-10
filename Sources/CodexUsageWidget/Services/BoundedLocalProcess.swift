@@ -87,11 +87,13 @@ enum BoundedLocalProcess {
             argv.withUnsafeMutableBufferPointer { argvBuffer in
                 if customEnvironment != nil {
                     return customEnvironment!.withUnsafeMutableBufferPointer { environmentBuffer in
-                        posix_spawn(&pid, executablePath, &actions, &attributes,
+                        posix_spawn(
+                            &pid, executablePath, &actions, &attributes,
                             argvBuffer.baseAddress!, environmentBuffer.baseAddress!)
                     }
                 }
-                return posix_spawn(&pid, executablePath, &actions, &attributes,
+                return posix_spawn(
+                    &pid, executablePath, &actions, &attributes,
                     argvBuffer.baseAddress!, environ)
             }
         }
@@ -163,7 +165,10 @@ enum BoundedLocalProcess {
         guard !didReap else { return }
         while true {
             let result = Darwin.waitpid(pid, &status, WNOHANG)
-            if result == pid { didReap = true; return }
+            if result == pid {
+                didReap = true
+                return
+            }
             if result == 0 { return }
             if result < 0, errno == EINTR { continue }
             if result < 0, errno == ECHILD {

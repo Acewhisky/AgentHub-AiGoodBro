@@ -242,7 +242,9 @@ struct ExecutionPreferenceControl: View {
                 Text(language.text("执行档位", "Execution preset"))
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Button { isModeInfoPresented.toggle() } label: {
+                Button {
+                    isModeInfoPresented.toggle()
+                } label: {
                     Image(systemName: "info.circle").contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -414,30 +416,36 @@ struct ExecutionPreferenceControl: View {
     }
 
     private var modelBinding: Binding<CodexExecutionPreference.Model> {
-        Binding(get: { draft.model }, set: { model in
-            var updated = draft
-            updated.model = model
-            if !model.supportedReasoningEfforts.contains(updated.reasoningEffort) {
-                updated.reasoningEffort = model.supportedReasoningEfforts.last ?? .low
-            }
-            saveValidated(updated)
-        })
+        Binding(
+            get: { draft.model },
+            set: { model in
+                var updated = draft
+                updated.model = model
+                if !model.supportedReasoningEfforts.contains(updated.reasoningEffort) {
+                    updated.reasoningEffort = model.supportedReasoningEfforts.last ?? .low
+                }
+                saveValidated(updated)
+            })
     }
 
     private var effortBinding: Binding<CodexExecutionPreference.ReasoningEffort> {
-        Binding(get: { draft.reasoningEffort }, set: { effort in
-            var updated = draft
-            updated.reasoningEffort = effort
-            saveValidated(updated)
-        })
+        Binding(
+            get: { draft.reasoningEffort },
+            set: { effort in
+                var updated = draft
+                updated.reasoningEffort = effort
+                saveValidated(updated)
+            })
     }
 
     private var fastBinding: Binding<Bool> {
-        Binding(get: { draft.serviceTier == .fast }, set: { enabled in
-            var updated = draft
-            updated.serviceTier = enabled ? .fast : .standard
-            saveValidated(updated)
-        })
+        Binding(
+            get: { draft.serviceTier == .fast },
+            set: { enabled in
+                var updated = draft
+                updated.serviceTier = enabled ? .fast : .standard
+                saveValidated(updated)
+            })
     }
 
     private var presetNameBinding: Binding<String> {
@@ -449,12 +457,14 @@ struct ExecutionPreferenceControl: View {
     }
 
     private var presetModelBinding: Binding<CodexExecutionPreference.Model> {
-        Binding(get: { presetDraft?.model ?? .astra }, set: { model in
-            presetDraft?.model = model
-            if let effort = presetDraft?.reasoningEffort, !model.supportedReasoningEfforts.contains(effort) {
-                presetDraft?.reasoningEffort = model.supportedReasoningEfforts.last ?? .low
-            }
-        })
+        Binding(
+            get: { presetDraft?.model ?? .astra },
+            set: { model in
+                presetDraft?.model = model
+                if let effort = presetDraft?.reasoningEffort, !model.supportedReasoningEfforts.contains(effort) {
+                    presetDraft?.reasoningEffort = model.supportedReasoningEfforts.last ?? .low
+                }
+            })
     }
 
     private var presetEffortBinding: Binding<CodexExecutionPreference.ReasoningEffort> {
@@ -466,12 +476,14 @@ struct ExecutionPreferenceControl: View {
     }
 
     private var presetSubagentModelBinding: Binding<CodexExecutionPreference.Model> {
-        Binding(get: { presetDraft?.subagentModel ?? .luna }, set: { model in
-            presetDraft?.subagentModel = model
-            if let effort = presetDraft?.subagentReasoningEffort, !model.supportedReasoningEfforts.contains(effort) {
-                presetDraft?.subagentReasoningEffort = model.supportedReasoningEfforts.last ?? .low
-            }
-        })
+        Binding(
+            get: { presetDraft?.subagentModel ?? .luna },
+            set: { model in
+                presetDraft?.subagentModel = model
+                if let effort = presetDraft?.subagentReasoningEffort, !model.supportedReasoningEfforts.contains(effort) {
+                    presetDraft?.subagentReasoningEffort = model.supportedReasoningEfforts.last ?? .low
+                }
+            })
     }
 
     private var presetSubagentEffortBinding: Binding<CodexExecutionPreference.ReasoningEffort> {
@@ -587,23 +599,27 @@ struct ExecutionPreferenceControl: View {
                 let defaults = CodexExecutionPreference.defaultValue.effectiveStrategy(for: mode)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(builtInModeTitle(mode)).font(.subheadline.weight(.semibold))
-                    Text(mode == .standard
-                        ? language.text("默认：跟随已保存的主模型和强度；无子代理", "Default: saved main model and effort; no subagent")
-                        : defaults.map {
-                        language.text(
-                            "默认：\($0.mainModel.displayName) · \($0.mainReasoningEffort.displayName)；\(childSummary($0))",
-                            "Default: \($0.mainModel.displayName) · \($0.mainReasoningEffort.displayName); \(childSummary($0))"
-                        )
-                    } ?? "")
+                    Text(
+                        mode == .standard
+                            ? language.text("默认：跟随已保存的主模型和强度；无子代理", "Default: saved main model and effort; no subagent")
+                            : defaults.map {
+                                language.text(
+                                    "默认：\($0.mainModel.displayName) · \($0.mainReasoningEffort.displayName)；\(childSummary($0))",
+                                    "Default: \($0.mainModel.displayName) · \($0.mainReasoningEffort.displayName); \(childSummary($0))"
+                                )
+                            } ?? ""
+                    )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
             }
             Divider()
-            Text(language.text(
-                "三个档位的名称和模型组合都可修改。档位表示调用方式，不是固定的费用排序；实际消耗取决于模型、上下文和调用次数。Max 是模型自身的思考强度；慢蹬默认不额外调用规划模型。子代理按每次一个的协作约定执行。Fast 需要主模型及启用的子模型都支持。",
-                "Names and model combinations are customizable. Usage depends on models, context and call count. Max is the model's own reasoning effort; Direct mode adds no separate planner. The workflow uses one child at a time. Fast requires support from the main model and any enabled subagent."
-            ))
+            Text(
+                language.text(
+                    "三个档位的名称和模型组合都可修改。档位表示调用方式，不是固定的费用排序；实际消耗取决于模型、上下文和调用次数。Max 是模型自身的思考强度；慢蹬默认不额外调用规划模型。子代理按每次一个的协作约定执行。Fast 需要主模型及启用的子模型都支持。",
+                    "Names and model combinations are customizable. Usage depends on models, context and call count. Max is the model's own reasoning effort; Direct mode adds no separate planner. The workflow uses one child at a time. Fast requires support from the main model and any enabled subagent."
+                )
+            )
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

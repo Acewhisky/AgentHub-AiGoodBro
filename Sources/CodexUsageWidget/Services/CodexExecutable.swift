@@ -6,7 +6,8 @@ enum CodexExecutable {
 
     static func independentPath(fileManager: FileManager = .default) -> String? {
         let preferred = UserDefaults.standard.string(forKey: preferredPathKey)
-        let candidates = [preferred,
+        let candidates = [
+            preferred,
             fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/codex").path,
             fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/packages/standalone/current/bin/codex").path,
             "/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex",
@@ -43,8 +44,11 @@ enum CodexExecutable {
 
     static func version() -> String? {
         guard let executable = path() else { return nil }
-        guard let data = try? BoundedLocalProcess.run(executable: URL(fileURLWithPath: executable),
-            arguments: ["--version"], maximumOutputBytes: 4 * 1_024, timeout: 2) else { return nil }
+        guard
+            let data = try? BoundedLocalProcess.run(
+                executable: URL(fileURLWithPath: executable),
+                arguments: ["--version"], maximumOutputBytes: 4 * 1_024, timeout: 2)
+        else { return nil }
         return String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }

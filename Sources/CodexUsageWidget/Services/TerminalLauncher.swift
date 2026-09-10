@@ -42,7 +42,9 @@ enum TerminalLauncherError: LocalizedError {
             return WidgetLanguage.storedOrAutomatic().text(
                 "Terminal 未接受启动请求，请检查系统 Terminal 是否可用", "Terminal did not accept the launch request. Check that the system Terminal app is available.")
         case .presetCapabilityUnavailable:
-            return WidgetLanguage.storedOrAutomatic().text("当前 Codex CLI 未通过执行档位能力检查；请在运行环境中更新至 0.154.0 或更新版本后重试。", "This Codex CLI did not pass the preset capability check. Update to 0.154.0 or newer in Runtime setup and retry.")
+            return WidgetLanguage.storedOrAutomatic().text(
+                "当前 Codex CLI 未通过执行档位能力检查；请在运行环境中更新至 0.154.0 或更新版本后重试。",
+                "This Codex CLI did not pass the preset capability check. Update to 0.154.0 or newer in Runtime setup and retry.")
         }
     }
 }
@@ -209,12 +211,14 @@ struct TerminalAppLauncher: TerminalLaunching {
                 return false
             } catch TerminalLauncherError.launchFileFailed {}
             var customized = middle
-            customized.customPresets["sol_luna"] = .init(name: "fixture-name", useSavedModel: false, model: .terra,
+            customized.customPresets["sol_luna"] = .init(
+                name: "fixture-name", useSavedModel: false, model: .terra,
                 reasoningEffort: .medium, subagentsEnabled: true, subagentModel: .sol, subagentReasoningEffort: .high)
             guard let customRole = try NativeExecutionPreset.freezeRole(customized, base: roleDirectory), customRole != role else { return false }
             let customCommand = try configuredCodexCommand(executable: "/fixture/codex", preference: customized, roleURL: customRole)
             guard customCommand.contains("--model 'gpt-5.6-terra'"), customCommand.contains("agents.default_subagent_model=\"gpt-5.6-sol\""),
-                !customCommand.contains("fixture-name") else { return false }
+                !customCommand.contains("fixture-name")
+            else { return false }
             let standard = try configuredCodexCommand(
                 executable: "/Applications/ChatGPT.app/Contents/Resources/codex",
                 preference: .init(model: .sol, reasoningEffort: .high, serviceTier: .standard)

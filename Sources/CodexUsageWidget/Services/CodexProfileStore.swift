@@ -301,13 +301,14 @@ struct CodexExecutionPreference: Codable, Equatable {
     }
 
     var effectiveStrategy: EffectiveStrategy {
-        effectiveStrategy(for: subagentMode) ?? EffectiveStrategy(
-            mainModel: model,
-            mainReasoningEffort: reasoningEffort,
-            subagentModel: nil,
-            subagentReasoningEffort: nil,
-            maximumConcurrentSubagents: 0
-        )
+        effectiveStrategy(for: subagentMode)
+            ?? EffectiveStrategy(
+                mainModel: model,
+                mainReasoningEffort: reasoningEffort,
+                subagentModel: nil,
+                subagentReasoningEffort: nil,
+                maximumConcurrentSubagents: 0
+            )
     }
 
     func effectiveStrategy(for mode: SubagentMode) -> EffectiveStrategy? {
@@ -435,7 +436,8 @@ enum CodexExecutionPreferenceError: LocalizedError, Equatable {
         case .unsupportedCustomPreset:
             return WidgetLanguage.storedOrAutomatic().text("自定义档位包含不支持的槽位", "The custom presets contain an unsupported slot.")
         case .invalidPresetName:
-            return WidgetLanguage.storedOrAutomatic().text("档位名称需为 1–64 个 UTF-8 字节，且不能含首尾空白或控制字符", "Preset names must be 1–64 UTF-8 bytes with no surrounding whitespace or control characters.")
+            return WidgetLanguage.storedOrAutomatic().text(
+                "档位名称需为 1–64 个 UTF-8 字节，且不能含首尾空白或控制字符", "Preset names must be 1–64 UTF-8 bytes with no surrounding whitespace or control characters.")
         case .systemProfileUnsupported:
             return WidgetLanguage.storedOrAutomatic().text("系统账号不保存执行偏好", "Execution preferences cannot be saved for the system account.")
         }
@@ -2328,26 +2330,30 @@ enum CodexProfileStoreSelfTest {
             )
             let customizedData = try JSONEncoder().encode(customizedPreference.validated())
             guard try JSONDecoder().decode(CodexExecutionPreference.self, from: customizedData) == customizedPreference,
-                customizedPreference.effectiveStrategy == .init(
-                    mainModel: .terra,
-                    mainReasoningEffort: .xhigh,
-                    subagentModel: .gpt55,
-                    subagentReasoningEffort: .high,
-                    maximumConcurrentSubagents: 1
-                )
+                customizedPreference.effectiveStrategy
+                    == .init(
+                        mainModel: .terra,
+                        mainReasoningEffort: .xhigh,
+                        subagentModel: .gpt55,
+                        subagentReasoningEffort: .high,
+                        maximumConcurrentSubagents: 1
+                    )
             else {
                 print("Codex profile store self-test failed: three custom presets round trip")
                 return false
             }
             var followsSavedModel = customizedPreference
             followsSavedModel.subagentMode = .solLuna
-            guard try followsSavedModel.validated().effectiveStrategy == .init(
-                mainModel: .astra,
-                mainReasoningEffort: .low,
-                subagentModel: nil,
-                subagentReasoningEffort: nil,
-                maximumConcurrentSubagents: 0
-            ) else {
+            guard
+                try followsSavedModel.validated().effectiveStrategy
+                    == .init(
+                        mainModel: .astra,
+                        mainReasoningEffort: .low,
+                        subagentModel: nil,
+                        subagentReasoningEffort: nil,
+                        maximumConcurrentSubagents: 0
+                    )
+            else {
                 print("Codex profile store self-test failed: custom preset did not follow saved model")
                 return false
             }
@@ -2362,13 +2368,15 @@ enum CodexProfileStoreSelfTest {
                 subagentReasoningEffort: .xhigh
             )
             singleOverride.subagentMode = .solLuna
-            guard try singleOverride.validated().effectiveStrategy == .init(
-                mainModel: .terra,
-                mainReasoningEffort: .medium,
-                subagentModel: nil,
-                subagentReasoningEffort: nil,
-                maximumConcurrentSubagents: 0
-            ), singleOverride.preset(for: .standard) == CodexExecutionPreference.defaultPreset(for: .standard),
+            guard
+                try singleOverride.validated().effectiveStrategy
+                    == .init(
+                        mainModel: .terra,
+                        mainReasoningEffort: .medium,
+                        subagentModel: nil,
+                        subagentReasoningEffort: nil,
+                        maximumConcurrentSubagents: 0
+                    ), singleOverride.preset(for: .standard) == CodexExecutionPreference.defaultPreset(for: .standard),
                 singleOverride.restoringDefault(for: .solLuna).customPresets.isEmpty,
                 CodexExecutionPreference.defaultValue.customPresets.isEmpty
             else {
@@ -2799,9 +2807,11 @@ enum CodexProfileStoreSelfTest {
                 return false
             }
             var unknownModeProfiles = legacyProfiles
-            guard let unknownModeIndex = unknownModeProfiles.firstIndex(where: {
-                ($0["isSystemProfile"] as? Bool) == false
-            }) else {
+            guard
+                let unknownModeIndex = unknownModeProfiles.firstIndex(where: {
+                    ($0["isSystemProfile"] as? Bool) == false
+                })
+            else {
                 print("Codex profile store self-test failed: unknown mode fixture")
                 return false
             }
@@ -3175,8 +3185,9 @@ enum CodexProfileStoreSelfTest {
                 exhausted.lastSnapshot = CodexAccountSnapshot(
                     accountType: "chatgpt", planType: "plus", email: "managed@example.com",
                     limitId: "codex", limitName: nil,
-                    fiveHour: CodexQuotaWindowSnapshot(RateWindow(
-                        usedPercent: 100, windowDurationMins: 300, resetsAt: now.addingTimeInterval(-10))),
+                    fiveHour: CodexQuotaWindowSnapshot(
+                        RateWindow(
+                            usedPercent: 100, windowDurationMins: 300, resetsAt: now.addingTimeInterval(-10))),
                     sevenDay: idleWeek.lastSnapshot?.sevenDay, monthly: nil, creditBalance: balance,
                     fetchedAt: now, appServerVersion: nil)
                 guard !CodexWarmUpPolicy.canSendWarmUpRequest(exhausted, now: now),

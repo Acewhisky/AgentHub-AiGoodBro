@@ -352,9 +352,10 @@ final class CodexUsageReader {
             local?.allAgentsLifetimeTokens = nil
             local?.allAgentsTodayTokens = nil
             local?.allAgentsShares = []
-            messages.append(WidgetLanguage.storedOrAutomatic().text(
-                "跨 CLI 统计包含超出范围的数量，合计暂不可用。", "Cross-CLI counts exceed the supported range; totals are unavailable."
-            ))
+            messages.append(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "跨 CLI 统计包含超出范围的数量，合计暂不可用。", "Cross-CLI counts exceed the supported range; totals are unavailable."
+                ))
             return snapshot(local: local)
         }
         if mergedLifetime > 0 || mergedToday > 0 {
@@ -2246,10 +2247,11 @@ final class CodexUsageReader {
         // Skill discovery legitimately permits symlinks. Resolve that source to
         // its target first, then apply the same bounded regular-file reader.
         let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
-        guard let data = try? DispatchParticipationSync.readBoundedRegularFile(
-            url,
-            maximumBytes: 4 * 1_024 * 1_024
-        )
+        guard
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(
+                url,
+                maximumBytes: 4 * 1_024 * 1_024
+            )
         else {
             return SkillStaticInfo(tokenEstimate: nil, byteCount: nil)
         }

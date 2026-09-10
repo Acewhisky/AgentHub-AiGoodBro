@@ -325,14 +325,15 @@ struct DispatchActivityStore {
     /// A formerly active lease may be first in the array. Retain by completion
     /// time so the next write cannot evict a just-finished task before acceptance.
     static func recentEndedRecords(_ records: [[String: Any]]) -> [[String: Any]] {
-        Array(records.filter { !activeStates.contains($0["state"] as? String ?? "") }
-            .sorted {
-                let left = $0["updatedAt"] as? Double ?? 0
-                let right = $1["updatedAt"] as? Double ?? 0
-                return left == right
-                    ? ($0["leaseId"] as? String ?? "") < ($1["leaseId"] as? String ?? "")
-                    : left < right
-            }.suffix(100))
+        Array(
+            records.filter { !activeStates.contains($0["state"] as? String ?? "") }
+                .sorted {
+                    let left = $0["updatedAt"] as? Double ?? 0
+                    let right = $1["updatedAt"] as? Double ?? 0
+                    return left == right
+                        ? ($0["leaseId"] as? String ?? "") < ($1["leaseId"] as? String ?? "")
+                        : left < right
+                }.suffix(100))
     }
 
     /// Fixed application messages only. Raw errors, account names and paths never
