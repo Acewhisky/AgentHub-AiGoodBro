@@ -110,7 +110,10 @@ struct ExecutionPreferenceControl: View {
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(ExecutionPreferenceButtonStyle())
-        .help(language.text("设置后续 CLI 与任务派单的模型、强度、速度和执行档位", "Set models, reasoning, speed and presets for new CLI sessions and tasks."))
+        .help(
+            language.text("设置后续 CLI 与任务派单的模型、强度、速度和执行档位", "Set models, reasoning, speed and presets for new CLI sessions and tasks.")
+                + "\n" + preferenceSummary
+        )
         .accessibilityLabel(language.text("任务模型", "Task model"))
         .accessibilityValue(activeAccessibilityValue(preference))
         .popover(isPresented: $isPresented, arrowEdge: .trailing) { editor }
@@ -193,7 +196,7 @@ struct ExecutionPreferenceControl: View {
                 .help(defaultSettingsHelp)
                 .accessibilityLabel(language.text("恢复全部默认设置", "Restore all defaults"))
             }
-            HStack(spacing: 12) {
+            adaptiveMenuRow {
                 modelMenu(selection: modelBinding, label: language.text("主模型", "Main model"))
                 effortMenu(selection: effortBinding, model: draft.model, label: language.text("强度", "Effort"))
             }
@@ -337,7 +340,7 @@ struct ExecutionPreferenceControl: View {
                 .textFieldStyle(.roundedBorder)
 
             Toggle(language.text("跟随已保存默认模型", "Use saved default model"), isOn: presetUseSavedModelBinding)
-            HStack(spacing: 12) {
+            adaptiveMenuRow {
                 modelMenu(selection: presetModelBinding, label: language.text("主模型", "Main model"))
                 effortMenu(selection: presetEffortBinding, model: preset.model, label: language.text("主强度", "Main effort"))
             }
@@ -345,7 +348,7 @@ struct ExecutionPreferenceControl: View {
             .opacity(preset.useSavedModel ? 0.55 : 1)
 
             Toggle(language.text("启用子代理（每次 1 个）", "Enable subagent (one active child)"), isOn: presetSubagentsBinding)
-            HStack(spacing: 12) {
+            adaptiveMenuRow {
                 modelMenu(selection: presetSubagentModelBinding, label: language.text("子模型", "Subagent model"))
                 effortMenu(selection: presetSubagentEffortBinding, model: preset.subagentModel, label: language.text("子强度", "Subagent effort"))
             }
@@ -369,6 +372,16 @@ struct ExecutionPreferenceControl: View {
                 Button(language.text("保存", "Save")) { commitPreset(mode) }
                     .keyboardShortcut(.defaultAction)
             }
+        }
+    }
+
+    /// Menus sit side by side when there is room and stack when a narrow context would
+    /// squeeze long model names or larger accessibility text sizes.
+    @ViewBuilder
+    private func adaptiveMenuRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12, content: content)
+            VStack(alignment: .leading, spacing: 10, content: content)
         }
     }
 

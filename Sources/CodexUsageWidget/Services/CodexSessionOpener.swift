@@ -17,6 +17,134 @@ enum CodexSessionLink {
     }
 }
 
+/// Cancellation state for a bounded restore request.  The retry closure may
+/// already be queued when a switch is abandoned, so cancellation is checked
+/// both before opening the deep link and before delivering the completion.
+final class CodexSessionRestoreHandle {
+    private let lock = NSLock()
+    private let enqueue: (DispatchWorkItem, TimeInterval) -> Void
+    private var isCancelled = false
+    private var isCompleted = false
+    private var scheduledWorkItem: DispatchWorkItem?
+
+    init(
+        enqueue: @escaping (DispatchWorkItem, TimeInterval) -> Void = { workItem, delay in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        }
+    ) {
+        self.enqueue = enqueue
+    }
+
+    var cancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isCancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        guard !isCancelled, !isCompleted else {
+            lock.unlock()
+            return
+        }
+        isCancelled = true
+        let workItem = scheduledWorkItem
+        scheduledWorkItem = nil
+        lock.unlock()
+        workItem?.cancel()
+    }
+
+    fileprivate func complete() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isCancelled, !isCompleted else { return false }
+        isCompleted = true
+        scheduledWorkItem = nil
+        return true
+    }
+
+    fileprivate func schedule(after delay: TimeInterval, operation: @escaping () -> Void) {
+        let workItem = DispatchWorkItem(block: operation)
+        lock.lock()
+        guard !isCancelled, !isCompleted else {
+            lock.unlock()
+            return
+        }
+        scheduledWorkItem = workItem
+        lock.unlock()
+        enqueue(workItem, delay)
+    }
+
+    fileprivate func clearScheduledWorkItem() {
+        lock.lock()
+        scheduledWorkItem = nil
+        lock.unlock()
+    }
+}
+
+enum CodexSessionRestoreHandleSelfTest {
+    static func run() -> Bool {
+        var failures: [String] = []
+
+        func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+            if !condition() { failures.append(message) }
+        }
+
+        var queued: [DispatchWorkItem] = []
+        let cancelled = CodexSessionRestoreHandle { workItem, _ in
+            queued.append(workItem)
+        }
+        var cancelledCompletionCount = 0
+        cancelled.schedule(after: 0) {
+            cancelled.clearScheduledWorkItem()
+            guard !cancelled.cancelled else { return }
+            if cancelled.complete() { cancelledCompletionCount += 1 }
+        }
+        expect(queued.count == 1, "restore should enqueue one retry work item")
+        cancelled.cancel()
+        cancelled.cancel()
+        expect(cancelled.cancelled, "repeated cancellation should remain cancelled")
+        queued[0].perform()
+        expect(cancelledCompletionCount == 0, "a cancelled late retry must not deliver completion")
+        expect(!cancelled.complete(), "a cancelled handle must reject a late completion")
+        let queuedAfterCancel = queued.count
+        cancelled.schedule(after: 0) { cancelledCompletionCount += 1 }
+        expect(
+            queued.count == queuedAfterCancel,
+            "a cancelled handle must not schedule another retry"
+        )
+
+        let completed = CodexSessionRestoreHandle { workItem, _ in
+            queued.append(workItem)
+        }
+        var completionCount = 0
+        completed.schedule(after: 0) {
+            completed.clearScheduledWorkItem()
+            guard !completed.cancelled, completed.complete() else { return }
+            completionCount += 1
+        }
+        expect(queued.count == queuedAfterCancel + 1, "active restore should enqueue its retry")
+        queued[queuedAfterCancel].perform()
+        expect(completionCount == 1, "an active retry should deliver exactly one completion")
+        expect(!completed.complete(), "a completed handle must reject duplicate completion")
+        completed.cancel()
+        completed.cancel()
+        let queuedAfterCompletion = queued.count
+        completed.schedule(after: 0) { completionCount += 1 }
+        expect(
+            queued.count == queuedAfterCompletion,
+            "a completed handle must not retain or schedule stale work"
+        )
+
+        if failures.isEmpty {
+            print("Codex session restore handle self-test passed")
+            return true
+        }
+        failures.forEach { print("Codex session restore handle self-test failed: \($0)") }
+        return false
+    }
+}
+
 enum CodexSessionOpener {
     private static let restorationRetryDelays: [TimeInterval] = [0, 2, 4, 7, 10]
     private static let focusedLogMaximumAge: TimeInterval = 5 * 60
@@ -212,37 +340,47 @@ enum CodexSessionOpener {
         return NSWorkspace.shared.open(url)
     }
 
+    @discardableResult
     static func requestRestore(
         threadID: String,
         completion: @escaping (Bool) -> Void
-    ) {
+    ) -> CodexSessionRestoreHandle {
+        let handle = CodexSessionRestoreHandle()
         guard CodexSessionLink.url(threadID: threadID) != nil else {
-            completion(false)
-            return
+            if handle.complete() { completion(false) }
+            return handle
         }
         attemptRestoreRequest(
             threadID: threadID,
             retryIndex: 0,
+            handle: handle,
             completion: completion
         )
+        return handle
     }
 
     private static func attemptRestoreRequest(
         threadID: String,
         retryIndex: Int,
+        handle: CodexSessionRestoreHandle,
         completion: @escaping (Bool) -> Void
     ) {
+        guard handle.cancelled == false else { return }
         guard retryIndex < restorationRetryDelays.count else {
-            completion(false)
+            if handle.complete() { completion(false) }
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + restorationRetryDelays[retryIndex]) {
+        handle.schedule(after: restorationRetryDelays[retryIndex]) {
+            handle.clearScheduledWorkItem()
+            guard handle.cancelled == false else { return }
             if open(threadID: threadID) {
-                completion(true)
+                if handle.complete() { completion(true) }
             } else {
+                guard handle.cancelled == false else { return }
                 attemptRestoreRequest(
                     threadID: threadID,
                     retryIndex: retryIndex + 1,
+                    handle: handle,
                     completion: completion
                 )
             }

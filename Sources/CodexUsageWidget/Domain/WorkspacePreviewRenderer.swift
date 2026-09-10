@@ -86,7 +86,7 @@ enum WorkspacePreviewRenderer {
         )
     }
 
-    static func render(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
+    @MainActor static func render(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-ui-preview-\(UUID().uuidString)")
         let suiteName = "CodexManagerNext.workspace-preview.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else { return false }
@@ -190,6 +190,36 @@ enum WorkspacePreviewRenderer {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
                 try renderView(editor, size: CGSize(width: 400, height: 470), scheme: scheme, to: directory.appendingPathComponent("astra-model-\(theme).png"))
+
+                // Cross-provider placement uses only labeled synthetic data.
+                let fixtureRoot = root.appendingPathComponent("unified-\(theme)")
+                let codex = fixtureStore(accountCount: 3, root: fixtureRoot, language: language, includeQuotaEdgeCases: true)
+                let grok = LocalCLIProfile(
+                    id: "fixture-grok", kind: .grok,
+                    displayName: language.text("合成 Grok 账号", "Synthetic Grok account"),
+                    configDirectory: fixtureRoot.path, isDefault: true)
+                let providerNow = Date()
+                let quota = LocalCLIQuotaResult(
+                    state: .available, fetchedAt: providerNow, maskedIdentity: nil,
+                    identityFingerprint: nil, planLabel: "Synthetic fixture",
+                    windows: [
+                        LocalCLIQuotaWindow(
+                            id: "fixture-week",
+                            label: language.text("每周", "Weekly"), usedPercent: 25, resetsAt: providerNow.addingTimeInterval(360000))
+                    ],
+                    balance: nil, balanceCurrency: nil, sourceLabel: language.text("合成数据", "Synthetic data"), messageCode: nil,
+                    resetCards: [LocalCLIResetCard(id: "fixture-card", expiresAt: providerNow.addingTimeInterval(48 * 3600))])
+                let local = LocalCLIAccountStore.preview(profiles: [grok], quotas: [grok.id: quota], root: fixtureRoot)
+                settings.pinnedAccountKey = ResetCardPresentation.codexKey("preview-0")
+                for layout in [AccountWorkspaceLayout.rows, .cards] {
+                    settings.accountWorkspaceLayout = layout
+                    let unified = CodexAccountManagerView(store: codex, settings: settings, paletteCatalog: catalog, localCLIAccounts: local)
+                    try renderView(
+                        unified, size: CGSize(width: 980, height: 1000), scheme: scheme,
+                        to: directory.appendingPathComponent("unified-reset-fixture-\(layout.rawValue)-\(theme).png"))
+                }
+                settings.pinnedAccountKey = nil
+                settings.accountWorkspaceLayout = .rows
             }
             return true
         } catch {

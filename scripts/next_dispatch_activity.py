@@ -261,11 +261,25 @@ class Registry:
                 if phase not in TERMINAL:
                     raise ActivityError("hub_terminal_state_regressed")
                 return lease.copy()
+            if verified_hub and lease["state"] == "cancel_requested":
+                # Mirror fresh, identity-checked Hub evidence atomically with
+                # local cancel intent. An active Hub cannot erase intent; a
+                # confirmed terminal Hub allows release with intent retained.
+                # The Hub's actual outcome remains in its own task record.
+                phase = "cancelled" if phase in TERMINAL else None
+            # A recorded cancel intent is authoritative: no active phase may
+            # resurrect it. Only an idempotent re-cancel or an evidence-checked
+            # cancelled release (guards below) may follow it.
+            if lease["state"] == "cancel_requested" and phase is not None \
+                    and phase not in {"cancel_requested", "cancelled"}:
+                raise ActivityError("cancel_intent_is_authoritative")
             if claim and (lease["state"] != "preparing" or lease.get("runnerPID") is not None):
                 raise ActivityError("reservation_already_claimed")
             if phase not in TERMINAL | {"uncertain"} and effective_state(lease) == "uncertain" and not verified_hub:
                 raise ActivityError("stale_reservation_requires_resolution")
             if lease["state"] in TERMINAL and phase not in {"accepted", "rejected"}:
+                raise ActivityError("reservation_already_finished")
+            if lease["state"] == "cancelled" and phase in {"accepted", "rejected"}:
                 raise ActivityError("reservation_already_finished")
             if phase in TERMINAL:
                 if lease.get("processGroupID") and group_has_live_process(lease["processGroupID"]):
@@ -434,38 +448,51 @@ def renew_heartbeat(registry: Registry, lease_id: str, owner: str, stop: threadi
 
 
 def supervise(registry: Registry, lease: dict, command: list[str], cwd: Path,
-              *, env: dict | None = None, stdin=None, before_start=None, on_started=None,
+              *, env: dict | None = None, stdin=None, stdout=None, stderr=None, before_start=None, on_started=None,
               on_exited=None, verify_result=None) -> int:
     """Keep reservation visible while preflight runs and until the child exits."""
     stop = threading.Event()
     heartbeat_errors = []
     owner, lease_id = lease["ownerThreadId"], lease["leaseId"]
     child = None
-    registry.update(lease_id, owner, "starting", claim=True,
-                    runnerPID=os.getpid(), runnerPIDBirth=process_birth(os.getpid()))
-
-    def heartbeat():
-        while not stop.wait(20):
-            try:
-                if not renew_heartbeat(registry, lease_id, owner, stop):
-                    return
-            except Exception:
-                heartbeat_errors.append(True)
-                return  # Leave the reservation occupied/uncertain, never relaunch.
-
-    thread = threading.Thread(target=heartbeat, daemon=True)
-    thread.start()
+    thread = None
+    claimed = False
     try:
+        # The claim is inside the guarded section: a refused claim (already
+        # claimed, cancel recorded, birth unavailable) is journalled below and
+        # never rewrites a lease this supervisor does not own.
+        registry.update(lease_id, owner, "starting", claim=True,
+                        runnerPID=os.getpid(), runnerPIDBirth=process_birth(os.getpid()))
+        claimed = True
+
+        def heartbeat():
+            while not stop.wait(20):
+                try:
+                    if not renew_heartbeat(registry, lease_id, owner, stop):
+                        return
+                except Exception:
+                    heartbeat_errors.append(True)
+                    return  # Leave the reservation occupied/uncertain, never relaunch.
+
+        thread = threading.Thread(target=heartbeat, daemon=True)
+        thread.start()
         if before_start:
             before_start()
         if heartbeat_errors:
             raise ActivityError("activity_heartbeat_failed")
         registry.update(lease_id, owner, "starting")
-        child = subprocess.Popen(command, cwd=cwd, env=env, stdin=stdin, start_new_session=True)
+        child = subprocess.Popen(command, cwd=cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=True)
         registry.update(lease_id, owner, processGroupID=child.pid)
         birth = process_birth(child.pid)
         if birth is not None:
-            registry.update(lease_id, owner, "running", childPID=child.pid, childPIDBirth=birth)
+            try:
+                registry.update(lease_id, owner, "running", childPID=child.pid, childPIDBirth=birth)
+            except ActivityError as error:
+                if str(error) != "cancel_intent_is_authoritative":
+                    raise
+                # Cancel intent stays authoritative; keep the pid evidence via
+                # a phase-less write so liveness checks stay honest.
+                registry.update(lease_id, owner, None, childPID=child.pid, childPIDBirth=birth)
             if on_started:
                 on_started()
         result = child.wait()
@@ -474,15 +501,29 @@ def supervise(registry: Registry, lease: dict, command: list[str], cwd: Path,
         stop.set()
         thread.join(timeout=1)
         if group_has_live_process(child.pid):
-            registry.update(lease_id, owner, "uncertain", exitCode=result)
+            try:
+                registry.update(lease_id, owner, "uncertain", exitCode=result)
+            except ActivityError as error:
+                if str(error) != "cancel_intent_is_authoritative":
+                    raise
+                # cancel_requested is ACTIVE: the lease stays occupied and
+                # stale heartbeats surface it as uncertain until resolved.
             registry.issue(issue_id="cli-descendants-unverified", component="cli", phase="observed",
                            summary="CLI exited but its process group still has live work. Reservation remains occupied.",
                            code=lease.get("code"), owner=owner)
             return 4
         registry.update(lease_id, owner, exitCode=result)
-        if result == 0 and verify_result:
+        current = next(x for x in registry.read()["leases"] if x["leaseId"] == lease_id)
+        if result == 0 and verify_result and current["state"] != "cancel_requested":
             verify_result()
-        registry.update(lease_id, owner, "awaiting_acceptance" if result == 0 else "failed", exitCode=result)
+        try:
+            registry.update(lease_id, owner, "awaiting_acceptance" if result == 0 else "failed", exitCode=result)
+        except ActivityError as error:
+            if str(error) != "cancel_intent_is_authoritative":
+                raise
+            # The group is dead (checked above), so a cancelled release is
+            # evidence-backed; the recorded exit code stays as evidence.
+            registry.update(lease_id, owner, "cancelled", exitCode=result)
         if result != 0:
             registry.issue(issue_id="cli-exit-failed", component="cli", phase="observed",
                            summary="CLI exited unsuccessfully; inspect the owning task's artifacts before retrying.",
@@ -490,14 +531,23 @@ def supervise(registry: Registry, lease: dict, command: list[str], cwd: Path,
         return result
     except BaseException:
         stop.set()
-        thread.join(timeout=1)
+        if thread is not None:
+            thread.join(timeout=1)
         still_running = child is not None
         if child is not None:
             try:
                 still_running = child.poll() is None or group_has_live_process(child.pid)
             except ActivityError:
                 still_running = True
-        registry.update(lease_id, owner, "uncertain" if still_running else "failed")
+        if claimed:
+            try:
+                registry.update(lease_id, owner, "uncertain" if still_running else "failed")
+            except ActivityError as error:
+                # A cancel recorded meanwhile — or an already-terminal
+                # convergence such as cancelled-before-launch — is
+                # authoritative and keeps the lease occupied; never clobber it.
+                if str(error) not in {"cancel_intent_is_authoritative", "reservation_already_finished"}:
+                    raise
         registry.issue(issue_id="cli-launch-or-supervisor-failed", component="cli", phase="observed",
                        summary="Launch or supervision did not complete. A live or unverified child retains its reservation.",
                        code=lease.get("code"), owner=owner)

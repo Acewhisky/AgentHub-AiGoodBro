@@ -3,7 +3,7 @@ import Darwin
 
 @main
 struct CodexAccountManagerNextMain {
-    static func main() {
+    @MainActor static func main() {
         if CommandLine.arguments.contains("--self-test-global-shortcut") {
             exit(GlobalShortcutSelfTest.run() ? 0 : 1)
         }
@@ -166,7 +166,7 @@ struct CodexAccountManagerNextMain {
         }
 
         if CommandLine.arguments.contains("--self-test-feishu-webhook") {
-            exit(FeishuWebhookServiceSelfTest.run() ? 0 : 1)
+            exit(FeishuWebhookServiceSelfTest.run() && FeishuTaskCompletionObserverSelfTest.run() && MessageChannelsControllerSelfTest.run() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-account-automation-audit") {

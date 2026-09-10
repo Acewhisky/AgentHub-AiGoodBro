@@ -99,6 +99,27 @@ enum TaskRuntimeSelfTest {
             "user thread should remain visible"
         )
 
+        var transactionGeneration = TaskTransactionGeneration()
+        let firstTransaction = transactionGeneration.begin()
+        expect(
+            transactionGeneration.accepts(firstTransaction),
+            "a newly started transaction should accept its own completion"
+        )
+        transactionGeneration.invalidate()
+        expect(
+            !transactionGeneration.accepts(firstTransaction),
+            "an invalidated transaction must reject a late completion"
+        )
+        let secondTransaction = transactionGeneration.begin()
+        expect(
+            secondTransaction != firstTransaction && transactionGeneration.accepts(secondTransaction),
+            "a replacement transaction should get a distinct accepted generation"
+        )
+        expect(
+            CodexSessionRestoreHandleSelfTest.run(),
+            "restore cancellation and cleanup guard should remain idempotent"
+        )
+
         var reducer = TaskRuntimeReducer()
         reducer.replaceThreads(
             [
@@ -142,6 +163,153 @@ enum TaskRuntimeSelfTest {
         expect(
             snapshot.records["hidden-subagent"]?.state == .running,
             "subagent activity must remain in the safety snapshot"
+        )
+
+        // A list request captures the notification generation before it is
+        // sent.  A newer turn/started notification must win over that older
+        // list payload, even when the payload claims the thread is idle.
+        var orderingReducer = TaskRuntimeReducer()
+        orderingReducer.replaceThreads(
+            [
+                [
+                    "id": "ordered-thread",
+                    "updatedAt": Int(now.timeIntervalSince1970),
+                    "status": ["type": "idle"],
+                ]
+            ],
+            connectionMode: .sharedDaemon
+        )
+        let listRequestGeneration = orderingReducer.currentNotificationGeneration
+        expect(
+            orderingReducer.applyNotification(
+                method: "turn/started",
+                params: ["threadId": "ordered-thread", "turn": ["id": "turn-new"]]
+            ),
+            "turn start should be accepted as newer notification evidence"
+        )
+        orderingReducer.replaceThreads(
+            [
+                [
+                    "id": "ordered-thread",
+                    "updatedAt": Int(now.timeIntervalSince1970 - 60),
+                    "status": ["type": "idle"],
+                ]
+            ],
+            connectionMode: .sharedDaemon,
+            requestGeneration: listRequestGeneration
+        )
+        expect(
+            orderingReducer.snapshot(at: now).records["ordered-thread"]?.state == .running,
+            "an old list response must not downgrade a newer running notification"
+        )
+        expect(
+            orderingReducer.snapshot(at: now).records["ordered-thread"]?.turnID == "turn-new",
+            "an old list response must not erase the newer turn identity"
+        )
+
+        // Preserve a post-request notification for one incomplete list, then
+        // allow a later complete request to remove it when no fresh evidence
+        // arrives.  This prevents both data loss and permanent busy zombies.
+        var missingThreadReducer = TaskRuntimeReducer()
+        let missingRequestGeneration = missingThreadReducer.currentNotificationGeneration
+        _ = missingThreadReducer.applyNotification(
+            method: "turn/started",
+            params: ["threadId": "temporarily-missing", "turn": ["id": "turn-missing"]]
+        )
+        missingThreadReducer.replaceThreads(
+            [],
+            connectionMode: .sharedDaemon,
+            requestGeneration: missingRequestGeneration
+        )
+        expect(
+            missingThreadReducer.snapshot(at: now).records["temporarily-missing"]?.state == .running,
+            "a thread changed after list request must survive one incomplete response"
+        )
+        let cleanupRequestGeneration = missingThreadReducer.currentNotificationGeneration
+        missingThreadReducer.replaceThreads(
+            [],
+            connectionMode: .sharedDaemon,
+            requestGeneration: cleanupRequestGeneration
+        )
+        expect(
+            missingThreadReducer.snapshot(at: now).records["temporarily-missing"] == nil,
+            "a repeatedly absent thread without new evidence must be cleaned up"
+        )
+
+        var turnOrderingReducer = TaskRuntimeReducer()
+        _ = turnOrderingReducer.applyNotification(
+            method: "turn/started",
+            params: ["threadId": "turn-thread", "turn": ["id": "turn-new"]]
+        )
+        expect(
+            !turnOrderingReducer.applyNotification(
+                method: "turn/completed",
+                params: ["threadId": "turn-thread", "turn": ["id": "turn-old", "status": "completed"]]
+            ),
+            "a late completion from an older turn must be ignored"
+        )
+        expect(
+            turnOrderingReducer.snapshot(at: now).records["turn-thread"]?.state == .running,
+            "an ignored old completion must leave the newer turn running"
+        )
+        expect(
+            !turnOrderingReducer.applyNotification(
+                method: "item/completed",
+                params: [
+                    "threadId": "turn-thread",
+                    "turnId": "turn-old",
+                    "item": ["status": "failed"],
+                ]
+            ),
+            "a late failed item from an older turn must be ignored"
+        )
+        expect(
+            !turnOrderingReducer.applyNotification(
+                method: "item/completed",
+                params: [
+                    "threadId": "turn-thread",
+                    "turnId": "turn-new",
+                    "item": ["status": "failed"],
+                ]
+            ),
+            "an individual failed item must not end a running turn"
+        )
+        expect(
+            turnOrderingReducer.snapshot(at: now).records["turn-thread"]?.state == .running,
+            "failed item notifications must preserve the running turn state"
+        )
+        expect(
+            turnOrderingReducer.applyNotification(
+                method: "turn/completed",
+                params: ["threadId": "turn-thread", "turn": ["id": "turn-new", "status": "completed"]]
+            ),
+            "the current turn completion should be accepted"
+        )
+        expect(
+            !turnOrderingReducer.applyNotification(
+                method: "turn/completed",
+                params: ["threadId": "turn-thread", "turn": ["id": "turn-new", "status": "completed"]]
+            ),
+            "a duplicate terminal completion should be ignored"
+        )
+        expect(
+            turnOrderingReducer.snapshot(at: now).records["turn-thread"]?.state == .completed,
+            "a duplicate completion must not change the completed state"
+        )
+
+        var connectionReducer = TaskRuntimeReducer()
+        connectionReducer.replaceThreads(
+            [["id": "replaced-connection", "status": ["type": "active"]]],
+            connectionMode: .sharedDaemon
+        )
+        connectionReducer.disconnect()
+        connectionReducer.replaceThreads(
+            [["id": "replaced-connection", "status": ["type": "idle"]]],
+            connectionMode: .sharedDaemon
+        )
+        expect(
+            connectionReducer.snapshot(at: now).records["replaced-connection"]?.state == .idle,
+            "a replacement connection should accept its own list snapshot"
         )
 
         let recentItem = TaskItem(

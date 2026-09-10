@@ -247,6 +247,10 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(accountWorkspaceLayout.rawValue, forKey: AccountWorkspaceLayout.storageKey) }
     }
 
+    @Published var pinnedAccountKey: String? {
+        didSet { defaults.set(pinnedAccountKey, forKey: "CodexManagerNext.pinnedAccountKey") }
+    }
+
     @Published var workspaceDisplayMode: WorkspaceDisplayMode {
         didSet { defaults.set(workspaceDisplayMode.rawValue, forKey: WorkspaceDisplayMode.storageKey) }
     }
@@ -351,6 +355,7 @@ final class AppSettings: ObservableObject {
         usageTrendWindow = UsageTrendWindow.storedOrDefault(defaults: defaults)
         accountMenuTransparency = AccountMenuTransparency.storedOrDefault(defaults: defaults)
         accountWorkspaceLayout = AccountWorkspaceLayout.storedOrDefault(defaults: defaults)
+        pinnedAccountKey = defaults.string(forKey: "CodexManagerNext.pinnedAccountKey")
         workspaceDisplayMode = WorkspaceDisplayMode.storedOrDefault(defaults: defaults)
         simpleWorkspacePreset = SimpleWorkspacePreset.storedOrDefault(defaults: defaults)
         simpleCustomShowPlatformOverview = Self.storedFlag(

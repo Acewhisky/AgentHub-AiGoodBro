@@ -281,6 +281,31 @@ enum TaskRuntimeState: String, Equatable {
     }
 }
 
+/// A small, main-thread-owned generation gate for asynchronous task
+/// operations.  A completion may retain its captured state for a while after
+/// cancellation; callers must check the generation before applying it.
+struct TaskTransactionGeneration: Equatable {
+    private(set) var value: UInt64 = 0
+
+    @discardableResult
+    mutating func begin() -> UInt64 {
+        advance()
+        return value
+    }
+
+    mutating func invalidate() {
+        advance()
+    }
+
+    func accepts(_ candidate: UInt64) -> Bool {
+        candidate == value
+    }
+
+    private mutating func advance() {
+        value = value == UInt64.max ? 0 : value + 1
+    }
+}
+
 enum TaskConnectionMode: String, Equatable {
     case disconnected
     case sharedDaemon
@@ -341,9 +366,23 @@ struct CodexTaskLiveSnapshot: Equatable {
 struct TaskRuntimeReducer {
     private(set) var connectionMode: TaskConnectionMode = .disconnected
     private var records: [String: TaskLiveRecord] = [:]
+    private var notificationGeneration: UInt64 = 0
+    private var lastNotificationGenerationByThread: [String: UInt64] = [:]
 
-    mutating func replaceThreads(_ threads: [[String: Any]], connectionMode: TaskConnectionMode) {
+    /// The boundary a `thread/list` request should capture before it is sent.
+    /// Notifications accepted after this value are newer than that response's
+    /// server snapshot and must win over it.
+    var currentNotificationGeneration: UInt64 {
+        notificationGeneration
+    }
+
+    mutating func replaceThreads(
+        _ threads: [[String: Any]],
+        connectionMode: TaskConnectionMode,
+        requestGeneration: UInt64? = nil
+    ) {
         self.connectionMode = connectionMode
+        let requestBoundary = requestGeneration ?? notificationGeneration
         var nextRecords: [String: TaskLiveRecord] = [:]
 
         for thread in threads {
@@ -354,12 +393,51 @@ struct TaskRuntimeReducer {
             let rawName = (thread["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let name = rawName.flatMap { $0.isEmpty ? nil : $0 }
 
+            if let previous,
+                lastNotificationGenerationByThread[threadID].map({ $0 > requestBoundary }) == true
+            {
+                // A notification accepted after this request was emitted is
+                // newer evidence than the list payload, even if the server's
+                // updatedAt is older or absent.  Keep its state and turn
+                // identity, while allowing the list to refresh a title.
+                nextRecords[threadID] = TaskLiveRecord(
+                    threadID: threadID,
+                    name: name ?? previous.name,
+                    state: previous.state,
+                    updatedAt: previous.updatedAt,
+                    turnID: previous.turnID,
+                    connectionMode: connectionMode
+                )
+            } else {
+                nextRecords[threadID] = TaskLiveRecord(
+                    threadID: threadID,
+                    name: name ?? previous?.name,
+                    state: state,
+                    updatedAt: updatedAt ?? previous?.updatedAt,
+                    turnID: previous?.turnID,
+                    connectionMode: connectionMode
+                )
+                // The list caught up with all notifications known when the
+                // request was emitted.  Do not let this marker protect the
+                // record forever.
+                lastNotificationGenerationByThread.removeValue(forKey: threadID)
+            }
+        }
+
+        // A bounded list can omit a thread that was changed after the request
+        // was sent.  Retain that newer evidence for this response; if the next
+        // request still omits it without another notification, it is dropped.
+        for (threadID, previous) in records where nextRecords[threadID] == nil {
+            guard lastNotificationGenerationByThread[threadID].map({ $0 > requestBoundary }) == true else {
+                lastNotificationGenerationByThread.removeValue(forKey: threadID)
+                continue
+            }
             nextRecords[threadID] = TaskLiveRecord(
-                threadID: threadID,
-                name: name ?? previous?.name,
-                state: state,
-                updatedAt: updatedAt ?? previous?.updatedAt,
-                turnID: previous?.turnID,
+                threadID: previous.threadID,
+                name: previous.name,
+                state: previous.state,
+                updatedAt: previous.updatedAt,
+                turnID: previous.turnID,
                 connectionMode: connectionMode
             )
         }
@@ -394,12 +472,32 @@ struct TaskRuntimeReducer {
             guard let threadID = params["threadId"] as? String,
                 let turn = params["turn"] as? [String: Any]
             else { return false }
+            let incomingTurnID = turn["id"] as? String
+            if let previousTurnID = records[threadID]?.turnID,
+                let incomingTurnID,
+                incomingTurnID != previousTurnID
+            {
+                // A late completion from an older turn must not finish the
+                // newer turn that is currently represented by this record.
+                return false
+            }
             let state = Self.turnState(turn["status"] as? String)
+            if let previous = records[threadID],
+                let incomingTurnID,
+                previous.turnID == incomingTurnID,
+                Self.isTerminal(previous.state),
+                Self.isTerminal(state)
+            {
+                // Replayed terminal events are idempotent.  In particular,
+                // do not refresh the activity timestamp or generation for a
+                // duplicate completion that could race a list response.
+                return false
+            }
             updateRecord(
                 threadID: threadID,
                 state: state,
                 updatedAt: Date(),
-                turnID: turn["id"] as? String
+                turnID: incomingTurnID
             )
             return true
 
@@ -409,6 +507,21 @@ struct TaskRuntimeReducer {
             else { return false }
             let status = item["status"] as? String
             if status == "failed" {
+                let incomingTurnID = Self.turnID(from: params, item: item)
+                if let previous = records[threadID] {
+                    if let previousTurnID = previous.turnID,
+                        let incomingTurnID,
+                        incomingTurnID != previousTurnID
+                    {
+                        return false
+                    }
+                    // An individual failed item does not prove that the
+                    // current turn stopped.  Wait for its turn/completed
+                    // event instead of downgrading a running turn.
+                    guard previous.state != .running, previous.state != .waitingInput else {
+                        return false
+                    }
+                }
                 updateRecord(threadID: threadID, state: .failed, updatedAt: Date())
                 return true
             }
@@ -421,6 +534,7 @@ struct TaskRuntimeReducer {
 
     mutating func disconnect() {
         connectionMode = .disconnected
+        lastNotificationGenerationByThread.removeAll()
         records = records.mapValues { record in
             let disconnectedState: TaskRuntimeState
             switch record.state {
@@ -454,6 +568,8 @@ struct TaskRuntimeReducer {
         updatedAt: Date?,
         turnID: String? = nil
     ) {
+        notificationGeneration = notificationGeneration == UInt64.max ? 0 : notificationGeneration + 1
+        lastNotificationGenerationByThread[threadID] = notificationGeneration
         let previous = records[threadID]
         records[threadID] = TaskLiveRecord(
             threadID: threadID,
@@ -495,6 +611,22 @@ struct TaskRuntimeReducer {
             return .running
         default:
             return .recorded
+        }
+    }
+
+    private static func turnID(from params: [String: Any], item: [String: Any]) -> String? {
+        (params["turnId"] as? String)
+            ?? (params["turnID"] as? String)
+            ?? (item["turnId"] as? String)
+            ?? (item["turnID"] as? String)
+    }
+
+    private static func isTerminal(_ state: TaskRuntimeState) -> Bool {
+        switch state {
+        case .completed, .failed, .interrupted:
+            return true
+        case .recorded, .idle, .running, .waitingInput, .disconnected:
+            return false
         }
     }
 

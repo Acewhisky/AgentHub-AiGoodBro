@@ -295,6 +295,23 @@ class ActivityTests(unittest.TestCase):
         result = activity.sync_hub(self.registry, lease["leaseId"], "owner", "hub-one", self.work, mapping, overview, preflight)
         self.assertEqual(result["state"], "accepted")
 
+    def test_hub_sync_preserves_cancel_intent_until_verified_terminal(self):
+        for terminal in ("succeeded", "failed", "cancelled", "blocked_configuration"):
+            lease = self.registry.reserve(account_key=activity.digest("a"), alias_key=activity.digest("fixture-a"), code="A",
+                                          project=activity.project_key(self.work), owner="owner", task="task", route="hub")
+            mapping = {"hubProjects": {"fixture": str(self.work)}}
+            task = {"id": "hub-one", "accountAlias": "fixture-a", "project": "fixture", "state": "running"}
+            overview = {"accounts": ["fixture-a"], "projects": ["fixture"], "tasks": [task]}
+            self.registry.update(lease["leaseId"], "owner", "cancel_requested")
+            for active in ("awaiting_approval", "approved", "queued", "starting", "running", "uncertain"):
+                task["state"] = active
+                result = activity.sync_hub(self.registry, lease["leaseId"], "owner", "hub-one", self.work, mapping, overview, preflight)
+                self.assertEqual(result["state"], "cancel_requested")
+            task["state"] = terminal
+            result = activity.sync_hub(self.registry, lease["leaseId"], "owner", "hub-one", self.work, mapping, overview, preflight)
+            self.assertEqual(result["state"], "cancelled")
+            self.assertEqual(task["state"], terminal, "actual Hub outcome is not rewritten")
+
     def test_failed_command_appends_same_journal(self):
         with self.assertRaises(activity.ActivityError):
             activity.main(["--state-dir", str(self.registry.root), "heartbeat", "--lease-id", "missing", "--owner", "owner"])

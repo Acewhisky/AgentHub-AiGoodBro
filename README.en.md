@@ -10,9 +10,9 @@ Before starting work, answer four questions: how much quota remains, when it res
 
 AiGoodBro puts quota, official reset times, account availability, and task progress in one native macOS workspace. A single account can use read-only monitoring; multiple accounts can keep isolated CLI environments and execution preferences.
 
-**Current source preview: 0911v1 · 9.5.19 (33).** Build and install using the prompt below. This version has no binary Release yet; provider coverage is described below. [Candidate changes and validation boundaries](docs/release-notes-v9.5.19.md)
+**Current source preview: 0911v2 · 9.5.20 (34).** Build and install using the prompt below. This version has no binary Release yet; provider coverage is described below. [Candidate changes and validation boundaries](docs/release-notes-v9.5.20.md)
 
-An installation prompt and four practical task prompts are below. Version 9.5.19 has not been published to GitHub Releases; a source build or local candidate package is not a published download.
+An installation prompt and four practical task prompts are below. Version 9.5.20 has not been published to GitHub Releases; a source build or local candidate package is not a published download.
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -34,9 +34,9 @@ cd AgentHub-AiGoodBro
 make build
 ```
 
-The result remains `build/CodexAccountManagerNext.app`, displayed as AiGoodBro in Finder. Building does not install or launch it. Back up an existing installation and replace it at its original path; do not rename it to `AiGoodBro.app`. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 9.5.19 download has been published.
+The result remains `build/CodexAccountManagerNext.app`, displayed as AiGoodBro in Finder. Building does not install or launch it. Back up an existing installation and replace it at its original path; do not rename it to `AiGoodBro.app`. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 9.5.20 download has been published.
 
-If a release is later published, its compatible asset names remain `CodexAccountManagerNext-9.5.19-mac-arm64.dmg` and `CodexAccountManagerNext-9.5.19-mac-x86_64.dmg`. Neither is available for 9.5.19 yet.
+If a release is later published, its compatible asset names remain `CodexAccountManagerNext-9.5.20-mac-arm64.dmg` and `CodexAccountManagerNext-9.5.20-mac-x86_64.dmg`. Neither is available for 9.5.20 yet.
 
 ## Start with the workspace
 
@@ -44,7 +44,9 @@ Choose **Professional** or **Simple** at the top of Home. Professional starts wi
 
 ![Current account cards rendered with synthetic data](docs/images/0910v1/02-workspace-cards-en-dark@2x.png)
 
-See remaining 5-hour and weekly quota alongside reported reset times. A missing window generally shows “—”. A confirmed Pro account without a general 5-hour window shows “∞”; an officially reported finite window always takes precedence. Switch between a compact list and cards without changing account order or behavior.
+See remaining 5-hour and weekly quota alongside reported reset times. A missing window shows “—”; the workspace preserves the limits actually returned by the official source. Switch between a compact list and cards without changing account order or behavior.
+
+Home now lists accounts across providers in one sequence. Pin one account first; accounts with freshly verified reset cards expiring within 72 hours follow it and receive a red border. Cards and rows share that order. Grok card details remain unknown when the official response provides no card fields.
 
 Refresh each account, set its model and open an isolated CLI environment. Saved preferences apply to subsequent tasks. New accounts default to **GPT-6 Astra / Low / Standard**; actual availability depends on the account and provider.
 
@@ -59,6 +61,9 @@ Three presets start with the saved model, Sol High with Luna Max children, and L
 Feishu fields include the account label, quota, reset times, card count and nearest or all expiries. Agent name and reported balance are optional. The primary balance rounds to a whole number, with “≈” when rounded. Its details retain the exact reported value, source and time without inventing a currency or conversion.
 
 The selected account exposes a reset-card button with three confirmations, fresh account/card checks and shared activity protection. **The reset flow was not executed or tested.** Unknown outcomes preserve the original attempt and never trigger an automatic retry. See the [implementation boundary](docs/reset-credit-control.md).
+
+Telegram and WeCom can be configured separately in Automation Center and default to off. Codex completion alerts require an observed running-to-completed transition; archived and initial historical snapshots do not trigger them. Credentials use the isolated Next Keychain namespace. Offline tests do not prove delivery. [Channel details](docs/message-channels-0911v1.md)
+
 
 ## Stop watching the reset countdown
 
@@ -154,11 +159,11 @@ Saved choices take precedence, including disabled features. New users still rece
 
 0910v1 enables local reset updates by default, with optional Feishu forwarding, and moves Desktop switching into the background with visible stage progress. It fixes Terminal executable and directory selection, adds private launch receipts and dispatch schedules, and preserves warm-up history. Sign-in reservations remain occupied until the login child process has actually stopped.
 
-Version 9.5.19 is a source preview. The [candidate notes](docs/release-notes-v9.5.19.md) list the offline checks actually run in this round and the remaining runtime boundaries. A full official reset cycle, multi-CLI sign-in and real calls, Desktop switching, and notification delivery require separate evidence.
+Version 9.5.20 is a source preview. The [candidate notes](docs/release-notes-v9.5.20.md) list the offline checks actually run in this round and the remaining runtime boundaries. A full official reset cycle, multi-CLI sign-in and real calls, Desktop switching, and notification delivery require separate evidence.
 
-The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.5.19 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
+The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.5.20 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
 
-[9.5.19 candidate notes](docs/release-notes-v9.5.19.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
+[9.5.20 candidate notes](docs/release-notes-v9.5.20.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
 
 ## The rest of the workspace
 

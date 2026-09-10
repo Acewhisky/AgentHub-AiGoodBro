@@ -437,6 +437,63 @@ enum CodexThreadHistoryProbe {
 }
 
 final class CodexAppServerTaskClient: CodexTaskEventClient {
+    private struct PendingThreadListCompletion {
+        let id: UUID
+        let callback: (CodexTaskLiveSnapshot?) -> Void
+    }
+
+    private struct PendingThreadListToken {
+        let requestID: Int64
+        let completionID: UUID
+    }
+
+    private final class SnapshotWaiter {
+        let semaphore = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var snapshot: CodexTaskLiveSnapshot?
+        private var didFinish = false
+        private var token: PendingThreadListToken?
+
+        func register(_ token: PendingThreadListToken?) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !didFinish else { return false }
+            self.token = token
+            return true
+        }
+
+        func finish(_ snapshot: CodexTaskLiveSnapshot?) {
+            lock.lock()
+            guard !didFinish else {
+                lock.unlock()
+                return
+            }
+            self.snapshot = snapshot
+            didFinish = true
+            lock.unlock()
+            semaphore.signal()
+        }
+
+        func cancel() -> PendingThreadListToken? {
+            lock.lock()
+            guard !didFinish else {
+                lock.unlock()
+                return nil
+            }
+            didFinish = true
+            let token = self.token
+            self.token = nil
+            lock.unlock()
+            return token
+        }
+
+        func value() -> CodexTaskLiveSnapshot? {
+            lock.lock()
+            defer { lock.unlock() }
+            return snapshot
+        }
+    }
+
     var onSnapshot: ((CodexTaskLiveSnapshot) -> Void)?
 
     private let queue = DispatchQueue(label: "com.blackielf.codex-account-manager-next.task-app-server", qos: .utility)
@@ -451,7 +508,8 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
     private var pendingThreadListIDs: Set<Int64> = []
     private var pendingThreadListSpans: [Int64: PerformanceSpan] = [:]
     private var pendingThreadListTimeouts: [Int64: DispatchWorkItem] = [:]
-    private var pendingThreadListCompletions: [Int64: [(CodexTaskLiveSnapshot?) -> Void]] = [:]
+    private var pendingThreadListCompletions: [Int64: [PendingThreadListCompletion]] = [:]
+    private var pendingThreadListRequestGenerations: [Int64: UInt64] = [:]
     private var initializeTimeout: DispatchWorkItem?
     private var reconnectWorkItem: DispatchWorkItem?
     private var hasRetriedConnection = false
@@ -512,20 +570,26 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
     }
 
     func awaitSnapshot(timeout: TimeInterval = 8) -> CodexTaskLiveSnapshot? {
-        let semaphore = DispatchSemaphore(value: 0)
-        var refreshedSnapshot: CodexTaskLiveSnapshot?
+        let waiter = SnapshotWaiter()
         queue.async { [weak self] in
             guard let self else {
-                semaphore.signal()
+                waiter.finish(nil)
                 return
             }
-            self.requestThreadList { snapshot in
-                refreshedSnapshot = snapshot
-                semaphore.signal()
+            let token = self.requestThreadList { snapshot in
+                waiter.finish(snapshot)
+            }
+            if !waiter.register(token), let token {
+                self.removePendingThreadListCompletion(token)
             }
         }
-        guard semaphore.wait(timeout: .now() + timeout) == .success else { return nil }
-        return refreshedSnapshot
+        guard waiter.semaphore.wait(timeout: .now() + timeout) == .success else {
+            if let token = waiter.cancel() {
+                queue.async { [weak self] in self?.removePendingThreadListCompletion(token) }
+            }
+            return nil
+        }
+        return waiter.value()
     }
 
     private var defaultDaemonSocket: URL {
@@ -542,6 +606,7 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
         pendingThreadListTimeouts.values.forEach { $0.cancel() }
         pendingThreadListTimeouts.removeAll()
         pendingThreadListCompletions.removeAll()
+        pendingThreadListRequestGenerations.removeAll()
         connectionGeneration &+= 1
         let generation = connectionGeneration
         connectionMode = .disconnected
@@ -627,7 +692,9 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
 
         guard pendingThreadListIDs.remove(responseID) != nil else { return }
         pendingThreadListTimeouts.removeValue(forKey: responseID)?.cancel()
-        let completions = pendingThreadListCompletions.removeValue(forKey: responseID) ?? []
+        let completions = (pendingThreadListCompletions.removeValue(forKey: responseID) ?? [])
+            .map(\.callback)
+        let requestGeneration = pendingThreadListRequestGenerations.removeValue(forKey: responseID)
         let span = pendingThreadListSpans.removeValue(forKey: responseID)
         guard let result = object["result"] as? [String: Any],
             let threads = result["data"] as? [[String: Any]]
@@ -653,28 +720,43 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
             completions.forEach { $0(nil) }
             return
         }
-        reducer.replaceThreads(threads, connectionMode: connectionMode)
+        reducer.replaceThreads(
+            threads,
+            connectionMode: connectionMode,
+            requestGeneration: requestGeneration
+        )
         let snapshot = reducer.snapshot()
         publishSnapshot(snapshot)
         completions.forEach { $0(snapshot) }
     }
 
-    private func requestThreadList(completion: ((CodexTaskLiveSnapshot?) -> Void)? = nil) {
+    @discardableResult
+    private func requestThreadList(completion: ((CodexTaskLiveSnapshot?) -> Void)? = nil) -> PendingThreadListToken? {
         guard isConnected, webSocket != nil, initializeTimeout == nil else {
             completion?(nil)
-            return
+            return nil
         }
         if let pendingID = pendingThreadListIDs.first {
             if let completion {
-                pendingThreadListCompletions[pendingID, default: []].append(completion)
+                let completionID = UUID()
+                pendingThreadListCompletions[pendingID, default: []].append(
+                    PendingThreadListCompletion(id: completionID, callback: completion)
+                )
+                return PendingThreadListToken(requestID: pendingID, completionID: completionID)
             }
-            return
+            return nil
         }
         let requestID = nextRequestID
         nextRequestID &+= 1
         pendingThreadListIDs.insert(requestID)
+        pendingThreadListRequestGenerations[requestID] = reducer.currentNotificationGeneration
+        var completionToken: PendingThreadListToken?
         if let completion {
-            pendingThreadListCompletions[requestID] = [completion]
+            let completionID = UUID()
+            pendingThreadListCompletions[requestID] = [
+                PendingThreadListCompletion(id: completionID, callback: completion)
+            ]
+            completionToken = PendingThreadListToken(requestID: requestID, completionID: completionID)
         }
         pendingThreadListSpans[requestID] = PerformanceMonitor.shared.begin(.appServerTasks)
         let timeout = DispatchWorkItem { [weak self] in
@@ -682,7 +764,9 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
                 self.pendingThreadListIDs.remove(requestID) != nil
             else { return }
             self.pendingThreadListTimeouts.removeValue(forKey: requestID)
-            let completions = self.pendingThreadListCompletions.removeValue(forKey: requestID) ?? []
+            let completions = (self.pendingThreadListCompletions.removeValue(forKey: requestID) ?? [])
+                .map(\.callback)
+            self.pendingThreadListRequestGenerations.removeValue(forKey: requestID)
             if let span = self.pendingThreadListSpans.removeValue(forKey: requestID) {
                 PerformanceMonitor.shared.end(span, success: false)
             }
@@ -703,12 +787,25 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
         if !wrote {
             pendingThreadListIDs.remove(requestID)
             pendingThreadListTimeouts.removeValue(forKey: requestID)?.cancel()
-            let completions = pendingThreadListCompletions.removeValue(forKey: requestID) ?? []
+            let completions = (pendingThreadListCompletions.removeValue(forKey: requestID) ?? [])
+                .map(\.callback)
+            pendingThreadListRequestGenerations.removeValue(forKey: requestID)
             if let span = pendingThreadListSpans.removeValue(forKey: requestID) {
                 PerformanceMonitor.shared.end(span, success: false)
             }
             completions.forEach { $0(nil) }
             handleDisconnect()
+        }
+        return completionToken
+    }
+
+    private func removePendingThreadListCompletion(_ token: PendingThreadListToken) {
+        guard var completions = pendingThreadListCompletions[token.requestID] else { return }
+        completions.removeAll { $0.id == token.completionID }
+        if completions.isEmpty {
+            pendingThreadListCompletions.removeValue(forKey: token.requestID)
+        } else {
+            pendingThreadListCompletions[token.requestID] = completions
         }
     }
 
@@ -737,8 +834,11 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
         pendingThreadListIDs.removeAll()
         pendingThreadListTimeouts.values.forEach { $0.cancel() }
         pendingThreadListTimeouts.removeAll()
-        let pendingCompletions = pendingThreadListCompletions.values.flatMap { $0 }
+        let pendingCompletions = pendingThreadListCompletions.values
+            .flatMap { $0 }
+            .map(\.callback)
         pendingThreadListCompletions.removeAll()
+        pendingThreadListRequestGenerations.removeAll()
         pendingCompletions.forEach { $0(nil) }
         for span in pendingThreadListSpans.values {
             PerformanceMonitor.shared.end(span, success: false)

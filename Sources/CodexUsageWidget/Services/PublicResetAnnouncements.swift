@@ -52,8 +52,8 @@ struct PublicResetAnnouncement: Codable, Equatable, Identifiable {
 
     func title(_ language: WidgetLanguage = .storedOrAutomatic()) -> String {
         switch resetType {
-        case .regular: return language.text("额度重置公告", "Usage reset announcement")
-        case .banked: return language.text("重置卡发放公告", "Reset credit announcement")
+        case .regular: return language.text("🔄 观察到额度窗口变化", "🔄 Quota-window change observed")
+        case .banked: return language.text("🎫 Reset 卡发放公告", "🎫 Reset credit grant announcement")
         }
     }
 
@@ -64,8 +64,12 @@ struct PublicResetAnnouncement: Codable, Equatable, Identifiable {
             : language.text("公开公告", "Public announcement")
         let meaning =
             resetType == .banked
-            ? language.text("公告提到发放或补发重置卡；请刷新账号核对可用次数。", "The announcement reports reset credits being granted. Refresh your account to check availability.")
-            : language.text("公告报告额度重置；请刷新账号核对实际额度。", "The announcement reports a usage reset. Refresh your account to verify its limits.")
+            ? language.text(
+                "消息类型：获得重置机会 / Reset 卡。第三方公告不代表账号已经到账；请刷新账号核对可用次数。",
+                "Message type: reset opportunity / reset credit grant. A third-party announcement does not confirm account delivery; refresh the account to check availability.")
+            : language.text(
+                "消息类型：观察到额度窗口变化，不表示获得 Reset 卡。请刷新账号核对实际额度。",
+                "Message type: quota-window change observed, not a reset-credit grant. Refresh the account to verify its limits.")
         return "\(sourceLabel) · \(language.dateTime(announcedAt))\n\(meaning)"
     }
 }
@@ -892,7 +896,22 @@ enum PublicResetAnnouncementSelfTest {
                 return false
             } catch {}
             let payload = try FeishuWebhookService.publicResetPayload(initial.data[0], language: .zh)
-            guard let body = String(data: payload, encoding: .utf8), body.contains("重置卡"), body.contains("第三方"), !body.contains("Public fixture") else { return false }
+            guard let body = String(data: payload, encoding: .utf8),
+                body.contains("🎫 Reset 卡发放公告"), body.contains("获得重置机会"), body.contains("Reset 卡"),
+                body.contains("第三方公告不代表账号已经到账"), body.contains("\"template\":\"purple\""),
+                !body.contains("Public fixture")
+            else { return false }
+            let regular = PublicResetAnnouncement(
+                id: "103", resetType: .regular, announcedAt: now.addingTimeInterval(-30), text: "fixture",
+                source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/103")))
+            let regularPayload = try FeishuWebhookService.publicResetPayload(regular, language: .en)
+            guard let regularBody = String(data: regularPayload, encoding: .utf8),
+                regularBody.contains("🔄 Quota-window change observed"),
+                regularBody.contains("not a reset-credit grant"), regularBody.contains("\"template\":\"turquoise\""),
+                // \p{Han} also matches U+00B7 (its Script_Extensions include Han),
+                // so assert on the ideograph blocks the copy could actually use.
+                regularBody.range(of: "[\\x{3400}-\\x{9FFF}\\x{F900}-\\x{FAFF}]", options: .regularExpression) == nil
+            else { return false }
             let result = HistoryTestResult()
             let completed = DispatchSemaphore(value: 0)
             Task.detached {

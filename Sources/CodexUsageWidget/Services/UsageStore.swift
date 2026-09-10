@@ -36,6 +36,7 @@ final class UsageStore: ObservableObject {
     private static let feishuNotificationsEnabledKey = "CodexManagerNext.feishuNotifications.enabled"
     private static let feishuQuotaResetEnabledKey = "CodexManagerNext.feishuNotifications.quotaReset"
     private static let feishuResetCreditEnabledKey = "CodexManagerNext.feishuNotifications.resetCredit"
+    private static let feishuTaskCompletionEnabledKey = "CodexManagerNext.feishuNotifications.taskCompletion"
     private static let feishuMessageOptionsKey = "CodexManagerNext.feishuNotifications.messageOptions.v1"
     private static let localNotificationsEnabledKey = "CodexManagerNext.localNotifications.enabled"
     private static let officialLifetimeHighWaterKey = "CodexManagerNext.tokens.officialLifetimeHighWater"
@@ -56,6 +57,7 @@ final class UsageStore: ObservableObject {
     @Published private(set) var visualEnergyMode: VisualEnergyMode = .suspended
     @Published private(set) var codexLiveTasks: CodexTaskLiveSnapshot = .disconnected
     @Published private(set) var taskFocusRequest: TaskFocusRequest?
+    @Published private(set) var isTaskOverviewVisible = false
     @Published private(set) var profiles: [CodexProfile]
     @Published private(set) var officialAccountsLifetimeTokens: Int64?
     @Published private(set) var localAllAgentsLifetimeTokens: Int64?
@@ -89,6 +91,7 @@ final class UsageStore: ObservableObject {
     @Published private(set) var feishuNotificationsEnabled: Bool
     @Published private(set) var feishuQuotaResetEnabled = false
     @Published private(set) var feishuResetCreditEnabled = false
+    @Published private(set) var feishuTaskCompletionNotificationsEnabled = false
     @Published private(set) var feishuMessageOptions: FeishuMessageOptions
     @Published private(set) var feishuWebhookConfigured = false
     @Published private(set) var feishuNeedsAuthorization = false
@@ -137,6 +140,8 @@ final class UsageStore: ObservableObject {
     private var monitoredAuthState: AuthFileState?
     private var ignoresAuthChangesUntil: Date?
     private var isAccountSwitchTransactionActive = false
+    private var accountSwitchGeneration = TaskTransactionGeneration()
+    private var pendingRestoreHandle: CodexSessionRestoreHandle?
     private var automaticSwitchTargetID: String?
     private var automaticSwitchContext: AutomaticSwitchContext?
     private var codexHistoryConfirmationSuccess: (() -> Void)?
@@ -155,10 +160,41 @@ final class UsageStore: ObservableObject {
     private let accountActions = CodexAccountActions()
     private let taskClient = CodexAppServerTaskClient()
     private let feishuWebhookService = FeishuWebhookService()
+    let messageChannels = MessageChannelsController()
     private var feishuConfigurationRevision = 0
+    private var feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
     private let automationAuditStore = AccountAutomationAuditStore()
     private let terminalLauncher = TerminalAppLauncher()
     let isPreview: Bool
+
+    private func beginAccountSwitchTransaction() -> UInt64 {
+        pendingRestoreHandle?.cancel()
+        pendingRestoreHandle = nil
+        clearCodexHistoryConfirmation()
+        let generation = accountSwitchGeneration.begin()
+        isAccountSwitchTransactionActive = true
+        return generation
+    }
+
+    private func finishAccountSwitchTransaction() {
+        pendingRestoreHandle?.cancel()
+        pendingRestoreHandle = nil
+        clearCodexHistoryConfirmation()
+        accountSwitchGeneration.invalidate()
+        isAccountSwitchTransactionActive = false
+    }
+
+    private func invalidateAccountSwitchTransaction() {
+        pendingRestoreHandle?.cancel()
+        pendingRestoreHandle = nil
+        clearCodexHistoryConfirmation()
+        accountSwitchGeneration.invalidate()
+        isAccountSwitchTransactionActive = false
+    }
+
+    private func isCurrentAccountSwitchTransaction(_ generation: UInt64) -> Bool {
+        isAccountSwitchTransactionActive && accountSwitchGeneration.accepts(generation)
+    }
 
     init() {
         isPreview = false
@@ -170,6 +206,7 @@ final class UsageStore: ObservableObject {
         feishuNotificationsEnabled = NextFeatureDefaults.isEnabled(Self.feishuNotificationsEnabledKey)
         feishuQuotaResetEnabled = NextFeatureDefaults.isEnabled(Self.feishuQuotaResetEnabledKey)
         feishuResetCreditEnabled = NextFeatureDefaults.isEnabled(Self.feishuResetCreditEnabledKey)
+        feishuTaskCompletionNotificationsEnabled = NextFeatureDefaults.isEnabled(Self.feishuTaskCompletionEnabledKey)
         feishuMessageOptions = Self.loadFeishuMessageOptions()
         localNotificationsEnabled = NextFeatureDefaults.isEnabled(Self.localNotificationsEnabledKey)
         let profileStore = CodexProfileStore()
@@ -211,6 +248,7 @@ final class UsageStore: ObservableObject {
         warmUpSelection = .none
         automaticAccountSwitchEnabled = false
         feishuNotificationsEnabled = false
+        feishuTaskCompletionNotificationsEnabled = false
         feishuMessageOptions = .standard
         feishuWebhookConfigured = false
     }
@@ -1468,7 +1506,7 @@ final class UsageStore: ObservableObject {
                         return
                     }
                 }
-                self.isAccountSwitchTransactionActive = true
+                let transactionGeneration = self.beginAccountSwitchTransaction()
                 self.accountActions.launchCodex(
                     profile: launchProfile,
                     sourceBackupProfile: sourceBackupProfile,
@@ -1477,9 +1515,12 @@ final class UsageStore: ObservableObject {
                         && requiresCodexRestart
                         && historyBaseline != nil,
                     allowForcedTermination: isForcedManualSwitch,
-                    progress: { [weak self] message in self?.accountManagerMessage = message }
+                    progress: { [weak self] message in
+                        guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
+                        self.accountManagerMessage = message
+                    }
                 ) { [weak self] error in
-                    guard let self else { return }
+                    guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
                     self.taskClient.start(reason: .startup)
                     self.taskClient.refreshThreads()
                     self.configureAuthMonitoring()
@@ -1502,7 +1543,7 @@ final class UsageStore: ObservableObject {
                         )
                         self.synchronizeMonitorWithCurrentCodex(announce: true)
                         guard let threadIDToRestore, let historyBaseline else {
-                            self.isAccountSwitchTransactionActive = false
+                            self.finishAccountSwitchTransaction()
                             self.isLaunchingCodex = false
                             return
                         }
@@ -1510,11 +1551,13 @@ final class UsageStore: ObservableObject {
                             self.accountManagerMessage ?? WidgetLanguage.storedOrAutomatic().text("账号切换失败，原账号已恢复", "Account switch failed. The original account was restored.")
                         self.verifyRestoredTaskMetadata(
                             threadID: threadIDToRestore,
-                            baseline: historyBaseline
+                            baseline: historyBaseline,
+                            transactionGeneration: transactionGeneration
                         ) { [weak self] verified in
-                            self?.isAccountSwitchTransactionActive = false
-                            self?.isLaunchingCodex = false
-                            self?.accountManagerMessage =
+                            guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
+                            self.finishAccountSwitchTransaction()
+                            self.isLaunchingCodex = false
+                            self.accountManagerMessage =
                                 verified
                                 ? WidgetLanguage.storedOrAutomatic().text(
                                     "\(failureMessage)；原任务深链已请求，分页数据已确认", "\(failureMessage) The original task was requested and its paginated history verified.")
@@ -1554,7 +1597,8 @@ final class UsageStore: ObservableObject {
                             taskBoard: taskBoardForRestore,
                             historyBaseline: historyBaseline,
                             recoverPendingSwitch: requiresCodexRestart && historyBaseline != nil,
-                            expectedCurrentIdentity: targetCredentialIdentity
+                            expectedCurrentIdentity: targetCredentialIdentity,
+                            transactionGeneration: transactionGeneration
                         )
                         return
                     }
@@ -1564,7 +1608,7 @@ final class UsageStore: ObservableObject {
                         let historyBaseline
                     else {
                         self.desktopSwitchSucceeded = true
-                        self.isAccountSwitchTransactionActive = false
+                        self.finishAccountSwitchTransaction()
                         self.isLaunchingCodex = false
                         self.accountManagerMessage =
                             isAutomaticSwitch
@@ -1589,7 +1633,8 @@ final class UsageStore: ObservableObject {
                         rollbackProfile: sourceBackupProfile,
                         systemProfile: systemProfile,
                         originalSnapshot: currentSystemSnapshot,
-                        originalOfficialProfile: currentSystemOfficialProfile
+                        originalOfficialProfile: currentSystemOfficialProfile,
+                        transactionGeneration: transactionGeneration
                     )
                 }
             }
@@ -1605,13 +1650,15 @@ final class UsageStore: ObservableObject {
         rollbackProfile: CodexProfile?,
         systemProfile: CodexProfile,
         originalSnapshot: UsageSnapshot,
-        originalOfficialProfile: CodexOfficialProfileSnapshot?
+        originalOfficialProfile: CodexOfficialProfileSnapshot?,
+        transactionGeneration: UInt64
     ) {
         verifyRestoredTaskMetadata(
             threadID: threadID,
-            baseline: historyBaseline
+            baseline: historyBaseline,
+            transactionGeneration: transactionGeneration
         ) { [weak self] verified in
-            guard let self else { return }
+            guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
             guard verified else {
                 self.rollbackManualSwitch(
                     reason: WidgetLanguage.storedOrAutomatic().text("未能请求打开原任务或确认分页历史", "Could not reopen the original task or verify its paginated history."),
@@ -1624,17 +1671,18 @@ final class UsageStore: ObservableObject {
                     threadID: threadID,
                     taskBoard: taskBoard,
                     historyBaseline: historyBaseline,
-                    recoverPendingSwitch: true
+                    recoverPendingSwitch: true,
+                    transactionGeneration: transactionGeneration
                 )
                 return
             }
 
             self.beginCodexHistoryConfirmation(
                 onSuccess: { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("界面历史已确认，正在提交账号切换", "Conversation history confirmed. Finalizing the account switch.")
                     self.accountActions.commitPendingSwitch { [weak self] error in
-                        guard let self else { return }
+                        guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
                         if let error {
                             self.rollbackManualSwitch(
                                 reason: WidgetLanguage.storedOrAutomatic().text(
@@ -1648,12 +1696,13 @@ final class UsageStore: ObservableObject {
                                 threadID: threadID,
                                 taskBoard: taskBoard,
                                 historyBaseline: historyBaseline,
-                                recoverPendingSwitch: true
+                                recoverPendingSwitch: true,
+                                transactionGeneration: transactionGeneration
                             )
                             return
                         }
                         self.desktopSwitchSucceeded = true
-                        self.isAccountSwitchTransactionActive = false
+                        self.finishAccountSwitchTransaction()
                         self.isLaunchingCodex = false
                         self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                             "已切换账号；原任务窗口、分页数据和界面历史均已确认", "Account switched. The original task window, paginated data and visible history were verified.")
@@ -1678,7 +1727,8 @@ final class UsageStore: ObservableObject {
                         threadID: threadID,
                         taskBoard: taskBoard,
                         historyBaseline: historyBaseline,
-                        recoverPendingSwitch: true
+                        recoverPendingSwitch: true,
+                        transactionGeneration: transactionGeneration
                     )
                 }
             )
@@ -1688,9 +1738,13 @@ final class UsageStore: ObservableObject {
     private func verifyRestoredTaskMetadata(
         threadID: String,
         baseline: CodexThreadHistorySnapshot,
+        transactionGeneration: UInt64,
         completion: @escaping (Bool) -> Void
     ) {
-        CodexSessionOpener.requestRestore(threadID: threadID) { routed in
+        guard isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
+        let handle = CodexSessionOpener.requestRestore(threadID: threadID) { [weak self] routed in
+            guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
+            self.pendingRestoreHandle = nil
             guard routed else {
                 completion(false)
                 return
@@ -1701,8 +1755,16 @@ final class UsageStore: ObservableObject {
                 case .success(let current): verified = current.matches(baseline)
                 case .failure: verified = false
                 }
-                DispatchQueue.main.async { completion(verified) }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
+                    completion(verified)
+                }
             }
+        }
+        if isCurrentAccountSwitchTransaction(transactionGeneration) {
+            pendingRestoreHandle = handle
+        } else {
+            handle.cancel()
         }
     }
 
@@ -1762,10 +1824,12 @@ final class UsageStore: ObservableObject {
         taskBoard: TaskBoard?,
         historyBaseline: CodexThreadHistorySnapshot?,
         recoverPendingSwitch: Bool,
-        expectedCurrentIdentity: CodexCredentialIdentity? = nil
+        expectedCurrentIdentity: CodexCredentialIdentity? = nil,
+        transactionGeneration: UInt64
     ) {
+        guard isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
         guard let rollbackProfile else {
-            isAccountSwitchTransactionActive = false
+            finishAccountSwitchTransaction()
             isLaunchingCodex = false
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                 "严重：\(reason)，且没有可验证的原账号备份", "Critical: \(reason). No verifiable backup of the original account is available.")
@@ -1783,9 +1847,9 @@ final class UsageStore: ObservableObject {
         let liveRollbackProfile = profiles.first(where: { $0.id == rollbackProfile.id }) ?? rollbackProfile
 
         let finishRuntimeRollback: (Error?) -> Void = { [weak self] rollbackError in
-            guard let self else { return }
+            guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
             if let rollbackError {
-                self.isAccountSwitchTransactionActive = false
+                self.finishAccountSwitchTransaction()
                 self.isLaunchingCodex = false
                 self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                     "严重：原任务未恢复，原账号回滚也失败：\(rollbackError.localizedDescription)",
@@ -1827,7 +1891,8 @@ final class UsageStore: ObservableObject {
                 self.finishManualRollback(
                     attemptedProfileID: attemptedProfileID,
                     taskMetadataVerified: true,
-                    stateSaveError: stateSaveError
+                    stateSaveError: stateSaveError,
+                    transactionGeneration: transactionGeneration
                 )
                 return
             }
@@ -1836,18 +1901,21 @@ final class UsageStore: ObservableObject {
                 self.finishManualRollback(
                     attemptedProfileID: attemptedProfileID,
                     taskMetadataVerified: false,
-                    stateSaveError: stateSaveError
+                    stateSaveError: stateSaveError,
+                    transactionGeneration: transactionGeneration
                 )
                 return
             }
             self.verifyRestoredTaskMetadata(
                 threadID: threadID,
-                baseline: historyBaseline
+                baseline: historyBaseline,
+                transactionGeneration: transactionGeneration
             ) { [weak self] verified in
                 self?.finishManualRollback(
                     attemptedProfileID: attemptedProfileID,
                     taskMetadataVerified: verified,
-                    stateSaveError: stateSaveError
+                    stateSaveError: stateSaveError,
+                    transactionGeneration: transactionGeneration
                 )
             }
         }
@@ -1892,9 +1960,11 @@ final class UsageStore: ObservableObject {
     private func finishManualRollback(
         attemptedProfileID: String,
         taskMetadataVerified: Bool,
-        stateSaveError: Error?
+        stateSaveError: Error?,
+        transactionGeneration: UInt64
     ) {
-        isAccountSwitchTransactionActive = false
+        guard isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
+        finishAccountSwitchTransaction()
         isLaunchingCodex = false
         if let stateSaveError {
             accountManagerMessage =
@@ -2097,6 +2167,8 @@ final class UsageStore: ObservableObject {
 
     func setFeishuNotificationsEnabled(_ enabled: Bool) {
         guard !pausedAutomationFeatures.contains(.feishu) else { return }
+        feishuConfigurationRevision += 1
+        feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         feishuNotificationsEnabled = enabled
         if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuNotificationsEnabledKey) }
         quotaEventTracker.reset()
@@ -2113,6 +2185,7 @@ final class UsageStore: ObservableObject {
 
     func setFeishuQuotaResetEnabled(_ enabled: Bool) {
         guard !pausedAutomationFeatures.contains(.feishu) else { return }
+        feishuConfigurationRevision += 1
         feishuQuotaResetEnabled = enabled
         if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuQuotaResetEnabledKey) }
         quotaEventTracker.reset()
@@ -2121,10 +2194,21 @@ final class UsageStore: ObservableObject {
 
     func setFeishuResetCreditEnabled(_ enabled: Bool) {
         guard !pausedAutomationFeatures.contains(.feishu) else { return }
+        feishuConfigurationRevision += 1
+        feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         feishuResetCreditEnabled = enabled
         if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuResetCreditEnabledKey) }
         quotaEventTracker.reset()
         scheduleWarmUpMaintenanceTimer()
+    }
+
+    func setFeishuTaskCompletionNotificationsEnabled(_ enabled: Bool) {
+        guard !pausedAutomationFeatures.contains(.feishu) else { return }
+        feishuConfigurationRevision += 1
+        feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
+        feishuTaskCompletionNotificationsEnabled = enabled
+        if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuTaskCompletionEnabledKey) }
+        if !enabled { feishuTaskCompletionObserver = FeishuTaskCompletionObserver() }
     }
 
     func setFeishuMessageOptions(_ options: FeishuMessageOptions) {
@@ -2154,6 +2238,7 @@ final class UsageStore: ObservableObject {
 
     private var observesOfficialQuotaEvents: Bool {
         localNotificationsEnabled
+            || messageChannels.telegramEnabled || messageChannels.weChatEnabled
             || (feishuNotificationsEnabled && feishuWebhookConfigured
                 && (feishuQuotaResetEnabled || feishuResetCreditEnabled))
     }
@@ -2161,6 +2246,7 @@ final class UsageStore: ObservableObject {
     private func refreshFeishuWebhookConfiguration() {
         guard !isPreview, !isUpdatingFeishuConnection else { return }
         feishuConfigurationRevision += 1
+        feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         let revision = feishuConfigurationRevision
         feishuWebhookService.hasStoredWebhook { [weak self] result in
             guard let self, self.feishuConfigurationRevision == revision else { return }
@@ -2456,7 +2542,15 @@ final class UsageStore: ObservableObject {
         switchOrigin: FeishuSwitchNotification.SwitchOrigin = .manual,
         isTest: Bool = false
     ) {
+        if !isTest, hasStarted {
+            sendAdditionalChannelEvent(event, source: source, target: target, quota: quota, eventID: eventID)
+        }
         guard isTest || feishuNotificationsEnabled, feishuWebhookConfigured, !isUpdatingFeishuConnection else { return }
+        switch event {
+        case .quotaChange(.quotaReset) where !feishuQuotaResetEnabled: return
+        case .quotaChange(.resetCreditsAdded) where !feishuResetCreditEnabled: return
+        default: break
+        }
         do {
             let notification = try FeishuSwitchNotification(
                 event: event,
@@ -2518,6 +2612,104 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    private func sendAdditionalChannelEvent(
+        _ event: FeishuSwitchNotification.Event, source: FeishuMaskedAccount, target: FeishuMaskedAccount?,
+        quota: AutomaticSwitchQuotaState, eventID: UUID
+    ) {
+        let kind: MessageTaskStatus.EventKind
+        var failure: MessageTaskStatus.FailureReason?
+        switch event {
+        case .test: return
+        case .lowQuotaDetected: kind = .lowQuotaDetected
+        case .quotaChange(.quotaReset): kind = .quotaReset
+        case .quotaChange(.resetCreditsAdded): kind = .resetCreditsAdded
+        case .switchSucceeded: kind = .switchSucceeded
+        case .switchFailed(let reason):
+            kind = .switchFailed
+            failure = MessageTaskStatus.FailureReason(rawValue: reason.rawValue) ?? .unknown
+        }
+        let account = kind == .switchSucceeded ? (target ?? source) : source
+        guard
+            let status = try? MessageTaskStatus(
+                eventKind: kind, accountLabel: MessageChannelAccountLabel(account.value),
+                fiveHourRemainingPercent: quota.fiveHourRemaining, sevenDayRemainingPercent: quota.sevenDayRemaining,
+                failureReason: failure, occurredAt: Date(), eventID: eventID
+            )
+        else { return }
+        messageChannels.send(status)
+    }
+
+    /// Consumes live task snapshots for observer-confirmed completion
+    /// notifications. The proof comes from the pure observer: only a turn seen
+    /// running on the current live connection, later reported completed with a
+    /// stable turn identifier and plausible timestamp, confirms. While any
+    /// notification gate is closed the observer stays empty, so a later opt-in
+    /// or reconnect can never replay runs observed while gated off, and a
+    /// gated-off snapshot itself never confirms.
+    private func handleTaskCompletionSnapshot(from snapshot: CodexTaskLiveSnapshot) {
+        guard hasStarted, !isPreview,
+            feishuTaskCompletionNotificationsEnabled, feishuNotificationsEnabled,
+            feishuWebhookConfigured, !isUpdatingFeishuConnection,
+            !pausedAutomationFeatures.contains(.feishu)
+        else {
+            feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
+            return
+        }
+        let observations = feishuTaskCompletionObserver.observe(snapshot, now: Date())
+        let notifications = observations.compactMap { observation -> FeishuTaskCompletionNotification? in
+            // Construction fails closed; an unbuildable event is dropped
+            // before it can reach the sender.
+            try? FeishuTaskCompletionNotification(
+                eventID: UUID(),
+                source: .codexTaskObserver,
+                proof: .confirmedByTaskObserver,
+                category: .codexConversation,
+                occurredAt: observation.occurredAt)
+        }
+        guard !notifications.isEmpty else { return }
+        sendTaskCompletionNotifications(notifications)
+    }
+
+    /// Sends through the existing Feishu sender only. The opt-in gate is
+    /// rechecked after the credential read, together with the configuration
+    /// revision, so a stop, a switched-off toggle or a changed connection
+    /// cancels late sends instead of delivering them. Thread and turn
+    /// identifiers stay inside this process: the DTO carries no task text,
+    /// account label or attempt count.
+    private func sendTaskCompletionNotifications(_ notifications: [FeishuTaskCompletionNotification]) {
+        for notification in notifications {
+            let configurationRevision = feishuConfigurationRevision
+            feishuWebhookService.sendTaskCompletion(
+                notification,
+                shouldSend: { [weak self] in
+                    guard let self else { return false }
+                    return self.hasStarted && self.feishuTaskCompletionNotificationsEnabled
+                        && self.feishuNotificationsEnabled && self.feishuWebhookConfigured
+                        && !self.isUpdatingFeishuConnection
+                        && configurationRevision == self.feishuConfigurationRevision
+                        && !self.pausedAutomationFeatures.contains(.feishu)
+                },
+                completion: { [weak self] result in
+                    DispatchQueue.main.async {
+                        guard let self, self.feishuConfigurationRevision == configurationRevision else { return }
+                        switch result {
+                        case .success, .failure(.cancelled):
+                            break
+                        case .failure(let error):
+                            self.handleFeishuCredentialFailure(error)
+                            self.recordAutomationEvent(
+                                level: .warning,
+                                title: WidgetLanguage.storedOrAutomatic().text(
+                                    "飞书任务完成通知发送失败", "Feishu task-completion notification failed"),
+                                detail: error.localizedDescription)
+                            self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "任务完成通知发送失败", "The task-completion notification failed to send.")
+                        }
+                    }
+                })
+        }
+    }
+
     private func maskedAccount(for profile: CodexProfile) -> FeishuMaskedAccount? {
         let displayProfile =
             profile.isSystemProfile
@@ -2567,7 +2759,7 @@ final class UsageStore: ObservableObject {
             case .quotaReset: enabled = feishuQuotaResetEnabled
             case .resetCreditsAdded: enabled = feishuResetCreditEnabled
             }
-            guard enabled else { continue }
+            guard enabled || messageChannels.telegramEnabled || messageChannels.weChatEnabled else { continue }
             sendFeishuNotification(
                 event: .quotaChange(change), source: source, target: nil,
                 quota: AutomaticSwitchQuotaState(snapshot: current), factsSnapshot: current, eventID: UUID()
@@ -2825,9 +3017,12 @@ final class UsageStore: ObservableObject {
         }
         guard warmUpSelection.isEnabled || profile.lastWarmUpAt != nil || profile.lastQuotaReadFailureAt != nil else { return nil }
         if CodexWarmUpPolicy.hasExhaustedSubscriptionWindow(profile) {
-            return language.text(
+            let exhausted = language.text(
                 "订阅额度已用完，暖号已暂停；等待官方窗口恢复",
                 "Subscription quota exhausted. Warm-up paused until the official window recovers.")
+            return [exhausted, quotaFailureStatusText(for: profile, language: language)]
+                .compactMap { $0 }
+                .joined(separator: " · ")
         }
         let selection = effectiveWarmUpSelection(for: profile)
         let last = profile.lastWarmUpAt.flatMap { date -> String? in
@@ -2981,9 +3176,13 @@ final class UsageStore: ObservableObject {
         resetTicket: CodexWarmUpResetTracker.Ticket,
         activityLease: String
     ) {
-        guard warmingProfileID == profile.id,
-            manual || warmUpSelection.isEnabled,
-            !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive,
+        guard
+            CodexWarmUpPolicy.canContinueAfterAsyncCheck(
+                serviceIsRunning: hasStarted,
+                requestIsCurrent: warmingProfileID == profile.id,
+                warmUpIsEnabled: manual || warmUpSelection.isEnabled,
+                accountOperationIsIdle: !isLoggingIn && !isLaunchingCodex && !isAccountSwitchTransactionActive
+            ),
             profiles.contains(where: { $0.id == profile.id && $0.recordedAccountKey == profile.recordedAccountKey })
         else {
             finishWarmUpActivity(activityLease, succeeded: false, cancelled: true)
@@ -3013,11 +3212,21 @@ final class UsageStore: ObservableObject {
             hubWarmUpUnavailableUntil = nil
             hubWarmUpDeferredUntilByAccount.removeValue(forKey: accountKey)
         }
-        // Re-read the in-memory profile after the asynchronous Hub check; the captured quota may have changed.
+        // Re-read every mutable gate after the asynchronous Hub check. A quota
+        // refresh, reset ticket, or selected window may have changed in flight.
         guard
             let currentProfile = profiles.first(where: {
                 $0.id == profile.id && $0.recordedAccountKey == profile.recordedAccountKey
-            }), CodexWarmUpPolicy.canSendWarmUpRequest(currentProfile)
+            }), CodexWarmUpPolicy.canSendWarmUpRequest(currentProfile),
+            manual
+                || {
+                    let currentUnexpected = warmUpResetTracker.kinds(for: currentProfile.recordedAccountKey)
+                    return CodexWarmUpPolicy.isDue(
+                        currentProfile,
+                        selection: effectiveWarmUpSelection(for: currentProfile, unexpected: currentUnexpected),
+                        unexpected: currentUnexpected
+                    )
+                }()
         else {
             finishWarmUpActivity(activityLease, succeeded: false, cancelled: true)
             warmingProfileID = nil
@@ -3519,11 +3728,19 @@ final class UsageStore: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        messageChannels.onConfigurationChanged = { [weak self] in
+            guard let self, self.hasStarted else { return }
+            self.quotaEventTracker.reset()
+            self.scheduleWarmUpMaintenanceTimer()
+        }
+        messageChannels.start()
         resumeTerminalMonitoring()
         isLaunchingCodex = true
-        isAccountSwitchTransactionActive = true
+        let recoveryGeneration = beginAccountSwitchTransaction()
         accountActions.recoverPendingSwitchIfNeeded { [weak self] result in
-            guard let self, self.hasStarted else { return }
+            guard let self, self.hasStarted,
+                self.isCurrentAccountSwitchTransaction(recoveryGeneration)
+            else { return }
             if case .success = result {
                 do {
                     try DispatchActivityStore.live.finishRecoveredDesktopMaintenance(recoveryIsClear: CodexAccountActions.switchRecoveryIsClear())
@@ -3533,7 +3750,7 @@ final class UsageStore: ObservableObject {
                 }
             }
             self.isLaunchingCodex = false
-            self.isAccountSwitchTransactionActive = false
+            self.finishAccountSwitchTransaction()
             switch result {
             case .success(.noPendingSwitch):
                 break
@@ -3625,6 +3842,8 @@ final class UsageStore: ObservableObject {
             self.codexLiveTasks = snapshot
             self.rememberForegroundCodexThread(from: snapshot)
             self.evaluateAutomaticAccountSwitch()
+            self.handleTaskCompletionSnapshot(from: snapshot)
+            self.messageChannels.observeTaskSnapshot(snapshot)
         }
         taskClient.start(reason: .startup)
         configureAuthMonitoring()
@@ -3809,6 +4028,9 @@ final class UsageStore: ObservableObject {
     }
 
     func stop() {
+        feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
+        messageChannels.stop()
+        invalidateAccountSwitchTransaction()
         desktopSwitchPreparationTask?.cancel()
         finishDesktopSwitchPreparation()
         publicResetAnnouncements.stop()
@@ -3818,6 +4040,7 @@ final class UsageStore: ObservableObject {
         loginMaintenanceFinishes.values.forEach { $0.cancel() }
         loginMaintenanceFinishes.removeAll()
         hasStarted = false
+        isTaskOverviewVisible = false
         taskClient.stop()
         codexLiveTasks = .disconnected
         fullTimer?.invalidate()
@@ -3830,6 +4053,9 @@ final class UsageStore: ObservableObject {
         quotaResetRefreshTimer?.invalidate()
         quotaResetRefreshTimer = nil
         quotaResetRefreshAttempts.removeAll()
+        // Invalidate an availability lookup that has not started its request.
+        // Any late callback will release its lease through the current-request gate.
+        warmingProfileID = nil
         warmUpRefreshStartedAt = nil
         isRefreshingWarmUpProfiles = false
         refreshingProfileIDs.removeAll()
@@ -4180,6 +4406,17 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    func setTaskOverviewVisible(_ isVisible: Bool) {
+        guard isTaskOverviewVisible != isVisible else { return }
+        isTaskOverviewVisible = isVisible
+        guard hasStarted else { return }
+        scheduleFullRefreshTimer()
+        guard isVisible else { return }
+        refreshIfStale(maximumAge: foregroundFullRefreshInterval)
+        taskClient.start(reason: .startup)
+        taskClient.refreshThreads()
+    }
+
     private func updateVisualEnergyMode() {
         guard isMainWindowActive else {
             visualEnergyMode = .suspended
@@ -4221,7 +4458,7 @@ final class UsageStore: ObservableObject {
         guard hasStarted else { return }
 
         let interval =
-            isMainWindowActive
+            isMainWindowActive || isTaskOverviewVisible
             ? foregroundFullRefreshInterval
             : backgroundFullRefreshInterval
         let elapsed = lastFullRefreshCompletedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0

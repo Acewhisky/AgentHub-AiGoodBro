@@ -253,7 +253,8 @@ struct LocalCLIQuotaReader {
             fingerprintKind: .grok,
             plan: parsed.plan,
             windows: parsed.windows,
-            source: sourceLabel(for: .grok))
+            source: sourceLabel(for: .grok),
+            resetCards: parsed.resetCards)
     }
 
     private func loadKimi(profile: LocalCLIProfile, now: Date) async throws -> LocalCLIQuotaResult {
@@ -472,7 +473,8 @@ struct LocalCLIQuotaReader {
         balance: Double? = nil,
         currency: String? = nil,
         source: String,
-        messageCode: String? = nil
+        messageCode: String? = nil,
+        resetCards: [LocalCLIResetCard]? = nil
     ) -> LocalCLIQuotaResult {
         let safeIdentity = LocalCLIQuotaPresentation.validIdentity(identity)
         let validWindows = LocalCLIQuotaPresentation.validWindows(windows)
@@ -488,7 +490,8 @@ struct LocalCLIQuotaReader {
             balance: balance,
             balanceCurrency: currency,
             sourceLabel: source,
-            messageCode: validWindows ? messageCode : "local_cli_invalid_response")
+            messageCode: validWindows ? messageCode : "local_cli_invalid_response",
+            resetCards: resetCards)
     }
 
     private func sourceLabel(for kind: LocalCLIKind) -> String {
@@ -525,7 +528,12 @@ struct LocalCLIQuotaReader {
 }
 
 extension LocalCLIQuotaReader {
-    static func parseGrok(_ data: Data) throws -> (plan: String?, windows: [LocalCLIQuotaWindow]) {
+    /// Parses the official `GET /v1/billing?format=credits` response. Per
+    /// review-inputs/grok-reset-schema-0911v1.json (HTTP 2026-09-10 snapshot) the
+    /// response carries no reset-card fields, so the returned resetCards stay `nil`.
+    /// `currentPeriod.end`, `billingPeriodEnd` and any quota reset value below feed
+    /// quota windows only; mapping them to a reset-card expiry is prohibited.
+    static func parseGrok(_ data: Data) throws -> (plan: String?, windows: [LocalCLIQuotaWindow], resetCards: [LocalCLIResetCard]?) {
         let root = try object(data)
         guard let config = root["config"] as? [String: Any] else {
             throw LocalCLIReaderFailure.invalidResponse
@@ -560,7 +568,7 @@ extension LocalCLIQuotaReader {
             percent.map {
                 [LocalCLIQuotaWindow(id: "credits", label: "Credits", usedPercent: $0, resetsAt: resetsAt)]
             } ?? []
-        return (plan, windows)
+        return (plan, windows, nil)
     }
 
     static func parseKimi(_ data: Data) throws -> (plan: String?, windows: [LocalCLIQuotaWindow]) {

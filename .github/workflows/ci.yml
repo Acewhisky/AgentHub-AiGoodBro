@@ -25,8 +25,10 @@ jobs:
       - name: Check shared dispatch coordination and Swift interoperability
         run: |
           python3 scripts/next_dispatch_preflight.py --self-test
-          python3 tests/test_dispatch_activity.py
+          python3 -m unittest tests.test_dispatch_activity tests.test_dispatch_invocation tests.test_cancel_authority tests.test_agent_cli
           python3 tests/test-dispatch-activity-interop.py
+          python3 scripts/test-message-channels.py
+          bash scripts/test-grok-reset-cards.sh
 
   windows-rust-format:
     if: github.event_name == 'workflow_dispatch' && inputs.windows == true

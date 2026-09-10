@@ -85,6 +85,7 @@ final class MainAppWindow: NSWindow {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     private let startupPerformanceSpan = PerformanceMonitor.shared.begin(.appStartup)
     private let store = UsageStore()
@@ -93,6 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private lazy var updateStore = AppUpdateStore(settings: settings)
     private var window: MainAppWindow?
     private var paletteLibraryWindow: NSWindow?
+    private var taskOverviewController: TaskOverviewPanelController?
+    private weak var taskOverviewMenuItem: NSMenuItem?
     private var titlebarToolbarController: NSTitlebarAccessoryViewController?
     private let screenshotRequests = PassthroughSubject<NSWindow, Never>()
     private var statusItem: NSStatusItem?
@@ -121,7 +124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateTaskBoardPollingActivity()
+            Task { @MainActor [weak self] in
+                self?.updateTaskBoardPollingActivity()
+            }
         }
         setupStatusItemIfNeeded()
         observeStatusItemUsage()
@@ -211,6 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        taskOverviewController?.shutdown()
+        taskOverviewController = nil
         closeStatusPopover()
         statusItemAppearanceObservation = nil
         if let activeSpaceObserver {
@@ -328,6 +335,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         NSApp.terminate(nil)
     }
 
+    @objc private func toggleTaskOverviewFromMenu() {
+        if taskOverviewController == nil {
+            taskOverviewController = TaskOverviewPanelController(
+                store: store,
+                settings: settings,
+                openTask: { [weak self] scope, threadID in
+                    guard let self else { return }
+                    self.store.requestTaskFocus(scope: scope, threadID: threadID)
+                    self.showMainWindow()
+                },
+                openWorkspace: { [weak self] in
+                    guard let self else { return }
+                    self.store.setTaskBoardSelected(true)
+                    self.showMainWindow()
+                },
+                visibilityDidChange: { [weak self] isVisible in
+                    guard let self else { return }
+                    self.taskOverviewMenuItem?.state = isVisible ? .on : .off
+                    self.store.setTaskOverviewVisible(isVisible)
+                }
+            )
+        }
+        taskOverviewController?.toggle()
+    }
+
     private func setupMainMenu() {
         let language = settings.language
         let mainMenu = NSMenu()
@@ -388,6 +420,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         mainMenu.addItem(windowMenuItem)
         let windowMenu = NSMenu(title: language.text("窗口", "Window"))
         windowMenuItem.submenu = windowMenu
+        let taskOverviewItem = NSMenuItem(
+            title: language.text("任务概览", "Task Overview"),
+            action: #selector(toggleTaskOverviewFromMenu),
+            keyEquivalent: ""
+        )
+        taskOverviewItem.target = self
+        taskOverviewItem.state = taskOverviewController?.isVisible == true ? .on : .off
+        windowMenu.addItem(taskOverviewItem)
+        taskOverviewMenuItem = taskOverviewItem
+        windowMenu.addItem(.separator())
         let minimizeItem = NSMenuItem(
             title: language.text("最小化", "Minimize"),
             action: #selector(NSWindow.performMiniaturize(_:)),

@@ -225,7 +225,7 @@ private final class FeishuRedirectGuard: NSObject, URLSessionTaskDelegate {
 
 /// A timed-out Security call cannot be cancelled. Discard its eventual result,
 /// including the endpoint, so an old notification is never sent after recovery.
-private final class FeishuKeychainRead<Value> {
+final class FeishuKeychainRead<Value> {
     private let lock = NSLock()
     private let deadline: DispatchTime
     private var completion: ((Result<Value, FeishuWebhookError>) -> Void)?
@@ -501,13 +501,105 @@ final class FeishuWebhookService {
             announcement.summary(language)
             + "\n\n" + language.text("来源：Codex Resets（第三方汇总）", "Source: Codex Resets (third-party feed)")
             + "\n[" + language.text("查看来源", "View source") + "](\(link.absoluteString))"
+        let template = announcement.resetType == .banked ? "purple" : "turquoise"
         return try JSONSerialization.data(withJSONObject: [
             "msg_type": "interactive",
             "card": [
-                "header": ["template": "blue", "title": ["tag": "plain_text", "content": announcement.title(language)]],
+                "header": ["template": template, "title": ["tag": "plain_text", "content": announcement.title(language)]],
                 "elements": [["tag": "div", "text": ["tag": "lark_md", "content": message]]],
             ],
         ])
+    }
+
+    /// Sends an observer-confirmed task-completion card. The DTO itself fails
+    /// closed; the payload is built before any credential read, the opt-in
+    /// gate is rechecked after it, and the existing allowlisted sender,
+    /// redirect guard and bounded response parsing are reused without a
+    /// second transport. The event ID stays out of the rendered card.
+    func sendTaskCompletion(
+        _ taskCompletion: FeishuTaskCompletionNotification,
+        shouldSend: @escaping () -> Bool = { true },
+        completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
+    ) {
+        let body: Data
+        do { body = try Self.taskCompletionPayload(taskCompletion) } catch {
+            completion(.failure(.invalidNotification))
+            return
+        }
+        readCredential(
+            { try self.loadStoredWebhook() },
+            completion: { result in
+                guard shouldSend() else {
+                    completion(.failure(.cancelled))
+                    return
+                }
+                switch result {
+                case .success(let endpoint): self.send(body: body, to: endpoint, completion: completion)
+                case .failure(let error): completion(.failure(error))
+                }
+            })
+    }
+
+    static func taskCompletionPayload(
+        _ completion: FeishuTaskCompletionNotification,
+        language: WidgetLanguage = .storedOrAutomatic(),
+        timeZone: TimeZone = .autoupdatingCurrent
+    ) throws -> Data {
+        guard completion.proof == .confirmedByTaskObserver else {
+            throw FeishuWebhookError.invalidNotification
+        }
+        var lines = [
+            language.text("**结果**：任务已完成", "**Result**: Task completed")
+        ]
+        switch completion.category {
+        case .dispatchedAgent:
+            lines.append(language.text("**类型**：CLI 派发任务", "**Type**: Dispatched agent task"))
+        case .kimiConversation:
+            lines.append(language.text("**类型**：Kimi 会话任务", "**Type**: Kimi conversation task"))
+        case .codexConversation:
+            lines.append(language.text("**类型**：Codex 对话", "**Type**: Codex conversation"))
+        }
+        if let attempts = completion.attemptCount {
+            lines.append(language.text("**尝试次数**：\(attempts)", "**Attempts**: \(attempts)"))
+        }
+        if let account = completion.accountLabel {
+            lines.append(language.text("**账号**：\(account.value)", "**Account**: \(account.value)"))
+        }
+        lines.append(
+            language.text("**时间**：", "**Time**: ")
+                + compactDate(completion.occurredAt, language: language, timeZone: timeZone))
+        lines.append(
+            language.text(
+                "请打开原任务查看结果。",
+                "Open the original task to review the result."))
+
+        let payload: [String: Any] = [
+            "msg_type": "interactive",
+            "card": [
+                "schema": "2.0",
+                "config": ["wide_screen_mode": true],
+                "header": [
+                    "title": ["tag": "plain_text", "content": language.text("✅ Codex 任务完成", "✅ Codex task completed")],
+                    "template": "green",
+                ],
+                "body": [
+                    "elements": [
+                        [
+                            "tag": "markdown",
+                            "content": lines.joined(separator: "\n"),
+                        ]
+                    ]
+                ],
+            ],
+        ]
+        guard JSONSerialization.isValidJSONObject(payload) else {
+            throw FeishuWebhookError.encodingFailed
+        }
+        do {
+            return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        } catch {
+            throw FeishuWebhookError.encodingFailed
+        }
     }
 
     private func send(
@@ -615,20 +707,21 @@ final class FeishuWebhookService {
         let presentation = presentation(for: notification.event, origin: notification.switchOrigin, language: language)
         let options = notification.messageOptions
         var lines = [language.text("**结果**：\(presentation.result)", "**Result**: \(presentation.result)")]
-        if options.includesAgentName {
-            lines.append(language.text("**Agent**：Codex", "**Agent**: Codex"))
-        }
-        if options.includesAccountLabel {
-            lines.append(language.text("**账号**：\(notification.sourceAccount.value)", "**Account**: \(notification.sourceAccount.value)"))
-        }
         switch notification.event {
         case .test:
             lines.append(language.text("仅测试连接；不会切换账号、重启 Codex 或使用 Reset 卡。", "Connection test only; no account switch, Codex restart, or reset-credit use."))
         case .quotaChange(let change):
             switch change {
             case .quotaReset:
-                break
+                lines.append(
+                    language.text(
+                        "**变化类型**：仅报告官方额度窗口变化；Reset 卡增减及使用状态另行核对",
+                        "**Change type**: Official quota-window change reported only; reset-credit changes and usage are verified separately"))
             case .resetCreditsAdded(let added, let available):
+                lines.append(
+                    language.text(
+                        "**变化类型**：获得 Reset 卡 / 重置机会",
+                        "**Change type**: Reset credit / reset opportunity granted"))
                 lines.append(language.text("**变化**：新增 \(added) 次，可用 \(available) 次", "**Change**: +\(added), \(available) available"))
             }
         case .lowQuotaDetected:
@@ -636,11 +729,28 @@ final class FeishuWebhookService {
         case .switchSucceeded, .switchFailed:
             break
         }
-        if options.includesAccountLabel, let target = notification.targetAccount {
-            if case .lowQuotaDetected = notification.event {
-                lines.append(language.text("**推荐账号**：\(target.value)", "**Recommended account**: \(target.value)"))
-            } else {
-                lines.append(language.text("**目标账号**：\(target.value)", "**Target account**: \(target.value)"))
+        if options.includesAgentName {
+            lines.append(language.text("**Agent**：Codex", "**Agent**: Codex"))
+        }
+        if options.includesAccountLabel {
+            switch notification.event {
+            case .switchSucceeded, .switchFailed:
+                if let target = notification.targetAccount {
+                    lines.append(
+                        language.text(
+                            "**切换路径**：\(notification.sourceAccount.value) → \(target.value)",
+                            "**Switch path**: \(notification.sourceAccount.value) → \(target.value)"))
+                } else {
+                    lines.append(
+                        language.text(
+                            "**当前账号**：\(notification.sourceAccount.value)",
+                            "**Current account**: \(notification.sourceAccount.value)"))
+                }
+            default:
+                lines.append(language.text("**账号**：\(notification.sourceAccount.value)", "**Account**: \(notification.sourceAccount.value)"))
+                if case .lowQuotaDetected = notification.event, let target = notification.targetAccount {
+                    lines.append(language.text("**推荐账号**：\(target.value)", "**Recommended account**: \(target.value)"))
+                }
             }
         }
         if options.includesQuotas {
@@ -843,28 +953,41 @@ final class FeishuWebhookService {
     ) {
         switch event {
         case .test:
-            return (language.text("Codex 飞书连接测试", "Codex Feishu connection test"), language.text("测试消息", "Test message"), "blue")
+            return (
+                language.text("🧪 Codex 飞书连接测试", "🧪 Codex Feishu connection test"),
+                language.text("测试消息", "Test message"), "blue"
+            )
         case .lowQuotaDetected:
-            return (language.text("Codex 额度低于阈值", "Codex quota is low"), language.text("已检测到低额度", "Low quota detected"), "orange")
+            return (
+                language.text("⚠️ Codex 低额度提醒", "⚠️ Codex low-quota alert"),
+                language.text("额度低于已设阈值", "Quota is below the configured threshold"), "orange"
+            )
         case .quotaChange(.quotaReset):
-            return (language.text("Codex 额度已重置", "Codex quota reset"), language.text("检测到官方额度恢复或新窗口", "Official quota recovery or a new window detected"), "green")
+            return (
+                language.text("🔄 Codex 官方额度窗口变化", "🔄 Codex official quota window changed"),
+                language.text("观察到官方额度恢复或新窗口", "Official quota recovery or a new window was observed"),
+                "turquoise"
+            )
         case .quotaChange(.resetCreditsAdded):
-            return (language.text("Codex 获得 Reset 卡", "Codex reset credits added"), language.text("官方可用 Reset 次数增加", "Official available reset count increased"), "blue")
+            return (
+                language.text("🎫 Codex 获得 Reset 卡", "🎫 Codex reset credit granted"),
+                language.text("官方可用 Reset 次数增加", "Official available reset count increased"), "purple"
+            )
         case .switchSucceeded:
             let title =
                 origin == .restartTest
-                ? language.text("Codex 测试重启完成", "Codex restart test complete")
+                ? language.text("🧪 Codex 测试重启完成", "🧪 Codex restart test complete")
                 : origin == .lowQuota
-                    ? language.text("Codex 账号已自动切换", "Codex account switched automatically")
-                    : language.text("Codex 桌面账号已手动切换", "Codex Desktop account switched manually")
-            return (title, language.text("切换成功", "Switch successful"), "green")
+                    ? language.text("🔀 Codex 账号自动切换成功", "🔀 Codex automatic account switch succeeded")
+                    : language.text("🔀 Codex 桌面账号手动切换成功", "🔀 Codex Desktop account switch succeeded")
+            return (title, language.text("账号切换成功", "Account switch successful"), "blue")
         case .switchFailed(let reason):
             let title =
                 origin == .restartTest
-                ? language.text("Codex 测试重启未完成", "Codex restart test incomplete")
+                ? language.text("⛔️ Codex 测试重启未完成", "⛔️ Codex restart test incomplete")
                 : origin == .lowQuota
-                    ? language.text("Codex 自动切换未完成", "Codex automatic switch incomplete")
-                    : language.text("Codex 手动切换未完成", "Codex manual switch incomplete")
+                    ? language.text("⛔️ Codex 自动切换未完成", "⛔️ Codex automatic switch incomplete")
+                    : language.text("⛔️ Codex 手动切换未完成", "⛔️ Codex manual switch incomplete")
             return (title, reason.displayName(language), "red")
         }
     }
@@ -902,6 +1025,7 @@ enum FeishuWebhookServiceSelfTest {
         var failures: [String] = []
         if !PublicResetAnnouncementSelfTest.run() { failures.append("public reset announcement policy failed") }
         if !CodexQuotaEventTrackerSelfTest.run() { failures.append("quota event policy failed") }
+        if !FeishuTaskCompletionSelfTest.run() { failures.append("task completion policy failed") }
         func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
             if !condition() { failures.append(message) }
         }
@@ -913,6 +1037,16 @@ enum FeishuWebhookServiceSelfTest {
                 let content = elements.first?["content"] as? String
             else { return "" }
             return content
+        }
+        func cardHeader(_ data: Data) -> (title: String, template: String) {
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let card = root["card"] as? [String: Any],
+                let header = card["header"] as? [String: Any],
+                let title = header["title"] as? [String: Any],
+                let content = title["content"] as? String,
+                let template = header["template"] as? String
+            else { return ("", "") }
+            return (content, template)
         }
 
         let valid = [
@@ -951,8 +1085,13 @@ enum FeishuWebhookServiceSelfTest {
             )
             let payload = try FeishuWebhookService.payloadData(for: notification, language: .zh)
             let text = String(data: payload, encoding: .utf8) ?? ""
+            let switchHeader = cardHeader(payload)
             expect(text.contains("\"msg_type\":\"interactive\""), "interactive payload missing")
             expect(text.contains("p***-source"), "masked source missing")
+            expect(
+                switchHeader.title == "🔀 Codex 桌面账号手动切换成功" && switchHeader.template == "blue",
+                "account-switch card is not visually distinct")
+            expect(markdown(payload).contains("**切换路径**：p***-source → n***-target"), "account-switch path is not prominent")
             expect(!text.contains("person@example.com"), "raw account leaked")
             expect(!text.contains(notification.eventID.uuidString), "internal event ID rendered")
             expect((try? FeishuMaskedAccount("person@example.com***")) == nil, "email-like label accepted")
@@ -961,8 +1100,13 @@ enum FeishuWebhookServiceSelfTest {
                 triggerThresholdPercent: 15, fiveHourTriggerThresholdPercent: 20,
                 fiveHourRemainingPercent: 18, sevenDayRemainingPercent: 70
             )
-            let customText = String(data: try FeishuWebhookService.payloadData(for: customThresholds, language: .en), encoding: .utf8) ?? ""
+            let customPayload = try FeishuWebhookService.payloadData(for: customThresholds, language: .en)
+            let customText = String(data: customPayload, encoding: .utf8) ?? ""
+            let lowHeader = cardHeader(customPayload)
             expect(customText.contains("5-hour remaining 18% ≤ 20%") && !customText.contains("7-day remaining 70% < 15%"), "notification must show only the threshold actually met")
+            expect(
+                lowHeader.title == "⚠️ Codex low-quota alert" && lowHeader.template == "orange",
+                "low-quota card is not visually distinct")
 
             let testNotification = try FeishuSwitchNotification(
                 event: .test,
@@ -1135,7 +1279,9 @@ enum FeishuWebhookServiceSelfTest {
                     event: .quotaChange(change), sourceAccount: source,
                     triggerThresholdPercent: 10, fiveHourRemainingPercent: 100, sevenDayRemainingPercent: 80
                 )
-                let body = markdown(try FeishuWebhookService.payloadData(for: event, language: .zh))
+                let eventPayload = try FeishuWebhookService.payloadData(for: event, language: .zh)
+                let body = markdown(eventPayload)
+                let eventHeader = cardHeader(eventPayload)
                 expect(body.contains("p***-source"), "quota event missing masked account")
                 expect(!body.contains("触发规则"), "quota event inherited low-quota rule")
                 expect(!body.contains("目标账号"), "quota event suggests switching")
@@ -1145,8 +1291,19 @@ enum FeishuWebhookServiceSelfTest {
                 switch change {
                 case .quotaReset:
                     expect(body.contains("5 小时") && body.contains("7 天"), "reset quotas missing")
+                    expect(
+                        eventHeader.title == "🔄 Codex 官方额度窗口变化" && eventHeader.template == "turquoise",
+                        "official quota-window card is not visually distinct")
+                    expect(
+                        body.contains("仅报告官方额度窗口变化") && body.contains("另行核对"),
+                        "official window observation must not claim reset-credit facts")
+                    expect(!body.contains("未获得或使用 Reset 卡"), "stale over-claiming window copy survived")
                 case .resetCreditsAdded:
                     expect(body.contains("新增 2 次") && body.contains("可用 3 次"), "official credit count missing")
+                    expect(
+                        eventHeader.title == "🎫 Codex 获得 Reset 卡" && eventHeader.template == "purple",
+                        "reset-credit card is not visually distinct")
+                    expect(body.contains("获得 Reset 卡 / 重置机会"), "reset-credit grant is not explicit")
                 }
             }
             for invalidChange in [
@@ -1393,5 +1550,160 @@ private extension Result where Success == Void, Failure == FeishuWebhookError {
     var isSuccess: Bool {
         if case .success = self { return true }
         return false
+    }
+}
+
+enum FeishuTaskCompletionSelfTest {
+    static func run() -> Bool {
+        var failures: [String] = []
+        func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+            if !condition() { failures.append(message) }
+        }
+        func cardHeader(_ data: Data) -> (title: String, template: String) {
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let card = root["card"] as? [String: Any],
+                let header = card["header"] as? [String: Any],
+                let title = header["title"] as? [String: Any],
+                let content = title["content"] as? String,
+                let template = header["template"] as? String
+            else { return ("", "") }
+            return (content, template)
+        }
+        func markdown(_ data: Data) -> String {
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let card = root["card"] as? [String: Any],
+                let body = card["body"] as? [String: Any],
+                let elements = body["elements"] as? [[String: Any]],
+                let content = elements.first?["content"] as? String
+            else { return "" }
+            return content
+        }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let id = UUID(uuidString: "00000000-0000-0000-0000-00000000d001")!
+
+        do {
+            let account = try FeishuMaskedAccount(displayName: "pro20x")
+            let confirmed = try FeishuTaskCompletionNotification(
+                eventID: id, proof: .confirmedByTaskObserver, category: .dispatchedAgent,
+                attemptCount: 2, accountLabel: account, occurredAt: now.addingTimeInterval(-30), now: now)
+            let payload = try FeishuWebhookService.taskCompletionPayload(confirmed, language: .zh, timeZone: TimeZone(identifier: "Asia/Shanghai")!)
+            let text = String(data: payload, encoding: .utf8) ?? ""
+            expect(cardHeader(payload).title == "✅ Codex 任务完成" && cardHeader(payload).template == "green", "task-completion card is not green or mislabeled")
+            expect(text.contains("任务已完成") && text.contains("CLI 派发任务"), "completion result and category missing")
+            expect(text.contains("CLI 派发任务") && text.contains("**尝试次数**：2") && text.contains("pro20x"), "bounded fields missing")
+            expect(text.contains("请打开原任务查看结果") && !text.contains("已验收"), "completion must direct users to the result without claiming acceptance")
+            expect(!text.contains(id.uuidString) && !text.contains("事件 ID"), "internal event ID rendered")
+            let kimi = try? FeishuTaskCompletionNotification(
+                eventID: id, proof: .confirmedByTaskObserver, category: .kimiConversation,
+                occurredAt: now.addingTimeInterval(-30), now: now)
+            expect(kimi != nil, "kimi category rejected")
+            let englishData = try FeishuWebhookService.taskCompletionPayload(confirmed, language: .en)
+            let english = String(data: englishData, encoding: .utf8) ?? ""
+            expect(english.range(of: "\\p{Han}", options: .regularExpression) == nil, "English task card must not contain Chinese copy")
+            expect(english.contains("Open the original task to review the result.") && !english.contains("accepted"), "English result review guidance missing")
+
+            for invalid in [
+                try? FeishuTaskCompletionNotification(
+                    eventID: id, proof: .confirmedByTaskObserver, category: .dispatchedAgent,
+                    occurredAt: now.addingTimeInterval(120), now: now),
+                try? FeishuTaskCompletionNotification(
+                    eventID: id, proof: .confirmedByTaskObserver, category: .dispatchedAgent,
+                    occurredAt: now.addingTimeInterval(-25 * 3600), now: now),
+                try? FeishuTaskCompletionNotification(
+                    eventID: id, proof: .confirmedByTaskObserver, category: .dispatchedAgent,
+                    attemptCount: 0, occurredAt: now.addingTimeInterval(-30), now: now),
+                try? FeishuTaskCompletionNotification(
+                    eventID: id, proof: .confirmedByTaskObserver, category: .dispatchedAgent,
+                    attemptCount: 65, occurredAt: now.addingTimeInterval(-30), now: now),
+            ] {
+                expect(invalid == nil, "invalid task-completion DTO accepted")
+            }
+            let rawEmailAccount: FeishuMaskedAccount?
+            rawEmailAccount = try? FeishuMaskedAccount("person@example.com")
+            expect(rawEmailAccount == nil, "raw email label accepted into task DTO")
+        } catch {
+            failures.append("task completion payload construction failed")
+        }
+
+        var gate = FeishuTaskCompletionGate(capacity: 2)
+        func event(_ uuid: UUID) -> FeishuTaskCompletionNotification? {
+            try? FeishuTaskCompletionNotification(
+                eventID: uuid, proof: .confirmedByTaskObserver, category: .dispatchedAgent,
+                occurredAt: Date(timeIntervalSince1970: 1_800_000_000), now: Date(timeIntervalSince1970: 1_800_000_000))
+        }
+        let first = UUID(uuidString: "00000000-0000-0000-0000-00000000da01")!
+        let second = UUID(uuidString: "00000000-0000-0000-0000-00000000da02")!
+        let third = UUID(uuidString: "00000000-0000-0000-0000-00000000da03")!
+        if let one = event(first), let two = event(second), let three = event(third) {
+            expect(gate.admit(one), "first confirmed completion refused")
+            expect(!gate.admit(one), "duplicate completion admitted")
+            expect(gate.admit(two), "second completion refused")
+            expect(gate.admit(three), "capacity bound evicted the wrong entry")
+            expect(!gate.admit(two), "eviction did not drop the oldest entry")
+            expect(gate.admit(one), "evicted entry could not be re-admitted as genuinely new")
+        } else {
+            failures.append("gate fixture construction failed")
+        }
+
+        failures += taskCompletionSendSelfTest(event: event(first))
+        if failures.isEmpty {
+            print("Feishu task completion self-test passed")
+            return true
+        }
+        failures.forEach { print("Feishu task completion self-test failed: \($0)") }
+        return false
+    }
+
+    /// Synthetic URLProtocol transport only: no real webhook, Keychain,
+    /// account, or reset-credit flow is contacted.
+    private static func taskCompletionSendSelfTest(event: FeishuTaskCompletionNotification?) -> [String] {
+        var failures: [String] = []
+        guard let completion = event else {
+            return ["task completion send fixture failed"]
+        }
+        func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+            if !condition() { failures.append(message) }
+        }
+        func waitUntil(_ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(2)
+            while !condition(), Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+        }
+        let endpoint = "https://open.feishu.cn/open-apis/bot/v2/hook/12345678-1234-1234-1234-123456789abc"
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FeishuWebhookTestProtocol.self]
+        let requestsBefore = FeishuWebhookTestProtocol.requestCount
+        let service = FeishuWebhookService(
+            sessionConfiguration: configuration,
+            keychainInteraction: FeishuKeychainInteraction(getAllowed: { true }, setAllowed: { _ in }),
+            copyMatching: { _, result in
+                result?.pointee = Data(endpoint.utf8) as CFData
+                return errSecSuccess
+            }
+        )
+        var delivered: Result<Void, FeishuWebhookError>?
+        service.sendTaskCompletion(completion) { result in
+            DispatchQueue.main.async { delivered = result }
+        }
+        waitUntil { delivered != nil }
+        service.keychainQueue.sync {}
+        expect(delivered?.isSuccess == true, "confirmed task completion send failed")
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore + 1, "task-completion send did not use the isolated transport")
+
+        var cancelled: Result<Void, FeishuWebhookError>?
+        service.sendTaskCompletion(completion, shouldSend: { false }, completion: { cancelled = $0 })
+        waitUntil { cancelled != nil }
+        service.keychainQueue.sync {}
+        if case .failure(.cancelled)? = cancelled {} else { failures.append("task-completion send ignored the opt-in gate") }
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore + 1, "cancelled task-completion send issued a request")
+
+        var refused = 0
+        var gate = FeishuTaskCompletionGate(capacity: 8)
+        for _ in 0..<3 where !gate.admit(completion) { refused += 1 }
+        expect(refused == 2, "repeated completion events were not deduplicated before send")
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore + 1, "dedup gate must run before any transport use")
+        withExtendedLifetime(service) {}
+        return failures
     }
 }

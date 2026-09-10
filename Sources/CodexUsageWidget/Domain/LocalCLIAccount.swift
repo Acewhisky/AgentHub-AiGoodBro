@@ -96,6 +96,20 @@ struct LocalCLIQuotaWindow: Identifiable, Equatable {
     let resetsAt: Date?
 }
 
+/// One prepaid reset card attached to a CLI account.
+///
+/// Data contract (2026-09-11): the official Grok CLI billing response recorded in
+/// `review-inputs/grok-reset-schema-0911v1.json` (HTTP 200) carries no reset-card
+/// fields (`resetCardFieldsPresent: false`). `quotaResetAt`, `currentPeriod.end` and
+/// `billingPeriodEnd` describe quota or billing cycles and must never be mapped onto
+/// `expiresAt`. Until an officially documented card field exists, production parsing
+/// keeps the card list `nil` ("information unavailable"); synthetic cards appear
+/// only in offline fixtures and are marked as not being real API responses.
+struct LocalCLIResetCard: Identifiable, Equatable {
+    let id: String
+    let expiresAt: Date?
+}
+
 enum LocalCLIQuotaState: String {
     case available
     case unavailable
@@ -115,6 +129,10 @@ struct LocalCLIQuotaResult: Equatable {
     let balanceCurrency: String?
     let sourceLabel: String
     let messageCode: String?
+    /// `nil` means the official response carried no reset-card fields (the case for
+    /// Grok per review-inputs/grok-reset-schema-0911v1.json). A non-nil list comes
+    /// only from officially documented card fields; quota reset dates never fill it.
+    var resetCards: [LocalCLIResetCard]? = nil
 }
 
 enum LocalCLIQuotaPresentation {

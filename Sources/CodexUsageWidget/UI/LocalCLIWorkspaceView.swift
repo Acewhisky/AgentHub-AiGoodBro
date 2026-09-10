@@ -3,8 +3,13 @@ import SwiftUI
 
 struct LocalCLIWorkspaceView: View {
     @ObservedObject var model: LocalCLIAccountStore
+    @ObservedObject var settings: AppSettings
     let kind: LocalCLIKind
     let language: WidgetLanguage
+    var onlyProfileID: String? = nil
+    var showsAccounts = true
+    var embeddedLayout: AccountWorkspaceLayout? = nil
+    var onOpenDetails: (() -> Void)? = nil
     @State private var editing: LocalCLIProfile?
     @State private var nameDraft = ""
     @State private var addingGrok = false
@@ -12,40 +17,44 @@ struct LocalCLIWorkspaceView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                LocalCLIIcon(kind: kind).frame(width: 30, height: 30)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(kind.displayName).font(.title2.weight(.semibold))
-                    Text(language.text("账号与额度", "Accounts and limits")).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if kind == .grok {
-                    Button {
-                        newAccountName = language.text("Grok 账号 \(model.profiles(for: kind).count + 1)", "Grok account \(model.profiles(for: kind).count + 1)")
-                        addingGrok = true
-                    } label: {
-                        Label(language.text("新增账号并登录", "Add account and sign in"), systemImage: "person.badge.plus")
+            if onlyProfileID == nil {
+                HStack(spacing: 12) {
+                    LocalCLIIcon(kind: kind).frame(width: 30, height: 30)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(kind.displayName).font(.title2.weight(.semibold))
+                        Text(language.text("账号与额度", "Accounts and limits")).font(.caption).foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!model.signingIn.isEmpty)
-                }
-                if kind.supportsLinkedEnvironments {
-                    Button {
-                        linkAccount()
-                    } label: {
-                        Label(language.text("关联已有配置", "Link existing configuration"), systemImage: "folder")
+                    Spacer()
+                    if kind == .grok {
+                        Button {
+                            newAccountName = language.text("Grok 账号 \(model.profiles(for: kind).count + 1)", "Grok account \(model.profiles(for: kind).count + 1)")
+                            addingGrok = true
+                        } label: {
+                            Label(language.text("新增账号并登录", "Add account and sign in"), systemImage: "person.badge.plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.signingIn.isEmpty)
                     }
-                    .buttonStyle(.bordered)
+                    if kind.supportsLinkedEnvironments {
+                        Button {
+                            linkAccount()
+                        } label: {
+                            Label(language.text("关联已有配置", "Link existing configuration"), systemImage: "folder")
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
+                Text(workspaceSummary)
+                    .font(.callout).foregroundStyle(.secondary)
             }
-            Text(workspaceSummary)
-                .font(.callout).foregroundStyle(.secondary)
-            ForEach(model.profiles(for: kind)) { profile in accountCard(profile) }
-            if let message = model.message {
+            if showsAccounts {
+                ForEach(orderedWorkspaceProfiles) { profile in accountCard(profile) }
+            }
+            if onlyProfileID == nil, let message = model.message {
                 Label(message, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, onlyProfileID == nil ? 8 : 0)
         .sheet(isPresented: $addingGrok) {
             VStack(alignment: .leading, spacing: 16) {
                 Text(language.text("添加 Grok 账号", "Add a Grok account")).font(.headline)
@@ -84,15 +93,132 @@ struct LocalCLIWorkspaceView: View {
         }
     }
 
-    private func accountCard(_ profile: LocalCLIProfile) -> some View {
+    /// The same pin and expiry rule is used in a provider's own account view.
+    private var orderedWorkspaceProfiles: [LocalCLIProfile] {
+        let profiles = model.profiles(for: kind).filter { onlyProfileID == nil || $0.id == onlyProfileID }
+        let now = Date()
+        let expiring = Set(
+            profiles.filter { profile in
+                ResetCardPresentation.isExpiringSoon(
+                    model.quotas[profile.id]?.resetCards,
+                    now: now,
+                    evidenceFresh: !model.stale.contains(profile.id) && ResetCardPresentation.isFresh(model.quotas[profile.id]?.fetchedAt, now: now))
+            }.map(\.id))
+        let pinned = profiles.first {
+            ResetCardPresentation.localKey(kind: kind.rawValue, profileID: $0.id) == settings.pinnedAccountKey
+        }?.id
+        var byID: [String: LocalCLIProfile] = [:]
+        for profile in profiles { byID[profile.id] = profile }
+        return ResetCardPresentation.prioritizedOrder(profiles.map(\.id), expiring: expiring, pinnedAccountID: pinned)
+            .compactMap { byID[$0] }
+    }
+
+    @ViewBuilder private func accountCard(_ profile: LocalCLIProfile) -> some View {
+        if let layout = embeddedLayout {
+            embeddedAccount(profile, layout: layout)
+        } else {
+            fullAccountCard(profile)
+        }
+    }
+
+    private func embeddedAccount(_ profile: LocalCLIProfile, layout: AccountWorkspaceLayout) -> some View {
         let result = model.quotas[profile.id]
-        let isStale = model.stale.contains(profile.id)
+        let fresh = !model.stale.contains(profile.id) && ResetCardPresentation.isFresh(result?.fetchedAt, now: Date())
+        let expiring = ResetCardPresentation.isExpiringSoon(result?.resetCards, now: Date(), evidenceFresh: fresh)
+        let arrangement = layout == .cards ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(alignment: .top, spacing: 16))
+        return arrangement {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    LocalCLIIcon(kind: kind).frame(width: 20, height: 20)
+                    Text(profile.displayName).font(.headline).lineLimit(1)
+                    Text(kind.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                if let plan = result?.planLabel { Text(plan).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
+                    Label(summary, systemImage: "creditcard").font(.caption2).foregroundStyle(expiring ? Color.red : Color.secondary).lineLimit(2)
+                }
+                if expiring { Text(ResetCardPresentation.expiringLabelText(language: language)).font(.caption2.weight(.semibold)).foregroundStyle(.red) }
+                if let result {
+                    Text(fresh ? result.sourceLabel : language.text("上次快照 · 请刷新", "Previous snapshot · Refresh needed"))
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }.frame(minWidth: layout == .rows ? 170 : nil, maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                if let result, !result.windows.isEmpty {
+                    ForEach(result.windows.prefix(2)) { window in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(window.label).font(.caption.weight(.semibold)).lineLimit(1)
+                                Spacer()
+                                Text(QuotaAvailabilityPresentation.percentText(100 - window.usedPercent))
+                                    .font(layout == .cards ? .system(size: 23, weight: .semibold, design: .rounded) : .subheadline.weight(.bold))
+                                    .monospacedDigit()
+                            }
+                            QuotaProgressTrack(percent: 100 - window.usedPercent)
+                            if let date = window.resetsAt { Text(language.dateTime(date)).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                        }
+                    }
+                } else if let balance = result?.balance {
+                    Text(language.text("余额 ", "Balance ") + balance.formatted()).font(.callout.monospacedDigit())
+                } else {
+                    Text(statusText(result)).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                }
+            }.frame(width: layout == .rows ? 168 : nil).frame(maxWidth: layout == .cards ? .infinity : nil)
+            VStack(alignment: .leading, spacing: 6) {
+                if layout == .cards { Divider().opacity(0.4) }
+                HStack(spacing: 6) {
+                    Button {
+                        model.refresh(profile)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(model.refreshing.contains(profile.id)).help(language.text("刷新额度", "Refresh limits"))
+                    if model.canOpen(profile) {
+                        Button {
+                            openNative(profile)
+                        } label: {
+                            Label("CLI", systemImage: "terminal").frame(maxWidth: .infinity)
+                        }
+                    }
+                    Button(language.text("详情", "Details")) { onOpenDetails?() }
+                    Menu {
+                        let key = ResetCardPresentation.localKey(kind: kind.rawValue, profileID: profile.id)
+                        Button(settings.pinnedAccountKey == key ? language.text("取消置顶", "Unpin") : language.text("固定第一位", "Pin first")) {
+                            settings.pinnedAccountKey = settings.pinnedAccountKey == key ? nil : key
+                        }
+                        Button(language.text("重命名", "Rename")) {
+                            nameDraft = profile.displayName
+                            editing = profile
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .menuStyle(.borderlessButton).frame(width: 20)
+                }.buttonStyle(.bordered).controlSize(.small)
+                if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
+                if let date = result?.fetchedAt { Text(date, style: .time).font(.caption2).foregroundStyle(.secondary) }
+            }.frame(width: layout == .rows ? 280 : nil).frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .leading)
+        }
+        .padding(layout == .cards ? 10 : 12)
+        .sectionBackground()
+        .overlay {
+            if expiring { RoundedRectangle(cornerRadius: 12).strokeBorder(.red, lineWidth: 2).allowsHitTesting(false) }
+        }
+    }
+
+    private func fullAccountCard(_ profile: LocalCLIProfile) -> some View {
+        let result = model.quotas[profile.id]
+        let isStale = model.stale.contains(profile.id) || !ResetCardPresentation.isFresh(result?.fetchedAt, now: Date())
+        let expiringSoon = ResetCardPresentation.isExpiringSoon(
+            result?.resetCards,
+            now: Date(),
+            evidenceFresh: !isStale)
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "person.crop.circle").font(.title2).foregroundStyle(.secondary)
+                LocalCLIIcon(kind: kind).frame(width: 24, height: 24)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text(profile.displayName).font(.headline)
+                        Text(profile.displayName).font(.headline).lineLimit(2)
                         if profile.isDefault {
                             Text(language.text("默认环境", "Default")).font(.caption2).foregroundStyle(.secondary)
                         }
@@ -112,6 +238,10 @@ struct LocalCLIWorkspaceView: View {
                 .accessibilityLabel(language.text("刷新账号与额度", "Refresh account and limits"))
                 .disabled(model.refreshing.contains(profile.id))
                 Menu {
+                    let key = ResetCardPresentation.localKey(kind: kind.rawValue, profileID: profile.id)
+                    Button(settings.pinnedAccountKey == key ? language.text("取消置顶", "Unpin") : language.text("固定第一位", "Pin first")) {
+                        settings.pinnedAccountKey = settings.pinnedAccountKey == key ? nil : key
+                    }
                     Button(language.text("重命名", "Rename")) {
                         nameDraft = profile.displayName
                         editing = profile
@@ -178,6 +308,22 @@ struct LocalCLIWorkspaceView: View {
                 Label(statusText(result), systemImage: "gauge.with.dots.needle.33percent")
                     .font(.callout).foregroundStyle(.secondary)
             }
+            if kind == .grok,
+                let summary = ResetCardPresentation.summaryText(
+                    result?.resetCards, now: Date(), timeZone: TimeZone.current, language: language)
+            {
+                HStack(spacing: 6) {
+                    Image(systemName: "creditcard")
+                    Text(summary)
+                    if expiringSoon {
+                        Text(ResetCardPresentation.expiringLabelText(language: language))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color.red)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(expiringSoon ? Color.primary : Color.secondary)
+            }
             if let result, result.windows.count > 4 {
                 DisclosureGroup(language.text("更多额度（\(result.windows.count - 4)）", "More limits (\(result.windows.count - 4))")) {
                     ScrollView {
@@ -212,7 +358,10 @@ struct LocalCLIWorkspaceView: View {
                 HStack(spacing: 6) {
                     if isStale {
                         Image(systemName: "clock.badge.exclamationmark")
-                        Text(language.text("刷新失败 · 上次快照", "Refresh failed · Previous snapshot"))
+                        Text(
+                            model.stale.contains(profile.id)
+                                ? language.text("刷新失败 · 上次快照", "Refresh failed · Previous snapshot")
+                                : language.text("上次快照 · 请刷新", "Previous snapshot · Refresh needed"))
                     } else {
                         Text(result.sourceLabel)
                     }
@@ -227,6 +376,13 @@ struct LocalCLIWorkspaceView: View {
         }
         .padding(18)
         .sectionBackground()
+        .overlay(
+            expiringSoon
+                ? RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.red, lineWidth: 2)
+                    .allowsHitTesting(false)
+                : nil
+        )
     }
 
     private func statusText(_ result: LocalCLIQuotaResult?) -> String {

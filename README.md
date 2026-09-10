@@ -10,9 +10,9 @@
 
 AiGoodBro 把额度、官方重置时间、账号可用性和任务进展放进一张原生 macOS 工作台。单账号可以只读查看，多账号可以分别保存隔离的 CLI 环境与执行偏好。
 
-**当前源码预览：0911v1 · 9.5.19 (33)。** 可按下方口令从源码构建和安装；本版尚无 Release 安装包，多 CLI 的支持范围见下方说明。[候选改动与验证边界](docs/release-notes-v9.5.19.md)
+**当前源码预览：0911v2 · 9.5.20 (34)。** 可按下方口令从源码构建和安装；本版尚无 Release 安装包，多 CLI 的支持范围见下方说明。[候选改动与验证边界](docs/release-notes-v9.5.20.md)
 
-一句话安装口令和 4 个调用模板都在下面。9.5.19 尚未发布到 GitHub Releases；源码构建或本地候选包都不代表公开下载已经发布。
+一句话安装口令和 4 个调用模板都在下面。9.5.20 尚未发布到 GitHub Releases；源码构建或本地候选包都不代表公开下载已经发布。
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -36,9 +36,9 @@ cd AgentHub-AiGoodBro
 make build
 ```
 
-应用仍位于 `build/CodexAccountManagerNext.app`，Finder 中显示 AiGoodBro。构建不会自动安装或启动；已有版本先备份，再在原位置替换，不要改成 `AiGoodBro.app`。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；9.5.19 没有已发布的 Apple 公证下载包。
+应用仍位于 `build/CodexAccountManagerNext.app`，Finder 中显示 AiGoodBro。构建不会自动安装或启动；已有版本先备份，再在原位置替换，不要改成 `AiGoodBro.app`。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；9.5.20 没有已发布的 Apple 公证下载包。
 
-后续若发布，兼容资产名仍为 `CodexAccountManagerNext-9.5.19-mac-arm64.dmg` 与 `CodexAccountManagerNext-9.5.19-mac-x86_64.dmg`；当前没有可下载的 9.5.19 安装包。
+后续若发布，兼容资产名仍为 `CodexAccountManagerNext-9.5.20-mac-arm64.dmg` 与 `CodexAccountManagerNext-9.5.20-mac-x86_64.dmg`；当前没有可下载的 9.5.20 安装包。
 
 ## 打开后，先看这张工作台
 
@@ -46,7 +46,9 @@ make build
 
 ![新版账号卡片，使用合成演示数据](docs/images/0910v1/02-workspace-cards-zh-dark@2x.png)
 
-卡片以紧凑双栏并排显示 5 小时和 7 天额度；820 点窄窗也能横向放下三张，常用按钮集中在底部，详细暖号记录放在“详情”。官方重置时间仍在额度下方。官方未返回的窗口通常显示“—”；已确认 Pro 且未返回通用 5 小时窗口时显示“∞”，一旦官方返回有限窗口就优先显示实际额度。切换成列表可以连续查看更多账号；卡片适合横向比较，账号顺序与操作保持一致。
+卡片以紧凑双栏并排显示 5 小时和 7 天额度；820 点窄窗也能横向放下三张，常用按钮集中在底部，详细暖号记录放在“详情”。官方重置时间仍在额度下方。官方未返回的窗口显示“—”，界面以实际返回的数据为准。切换成列表可以连续查看更多账号；卡片适合横向比较，账号顺序与操作保持一致。
+
+首页按账号统一排列各平台。用“固定第一位”选择常用账号，有重置卡在未来72小时内到期且官方证据仍新鲜的账号会排在它后面，并显示红框；列表与卡片共用顺序。Grok 官方当前未返回卡数量与到期信息时明确显示未知。
 
 每个账号都能单独刷新、设模型、打开独立 CLI。执行偏好会传给后续任务，已有任务继续使用启动时的参数。新账号默认 **GPT-6 Astra / Low / 标准速度**；模型是否可用仍由目标账号和服务端决定。
 
@@ -59,6 +61,8 @@ make build
 模型菜单提供三个可改名称和组合的档位：沿用当前模型、Sol High 配 Luna Max 子代理、Luna Max 直接执行。每档均可更改主模型、强度和子代理配置；启动前校验最终参数。配置显示与实际执行证据分别记录。
 
 飞书设置可选择账号备注、额度、重置时间、重置卡数量及最近或全部到期时间；Agent 名称和官方余额可选。默认省去长编号。主界面余额四舍五入为整数，发生取整时显示“≈”；点击说明可看精确原值、来源与时间。接口未提供币种和换算时不标为美元。
+
+自动化中心新增 [Telegram 与企业微信](docs/message-channels-0911v1.md)，分别开启和配置；默认关闭，保存后可发送测试。Codex 任务完成提醒要求实时观察到同一任务从运行到完成，归档和历史快照不会触发。凭据存入 Next 独立 Keychain；本版离线回归没有发送真实消息。
 
 选中账号后可看到“使用重置卡”。此入口仅供用户手动操作，Agent 不得主动使用。它要求三次明确确认，发送前重新核对账号、卡片、期限和占用。**本次没有执行或测试重置流程**；未确认结果会保留原尝试，禁止自动重试。详见[实现和验证边界](docs/reset-credit-control.md)。
 
@@ -154,11 +158,11 @@ AiGoodBro 的终端按钮会登记占用并等待启动回执；退出码 0 只�
 
 0910v1 的既有改动：重置消息默认通过本机提醒，飞书成为可选转发；Desktop 切换改为后台执行和阶段反馈。修复终端启动路径、工作目录与启动状态误报，增加私有回执、参与时段和登录维护占用，保留暖号成功与失败历史。登录子进程未确认退出时继续保留占用。
 
-9.5.19 为源码预览；本轮实际完成的离线验证与未验证边界以[候选记录](docs/release-notes-v9.5.19.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据。
+9.5.20 为源码预览；本轮实际完成的离线验证与未验证边界以[候选记录](docs/release-notes-v9.5.20.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据。
 
-既有打包流程会在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；9.5.19 尚未打包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
+既有打包流程会在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；9.5.20 尚未打包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
 
-[9.5.19 候选记录](docs/release-notes-v9.5.19.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
+[9.5.20 候选记录](docs/release-notes-v9.5.20.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
 
 ## 还有哪些功能
 

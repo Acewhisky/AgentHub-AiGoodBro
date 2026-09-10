@@ -754,6 +754,17 @@ enum CodexWarmUpPolicy {
         return !hasExhaustedSubscriptionWindow(profile)
     }
 
+    /// Re-check mutable lifecycle state after an asynchronous availability lookup.
+    /// In particular, a late result must not start a request after the service stopped.
+    static func canContinueAfterAsyncCheck(
+        serviceIsRunning: Bool,
+        requestIsCurrent: Bool,
+        warmUpIsEnabled: Bool,
+        accountOperationIsIdle: Bool
+    ) -> Bool {
+        serviceIsRunning && requestIsCurrent && warmUpIsEnabled && accountOperationIsIdle
+    }
+
     static func nextEligibleDate(
         for profile: CodexProfile,
         selection: CodexWarmUpSelection,
@@ -761,7 +772,10 @@ enum CodexWarmUpPolicy {
         now: Date = Date()
     ) -> Date? {
         guard selection.isEnabled, !hasExhaustedSubscriptionWindow(profile) else { return nil }
-        guard let email = profile.lastSnapshot?.email, !email.isEmpty else { return nil }
+        guard
+            let email = profile.lastSnapshot?.email?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !email.isEmpty
+        else { return nil }
         let unresolvedFailure = hasUnresolvedFailure(profile, selection: selection, now: now)
 
         var dates: [Date] = []
@@ -819,8 +833,10 @@ enum CodexWarmUpPolicy {
     }
 
     static func hasFreshQuotaEvidence(_ profile: CodexProfile, now: Date = Date()) -> Bool {
-        guard let snapshot = profile.lastSnapshot,
-            snapshot.email?.isEmpty == false,
+        guard
+            let snapshot = profile.lastSnapshot,
+            let email = snapshot.email?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !email.isEmpty,
             snapshot.quotaReadSucceeded == true,
             (profile.lastQuotaReadFailureAt ?? .distantPast) < snapshot.fetchedAt
         else { return false }
@@ -865,6 +881,9 @@ enum CodexWarmUpPolicy {
         blockIdleRetry: Bool,
         now: Date
     ) -> Date? {
+        // A different reported window is not evidence that this selected window
+        // is idle. Missing selected-window data stays fail closed.
+        guard let window else { return nil }
         if blockIdleRetry, let lastWarmUpAt, unexpected || isWindowIdle(window, now: now) {
             return max(now, lastWarmUpAt.addingTimeInterval(failureRetryInterval))
         }
@@ -876,7 +895,7 @@ enum CodexWarmUpPolicy {
             }
             return now
         }
-        if let resetsAt = window?.resetsAt, resetsAt > now {
+        if let resetsAt = window.resetsAt, resetsAt > now {
             return resetsAt.addingTimeInterval(resetGrace)
         }
         return nil
@@ -3188,7 +3207,9 @@ enum CodexProfileStoreSelfTest {
                     fiveHour: CodexQuotaWindowSnapshot(
                         RateWindow(
                             usedPercent: 100, windowDurationMins: 300, resetsAt: now.addingTimeInterval(-10))),
-                    sevenDay: idleWeek.lastSnapshot?.sevenDay, monthly: nil, creditBalance: balance,
+                    sevenDay: idleWeek.lastSnapshot?.sevenDay, monthly: nil,
+                    availableResetCredits: balance == nil ? nil : 3,
+                    creditBalance: balance,
                     fetchedAt: now, appServerVersion: nil)
                 guard !CodexWarmUpPolicy.canSendWarmUpRequest(exhausted, now: now),
                     !CodexWarmUpPolicy.isDue(exhausted, selection: sevenDayOnly, unexpected: [.sevenDay], now: now),
@@ -3299,10 +3320,28 @@ enum CodexProfileStoreSelfTest {
             let missingReadFlag = try changedQuota(cold) { $0.removeValue(forKey: "quotaReadSucceeded") }
             var equalFailure = cold
             equalFailure.lastQuotaReadFailureAt = now
+            var newerFailure = cold
+            newerFailure.lastSnapshot = CodexAccountSnapshot(
+                accountType: "chatgpt",
+                planType: "plus",
+                email: "managed@example.com",
+                accountID: "acct-warm",
+                limitId: "codex",
+                limitName: nil,
+                fiveHour: CodexQuotaWindowSnapshot(
+                    RateWindow(usedPercent: 0, windowDurationMins: 300, resetsAt: nil)),
+                sevenDay: CodexQuotaWindowSnapshot(
+                    RateWindow(usedPercent: 0, windowDurationMins: 10_080, resetsAt: nil)),
+                monthly: nil,
+                fetchedAt: now.addingTimeInterval(-1),
+                appServerVersion: nil
+            )
+            newerFailure.lastQuotaReadFailureAt = now
             guard !CodexWarmUpPolicy.hasFreshQuotaEvidence(missingReadFlag, now: now),
-                !CodexWarmUpPolicy.hasFreshQuotaEvidence(equalFailure, now: now)
+                !CodexWarmUpPolicy.hasFreshQuotaEvidence(equalFailure, now: now),
+                !CodexWarmUpPolicy.canSendWarmUpRequest(newerFailure, now: now)
             else {
-                print("Codex profile store self-test failed: missing success evidence and tied failure time must block a request")
+                print("Codex profile store self-test failed: missing success evidence and a newer failed read must block a request")
                 return false
             }
             let lowButAvailable = try changedQuota(cold) { snapshot in
@@ -3963,6 +4002,10 @@ enum CodexProfileStoreSelfTest {
 
         try store.record(observation(40, messages: ["401 Unauthorized"]), for: profile.id)
         let persistedAfterFailure = try Data(contentsOf: stateURL)
+        expect(
+            !CodexWarmUpPolicy.canSendWarmUpRequest(currentProfile(), now: base.addingTimeInterval(40)),
+            "a newer failed read must block the retained successful snapshot"
+        )
         try store.record(observation(30), for: profile.id)
         expect(currentProfile().lastQuotaReadFailureAt == base.addingTimeInterval(40), "failure timestamps must not move backwards")
         expect(currentProfile().lastQuotaReadFailureReason == "oauth-invalidated", "late failure must not erase the latest failure category")
@@ -3975,6 +4018,10 @@ enum CodexProfileStoreSelfTest {
         try store.record(observation(40, used: 5), for: profile.id)
         expect(currentProfile().lastQuotaReadFailureAt == nil, "equal-time success must clear the failure")
         expect(currentProfile().lastSnapshot?.fetchedAt == base.addingTimeInterval(40), "equal-time success must be accepted")
+        expect(
+            CodexWarmUpPolicy.canSendWarmUpRequest(currentProfile(), now: base.addingTimeInterval(40)),
+            "fresh official recovery may re-enable warm-up"
+        )
         let afterRecovery = currentProfile().lastSnapshot
         let persistedAfterRecovery = try Data(contentsOf: stateURL)
         try store.record(observation(0), for: profile.id, allowAccountOnly: true)
@@ -4459,6 +4506,104 @@ enum CodexWarmUpPolicySelfTest {
                 lastSnapshot: snapshot
             )
         }
+
+        guard
+            expect(
+                !CodexWarmUpPolicy.canContinueAfterAsyncCheck(
+                    serviceIsRunning: false,
+                    requestIsCurrent: true,
+                    warmUpIsEnabled: true,
+                    accountOperationIsIdle: true
+                ),
+                "late availability result cannot continue after cancellation"
+            ),
+            expect(
+                CodexWarmUpPolicy.canContinueAfterAsyncCheck(
+                    serviceIsRunning: true,
+                    requestIsCurrent: true,
+                    warmUpIsEnabled: true,
+                    accountOperationIsIdle: true
+                ),
+                "current running request may continue after availability check"
+            )
+        else { return false }
+
+        let missingAllWindows = profile(snapshot())
+        let missingFiveHour = profile(snapshot(seven: window(used: 0)))
+        let missingSevenDay = profile(snapshot(five: window(used: 0)))
+        let whitespaceIdentity = profile(snapshot(five: window(used: 0), email: "   \n"))
+        guard
+            expect(!CodexWarmUpPolicy.canSendWarmUpRequest(missingAllWindows, now: now), "missing quota windows block requests"),
+            expect(
+                !CodexWarmUpPolicy.isDue(
+                    missingFiveHour,
+                    selection: CodexWarmUpSelection(fiveHour: true, sevenDay: false),
+                    now: now
+                ),
+                "missing selected five-hour window blocks requests"
+            ),
+            expect(
+                !CodexWarmUpPolicy.isDue(
+                    missingSevenDay,
+                    selection: CodexWarmUpSelection(fiveHour: false, sevenDay: true),
+                    now: now
+                ),
+                "missing selected weekly window blocks requests"
+            ),
+            expect(!CodexWarmUpPolicy.canSendWarmUpRequest(whitespaceIdentity, now: now), "blank identity blocks requests")
+        else { return false }
+
+        func exhaustedProfile(
+            fiveHour: CodexQuotaWindowSnapshot,
+            sevenDay: CodexQuotaWindowSnapshot,
+            monthly: CodexQuotaWindowSnapshot?
+        ) -> CodexProfile {
+            profile(
+                CodexAccountSnapshot(
+                    accountType: "chatgpt",
+                    planType: "plus",
+                    email: "warm@example.invalid",
+                    accountID: "acct-warm",
+                    limitId: "codex",
+                    limitName: nil,
+                    fiveHour: fiveHour,
+                    sevenDay: sevenDay,
+                    monthly: monthly,
+                    availableResetCredits: 4,
+                    creditBalance: "250",
+                    fetchedAt: now,
+                    appServerVersion: nil
+                ))
+        }
+        let fiveHourExhausted = exhaustedProfile(
+            fiveHour: window(used: 100, resetsIn: -10),
+            sevenDay: window(used: 0, durationMins: 10_080),
+            monthly: nil
+        )
+        let weeklyExhausted = exhaustedProfile(
+            fiveHour: window(used: 0),
+            sevenDay: window(used: 100, durationMins: 10_080),
+            monthly: nil
+        )
+        let monthlyExhausted = exhaustedProfile(
+            fiveHour: window(used: 0),
+            sevenDay: window(used: 0, durationMins: 10_080),
+            monthly: window(used: 100, durationMins: 43_800)
+        )
+        guard
+            expect(
+                !CodexWarmUpPolicy.canSendWarmUpRequest(fiveHourExhausted, now: now),
+                "an elapsed reset, points, and balance cannot unlock an exhausted five-hour window"
+            ),
+            expect(
+                !CodexWarmUpPolicy.canSendWarmUpRequest(weeklyExhausted, now: now),
+                "points and balance cannot unlock an exhausted weekly window"
+            ),
+            expect(
+                !CodexWarmUpPolicy.canSendWarmUpRequest(monthlyExhausted, now: now),
+                "an exhausted monthly window blocks requests despite points and balance"
+            )
+        else { return false }
 
         // Reset reads remain due when quota is exhausted, warm-up is disabled or a previous attempt failed.
         var resetProfile = profile(snapshot(five: window(used: 100, resetsIn: 10), seven: window(used: 100, resetsIn: 100)))

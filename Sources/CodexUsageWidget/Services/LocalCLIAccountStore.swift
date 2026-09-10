@@ -48,6 +48,14 @@ final class LocalCLIAccountStore: ObservableObject {
         self.quotaLoader = quotaLoader
     }
 
+    static func preview(profiles: [LocalCLIProfile], quotas: [String: LocalCLIQuotaResult], root: URL) -> LocalCLIAccountStore {
+        let model = LocalCLIAccountStore(home: root, support: root, applicationsDirectory: root)
+        model.profiles = profiles
+        model.quotas = quotas
+        for profile in profiles { model.installed[profile.kind] = root.appendingPathComponent(profile.kind.commandName).path }
+        return model
+    }
+
     deinit {
         tasks.values.forEach { $0.cancel() }
         loginTasks.values.forEach { $0.cancel() }
