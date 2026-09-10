@@ -720,12 +720,12 @@ class AgentCliTests(unittest.TestCase):
             self.skipTest("symlink unsupported")
         done = run_cli(["--state-dir", str(self.state), "plan", "--product", "workbuddy",
                         "--brief-file", str(brief),
-                        "--output", str(link_into_state / "out.md")])
+                        "--output", str(link_into_state / "out.md"), "--executable", "/bin/echo"])
         self.assertEqual(done.returncode, 3, done.stderr)
         self.assertIn("output_inside_activity_state_refused", done.stderr)
         done = run_cli(["--state-dir", str(self.state), "plan", "--product", "workbuddy",
                         "--brief-file", str(brief),
-                        "--output", str(link_outside / "out.md")])
+                        "--output", str(link_outside / "out.md"), "--executable", "/bin/echo"])
         self.assertEqual(done.returncode, 0, done.stderr)
 
 
