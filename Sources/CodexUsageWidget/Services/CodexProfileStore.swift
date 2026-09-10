@@ -24,6 +24,8 @@ struct CodexAccountSnapshot: Codable, Equatable {
     let monthly: CodexQuotaWindowSnapshot?
     let availableResetCredits: Int?
     let resetCreditExpiries: [Date]?
+    let creditBalance: String?
+    let creditBalanceUnlimited: Bool?
     let fetchedAt: Date
     let appServerVersion: String?
     let quotaReadSucceeded: Bool?
@@ -40,6 +42,8 @@ struct CodexAccountSnapshot: Codable, Equatable {
         monthly: CodexQuotaWindowSnapshot?,
         availableResetCredits: Int? = nil,
         resetCreditExpiries: [Date]? = nil,
+        creditBalance: String? = nil,
+        creditBalanceUnlimited: Bool? = nil,
         fetchedAt: Date,
         appServerVersion: String?,
         quotaReadSucceeded: Bool? = true
@@ -55,6 +59,8 @@ struct CodexAccountSnapshot: Codable, Equatable {
         self.monthly = monthly
         self.availableResetCredits = availableResetCredits
         self.resetCreditExpiries = resetCreditExpiries
+        self.creditBalance = creditBalance
+        self.creditBalanceUnlimited = creditBalanceUnlimited
         self.fetchedAt = fetchedAt
         self.appServerVersion = appServerVersion
         self.quotaReadSucceeded = quotaReadSucceeded
@@ -182,47 +188,264 @@ struct CodexExecutionPreference: Codable, Equatable {
         }
     }
 
+    struct SubagentMode: RawRepresentable, Codable, Hashable, CaseIterable {
+        let rawValue: String
+        static let standard = Self(rawValue: "standard")
+        static let solLuna = Self(rawValue: "sol_luna")
+        static let lunaDirect = Self(rawValue: "luna_direct")
+        static let allCases: [Self] = [.standard, .solLuna, .lunaDirect]
+
+        init(rawValue: String) { self.rawValue = rawValue }
+        init(from decoder: Decoder) throws {
+            rawValue = try decoder.singleValueContainer().decode(String.self)
+        }
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
+    }
+
+    struct EffectiveStrategy: Equatable {
+        let mainModel: Model
+        let mainReasoningEffort: ReasoningEffort
+        let subagentModel: Model?
+        let subagentReasoningEffort: ReasoningEffort?
+        let maximumConcurrentSubagents: Int
+    }
+
+    struct CustomPreset: Codable, Equatable {
+        var name: String?
+        var useSavedModel: Bool
+        var model: Model
+        var reasoningEffort: ReasoningEffort
+        var subagentsEnabled: Bool
+        var subagentModel: Model
+        var subagentReasoningEffort: ReasoningEffort
+    }
+
     var model: Model
     var reasoningEffort: ReasoningEffort
     var serviceTier: ServiceTier
+    var subagentMode: SubagentMode = .standard
+    var customPresets: [String: CustomPreset] = [:]
 
     static let defaultValue = CodexExecutionPreference(
         model: .astra,
         reasoningEffort: .low,
-        serviceTier: .standard
+        serviceTier: .standard,
+        subagentMode: .standard
     )
 
+    static func defaultPreset(for mode: SubagentMode) -> CustomPreset? {
+        switch mode {
+        case .standard:
+            return CustomPreset(
+                name: nil,
+                useSavedModel: true,
+                model: .astra,
+                reasoningEffort: .low,
+                subagentsEnabled: false,
+                subagentModel: .luna,
+                subagentReasoningEffort: .max
+            )
+        case .solLuna:
+            return CustomPreset(
+                name: nil,
+                useSavedModel: false,
+                model: .sol,
+                reasoningEffort: .high,
+                subagentsEnabled: true,
+                subagentModel: .luna,
+                subagentReasoningEffort: .max
+            )
+        case .lunaDirect:
+            return CustomPreset(
+                name: nil,
+                useSavedModel: false,
+                model: .luna,
+                reasoningEffort: .max,
+                subagentsEnabled: false,
+                subagentModel: .luna,
+                subagentReasoningEffort: .max
+            )
+        default:
+            return nil
+        }
+    }
+
+    func preset(for mode: SubagentMode) -> CustomPreset? {
+        guard let builtIn = Self.defaultPreset(for: mode) else { return nil }
+        return customPresets[mode.rawValue] ?? builtIn
+    }
+
+    func customName(for mode: SubagentMode) -> String? {
+        preset(for: mode)?.name
+    }
+
+    func restoringDefault(for mode: SubagentMode) -> CodexExecutionPreference {
+        var restored = self
+        restored.customPresets.removeValue(forKey: mode.rawValue)
+        return restored
+    }
+
     var isValid: Bool { (try? validated()) != nil }
+    var savedModelSettingsAreValid: Bool {
+        do {
+            try validateStoredSettings()
+            guard SubagentMode.allCases.contains(subagentMode) else { return true }
+            _ = try validated()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    var effectiveStrategy: EffectiveStrategy {
+        effectiveStrategy(for: subagentMode) ?? EffectiveStrategy(
+            mainModel: model,
+            mainReasoningEffort: reasoningEffort,
+            subagentModel: nil,
+            subagentReasoningEffort: nil,
+            maximumConcurrentSubagents: 0
+        )
+    }
+
+    func effectiveStrategy(for mode: SubagentMode) -> EffectiveStrategy? {
+        guard let preset = preset(for: mode) else {
+            return nil
+        }
+        let mainModel = preset.useSavedModel ? model : preset.model
+        let mainEffort = preset.useSavedModel ? reasoningEffort : preset.reasoningEffort
+        return EffectiveStrategy(
+            mainModel: mainModel,
+            mainReasoningEffort: mainEffort,
+            subagentModel: preset.subagentsEnabled ? preset.subagentModel : nil,
+            subagentReasoningEffort: preset.subagentsEnabled ? preset.subagentReasoningEffort : nil,
+            maximumConcurrentSubagents: preset.subagentsEnabled ? 1 : 0
+        )
+    }
 
     func validated() throws -> CodexExecutionPreference {
+        try validateStoredSettings()
+        guard SubagentMode.allCases.contains(subagentMode) else {
+            throw CodexExecutionPreferenceError.unsupportedExecutionMode
+        }
+        let strategy = effectiveStrategy
+        guard strategy.mainModel.supportedReasoningEfforts.contains(strategy.mainReasoningEffort) else {
+            throw CodexExecutionPreferenceError.unsupportedReasoningEffort(
+                model: strategy.mainModel.rawValue,
+                reasoningEffort: strategy.mainReasoningEffort.rawValue
+            )
+        }
+        if serviceTier == .fast {
+            guard strategy.mainModel.supportsFast else {
+                throw CodexExecutionPreferenceError.fastUnavailable(model: strategy.mainModel.rawValue)
+            }
+            if let subagentModel = strategy.subagentModel, !subagentModel.supportsFast {
+                throw CodexExecutionPreferenceError.fastUnavailable(model: subagentModel.rawValue)
+            }
+        }
+        return self
+    }
+
+    private func validateStoredSettings() throws {
         guard model.supportedReasoningEfforts.contains(reasoningEffort) else {
             throw CodexExecutionPreferenceError.unsupportedReasoningEffort(
                 model: model.rawValue,
                 reasoningEffort: reasoningEffort.rawValue
             )
         }
-        guard serviceTier != .fast || model.supportsFast else {
-            throw CodexExecutionPreferenceError.fastUnavailable(model: model.rawValue)
+        let supportedKeys = Set(SubagentMode.allCases.map(\.rawValue))
+        guard customPresets.count <= supportedKeys.count,
+            customPresets.keys.allSatisfy(supportedKeys.contains)
+        else {
+            throw CodexExecutionPreferenceError.unsupportedCustomPreset
         }
-        return self
+        for preset in customPresets.values {
+            if let name = preset.name {
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty, name == trimmed, name.utf8.count <= 64,
+                    !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+                else {
+                    throw CodexExecutionPreferenceError.invalidPresetName
+                }
+            }
+            guard preset.model.supportedReasoningEfforts.contains(preset.reasoningEffort) else {
+                throw CodexExecutionPreferenceError.unsupportedReasoningEffort(
+                    model: preset.model.rawValue,
+                    reasoningEffort: preset.reasoningEffort.rawValue
+                )
+            }
+            guard preset.subagentModel.supportedReasoningEfforts.contains(preset.subagentReasoningEffort) else {
+                throw CodexExecutionPreferenceError.unsupportedReasoningEffort(
+                    model: preset.subagentModel.rawValue,
+                    reasoningEffort: preset.subagentReasoningEffort.rawValue
+                )
+            }
+        }
+    }
+}
+
+extension CodexExecutionPreference {
+    private enum CodingKeys: String, CodingKey {
+        case model
+        case reasoningEffort
+        case serviceTier
+        case subagentMode
+        case customPresets
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        model = try values.decode(Model.self, forKey: .model)
+        reasoningEffort = try values.decode(ReasoningEffort.self, forKey: .reasoningEffort)
+        serviceTier = try values.decode(ServiceTier.self, forKey: .serviceTier)
+        subagentMode = try values.decodeIfPresent(SubagentMode.self, forKey: .subagentMode) ?? .standard
+        customPresets = try values.decodeIfPresent([String: CustomPreset].self, forKey: .customPresets) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(model, forKey: .model)
+        try values.encode(reasoningEffort, forKey: .reasoningEffort)
+        try values.encode(serviceTier, forKey: .serviceTier)
+        try values.encode(subagentMode, forKey: .subagentMode)
+        if !customPresets.isEmpty {
+            try values.encode(customPresets, forKey: .customPresets)
+        }
     }
 }
 
 enum CodexExecutionPreferenceError: LocalizedError, Equatable {
+    case unsupportedExecutionMode
     case unsupportedReasoningEffort(model: String, reasoningEffort: String)
     case fastUnavailable(model: String)
+    case unsupportedCustomPreset
+    case invalidPresetName
     case systemProfileUnsupported
 
     var errorDescription: String? {
         switch self {
+        case .unsupportedExecutionMode:
+            return WidgetLanguage.storedOrAutomatic().text("保存的执行档位无法识别，请重新选择后再启动", "Choose a supported execution style before starting this account.")
         case .unsupportedReasoningEffort(let model, let reasoningEffort):
             return WidgetLanguage.storedOrAutomatic().text("模型 \(model) 不支持推理强度 \(reasoningEffort)", "\(model) does not support the \(reasoningEffort) reasoning level.")
         case .fastUnavailable(let model):
             return WidgetLanguage.storedOrAutomatic().text("模型 \(model) 不支持 Fast 模式", "\(model) does not support Fast mode.")
+        case .unsupportedCustomPreset:
+            return WidgetLanguage.storedOrAutomatic().text("自定义档位包含不支持的槽位", "The custom presets contain an unsupported slot.")
+        case .invalidPresetName:
+            return WidgetLanguage.storedOrAutomatic().text("档位名称需为 1–64 个 UTF-8 字节，且不能含首尾空白或控制字符", "Preset names must be 1–64 UTF-8 bytes with no surrounding whitespace or control characters.")
         case .systemProfileUnsupported:
             return WidgetLanguage.storedOrAutomatic().text("系统账号不保存执行偏好", "Execution preferences cannot be saved for the system account.")
         }
     }
+}
+
+struct CodexWarmUpAttempt: Codable, Equatable {
+    let at: Date
+    let succeeded: Bool
+    let failureReason: String?
 }
 
 struct CodexProfile: Codable, Equatable, Identifiable {
@@ -233,12 +456,14 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     let isSystemProfile: Bool
     let createdAt: Date
     var lastSnapshot: CodexAccountSnapshot?
+    var officialResetHistory: OfficialResetHistory? = nil
     var officialProfile: CodexOfficialProfileSnapshot? = nil
     var lastMembershipRefreshAt: Date? = nil
     var lastMembershipRefreshSucceeded: Bool? = nil
     var lastWarmUpAt: Date? = nil
     var lastWarmUpSucceeded: Bool? = nil
     var lastWarmUpFailureReason: String? = nil
+    var warmUpHistory: [CodexWarmUpAttempt]? = nil
     var lastQuotaReadFailureAt: Date? = nil
     var lastQuotaReadFailureReason: String? = nil
     var chromeProfile: ChromeProfileBinding? = nil
@@ -246,6 +471,7 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     var prioritizeDispatch: Bool? = nil
     var proTierMultiplier: Int? = nil
     var executionPreference: CodexExecutionPreference? = nil
+    var dispatchParticipationWindow: DispatchParticipationWindow? = nil
 
     var participatesInAutomaticSwitch: Bool {
         automaticSwitchParticipation != false
@@ -281,9 +507,11 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     }
 
     func matchesRecordedCredential(_ identity: CodexCredentialIdentity?) -> Bool {
-        guard matchesRecordedAccount(email: identity?.email) else { return false }
+        guard let identity, !identity.email.isEmpty, !identity.accountID.isEmpty,
+            matchesRecordedAccount(email: identity.email)
+        else { return false }
         guard let expectedAccountID = lastSnapshot?.accountID else { return true }
-        return identity?.accountID == expectedAccountID
+        return identity.accountID == expectedAccountID
     }
 
     var recordedAccountKey: String {
@@ -510,13 +738,27 @@ enum CodexWarmUpPolicy {
         return 100 - weekly.usedPercent <= minimumWeeklyRemaining
     }
 
+    /// A balance never grants permission to fall back from subscription quota to paid credits.
+    static func hasExhaustedSubscriptionWindow(_ profile: CodexProfile) -> Bool {
+        guard let snapshot = profile.lastSnapshot else { return false }
+        return [snapshot.fiveHour, snapshot.sevenDay, snapshot.monthly]
+            .compactMap { $0 }.contains { $0.usedPercent >= 100 }
+    }
+
+    static func canSendWarmUpRequest(_ profile: CodexProfile, now: Date = Date()) -> Bool {
+        guard hasFreshQuotaEvidence(profile, now: now), let snapshot = profile.lastSnapshot,
+            snapshot.fiveHour != nil || snapshot.sevenDay != nil || snapshot.monthly != nil
+        else { return false }
+        return !hasExhaustedSubscriptionWindow(profile)
+    }
+
     static func nextEligibleDate(
         for profile: CodexProfile,
         selection: CodexWarmUpSelection,
         unexpected: Set<CodexWarmUpWindowKind> = [],
         now: Date = Date()
     ) -> Date? {
-        guard selection.isEnabled else { return nil }
+        guard selection.isEnabled, !hasExhaustedSubscriptionWindow(profile) else { return nil }
         guard let email = profile.lastSnapshot?.email, !email.isEmpty else { return nil }
         let unresolvedFailure = hasUnresolvedFailure(profile, selection: selection, now: now)
 
@@ -569,7 +811,7 @@ enum CodexWarmUpPolicy {
         unexpected: Set<CodexWarmUpWindowKind> = [],
         now: Date = Date()
     ) -> Bool {
-        guard hasFreshQuotaEvidence(profile, now: now) else { return false }
+        guard canSendWarmUpRequest(profile, now: now) else { return false }
         return nextEligibleDate(for: profile, selection: selection, unexpected: unexpected, now: now)
             .map { $0 <= now } ?? false
     }
@@ -1074,10 +1316,13 @@ final class CodexProfileStore {
                     lastWarmUpAt: system.lastWarmUpAt,
                     lastWarmUpSucceeded: system.lastWarmUpSucceeded,
                     lastWarmUpFailureReason: system.lastWarmUpFailureReason,
+                    warmUpHistory: system.warmUpHistory,
                     chromeProfile: system.chromeProfile,
                     automaticSwitchParticipation: system.automaticSwitchParticipation,
                     prioritizeDispatch: system.prioritizeDispatch,
-                    proTierMultiplier: system.proTierMultiplier
+                    proTierMultiplier: system.proTierMultiplier,
+                    executionPreference: system.executionPreference,
+                    dispatchParticipationWindow: system.dispatchParticipationWindow
                 )
                 try self.writeAuth(authData, to: home)
                 self.state.profiles.insert(preserved, at: systemIndex + 1)
@@ -1182,6 +1427,18 @@ final class CodexProfileStore {
 
     func setDispatchPriorityFromUI(_ enabled: Bool, for id: String) throws {
         try setDispatchSettingsFromUI(.priority(enabled), for: id)
+    }
+
+    func setDispatchParticipationWindow(_ window: DispatchParticipationWindow, for id: String) throws {
+        try mutateState {
+            guard let profile = self.state.profiles.first(where: { $0.id == id }), window.isValid else {
+                throw DispatchParticipationError.invalidSnapshot
+            }
+            for index in self.state.profiles.indices where self.state.profiles[index].recordedAccountKey == profile.recordedAccountKey {
+                self.state.profiles[index].dispatchParticipationWindow = window
+            }
+            return true
+        }
     }
 
     private func setDispatchSettingsFromUI(_ change: DispatchParticipationSync.Change, for id: String) throws {
@@ -1368,14 +1625,33 @@ final class CodexProfileStore {
         try mutateState {
             guard let index = self.state.profiles.firstIndex(where: { $0.id == profileID })
             else { return false }
+            let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(
+                codexHomeURL: self.state.profiles[index].codexHomeURL
+            )
+            let snapshotEmail = snapshot.account?.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let identityMatchesSnapshot = credentialIdentity?.email == snapshotEmail
+            let verifiedAccountID = identityMatchesSnapshot ? credentialIdentity?.accountID : nil
+            let previousAccountID = self.state.profiles[index].lastSnapshot?.accountID
+            let accountChanged =
+                !self.state.profiles[index].matchesRecordedAccount(email: snapshot.account?.email)
+                || (previousAccountID != nil && verifiedAccountID != nil && previousAccountID != verifiedAccountID)
+            let verifiedSystemChange =
+                allowSystemAccountChange && self.state.profiles[index].isSystemProfile
+                && accountChanged && identityMatchesSnapshot && verifiedAccountID != nil
+            if allowSystemAccountChange, self.state.profiles[index].isSystemProfile,
+                credentialIdentity != nil, snapshotEmail != nil, !identityMatchesSnapshot
+            {
+                return false
+            }
             // Pool and selected-profile reads can finish out of order. Keep both
             // success and failure observations monotonic, while allowing equal-time
-            // records to enrich account data or recover a failed read.
+            // records to enrich account data or recover a failed read. A verified
+            // Desktop identity change starts a new account's observation sequence.
             let newestObservationAt = max(
                 self.state.profiles[index].lastSnapshot?.fetchedAt ?? .distantPast,
                 self.state.profiles[index].lastQuotaReadFailureAt ?? .distantPast
             )
-            guard snapshot.refreshedAt >= newestObservationAt else { return false }
+            guard snapshot.refreshedAt >= newestObservationAt || verifiedSystemChange else { return false }
             guard snapshot.quotaReadSucceeded || (allowAccountOnly && hasVerifiedAccount) else {
                 let previous = self.state.profiles[index].lastSnapshot
                 let successfulSnapshotAtSameTime =
@@ -1395,24 +1671,15 @@ final class CodexProfileStore {
                 }
                 return changed
             }
-            let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(
-                codexHomeURL: self.state.profiles[index].codexHomeURL
-            )
-            let snapshotEmail = snapshot.account?.email?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            let identityMatchesSnapshot = credentialIdentity?.email == snapshotEmail
-            let verifiedAccountID = identityMatchesSnapshot ? credentialIdentity?.accountID : nil
-            let previousAccountID = self.state.profiles[index].lastSnapshot?.accountID
-            let accountChanged =
-                !self.state.profiles[index].matchesRecordedAccount(email: snapshot.account?.email)
-                || (previousAccountID != nil && verifiedAccountID != nil && previousAccountID != verifiedAccountID)
             guard !accountChanged || (allowSystemAccountChange && self.state.profiles[index].isSystemProfile) else { return false }
             if accountChanged {
+                self.state.profiles[index].officialResetHistory = nil
                 self.state.profiles[index].officialProfile = nil
                 self.state.profiles[index].lastWarmUpAt = nil
                 self.state.profiles[index].lastWarmUpSucceeded = nil
                 self.state.profiles[index].lastWarmUpFailureReason = nil
+                self.state.profiles[index].warmUpHistory = nil
+                self.state.profiles[index].dispatchParticipationWindow = nil
                 self.state.profiles[index].proTierMultiplier = nil
                 if self.state.profiles[index].isSystemProfile {
                     self.state.profiles[index].remark = nil
@@ -1426,6 +1693,7 @@ final class CodexProfileStore {
                         matchingManagedProfile?.automaticSwitchParticipation
                     self.state.profiles[index].prioritizeDispatch = matchingManagedProfile?.prioritizeDispatch
                     self.state.profiles[index].proTierMultiplier = matchingManagedProfile?.proTierMultiplier
+                    self.state.profiles[index].dispatchParticipationWindow = matchingManagedProfile?.dispatchParticipationWindow
                 }
             }
             let previousSnapshot = self.state.profiles[index].lastSnapshot
@@ -1452,6 +1720,12 @@ final class CodexProfileStore {
                 resetCreditExpiries: mergesEqualObservation
                     ? previousSnapshot?.resetCreditExpiries ?? snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted()
                     : snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted(),
+                creditBalance: mergesEqualObservation
+                    ? previousSnapshot?.creditBalance ?? CreditBalancePresentation.normalizedBalance(snapshot.credits?.balance)
+                    : CreditBalancePresentation.normalizedBalance(snapshot.credits?.balance),
+                creditBalanceUnlimited: mergesEqualObservation
+                    ? previousSnapshot?.creditBalanceUnlimited ?? snapshot.credits.map(\.unlimited)
+                    : snapshot.credits.map(\.unlimited),
                 fetchedAt: snapshot.refreshedAt,
                 appServerVersion: mergesEqualObservation
                     ? previousSnapshot?.appServerVersion ?? appServerVersion
@@ -1526,6 +1800,14 @@ final class CodexProfileStore {
     ) throws {
         try mutateState {
             guard let index = self.state.profiles.firstIndex(where: { $0.id == profileID }) else { return false }
+            guard date >= (self.state.profiles[index].lastWarmUpAt ?? .distantPast) else { return false }
+            var history = self.state.profiles[index].warmUpHistory ?? []
+            if history.isEmpty, let at = self.state.profiles[index].lastWarmUpAt, let succeeded = self.state.profiles[index].lastWarmUpSucceeded {
+                history.append(.init(at: at, succeeded: succeeded, failureReason: self.state.profiles[index].lastWarmUpFailureReason))
+            }
+            let attempt = CodexWarmUpAttempt(at: date, succeeded: succeeded, failureReason: succeeded ? nil : failureReason)
+            if history.last != attempt { history.append(attempt) }
+            self.state.profiles[index].warmUpHistory = Array(history.suffix(20))
             self.state.profiles[index].lastWarmUpAt = date
             self.state.profiles[index].lastWarmUpSucceeded = succeeded
             self.state.profiles[index].lastWarmUpFailureReason = succeeded ? nil : failureReason
@@ -1826,6 +2108,8 @@ final class CodexProfileStore {
             monthly: snapshot.monthly,
             availableResetCredits: snapshot.availableResetCredits,
             resetCreditExpiries: snapshot.resetCreditExpiries,
+            creditBalance: snapshot.creditBalance,
+            creditBalanceUnlimited: snapshot.creditBalanceUnlimited,
             fetchedAt: snapshot.fetchedAt,
             appServerVersion: snapshot.appServerVersion,
             quotaReadSucceeded: snapshot.quotaReadSucceeded
@@ -1858,7 +2142,7 @@ final class CodexProfileStore {
             let preferenceIsValid =
                 profile.isSystemProfile
                 ? profile.executionPreference == nil
-                : profile.executionPreference?.isValid != false
+                : profile.executionPreference?.savedModelSettingsAreValid != false
             return homeIsValid && profile.chromeProfile?.isValid != false && preferenceIsValid
         }
     }
@@ -1888,6 +2172,7 @@ enum CodexProfileStoreSelfTest {
         defer { try? fileManager.removeItem(at: root) }
         do {
             guard try testQuotaObservationOrdering(root: root, fileManager: fileManager) else { return false }
+            guard try testSystemSwitchObservationOrdering(root: root, fileManager: fileManager) else { return false }
             guard try testCrossInstanceStateTransactions(root: root, fileManager: fileManager) else { return false }
             guard try testStateTransactionFailures(root: root, fileManager: fileManager) else { return false }
             let home = root.appendingPathComponent("home", isDirectory: true)
@@ -1950,14 +2235,18 @@ enum CodexProfileStoreSelfTest {
                 email: "first@example.com",
                 usedPercent: 11,
                 at: Date(timeIntervalSince1970: 100),
-                resetCredits: 2
+                resetCredits: 2,
+                balance: "12.50",
+                unlimited: false
             )
             let secondSnapshot = testSnapshot(email: "second@example.com", usedPercent: 22, at: Date(timeIntervalSince1970: 200))
             let managedSnapshot = testSnapshot(
                 email: "managed@example.com",
                 usedPercent: 33,
                 at: Date(timeIntervalSince1970: 300),
-                resetCredits: 2
+                resetCredits: 2,
+                balance: "0",
+                unlimited: false
             )
             guard added.effectiveExecutionPreference == .defaultValue else {
                 print("Codex profile store self-test failed: legacy execution preference default")
@@ -1993,13 +2282,194 @@ enum CodexProfileStoreSelfTest {
                 reasoningEffort: .ultra,
                 serviceTier: .fast
             )
-            for effort in CodexExecutionPreference.ReasoningEffort.allCases {
-                for tier in CodexExecutionPreference.ServiceTier.allCases {
-                    let astra = CodexExecutionPreference(model: .astra, reasoningEffort: effort, serviceTier: tier)
-                    let encoded = try JSONEncoder().encode(astra.validated())
-                    guard try JSONDecoder().decode(CodexExecutionPreference.self, from: encoded) == astra else {
-                        print("Codex profile store self-test failed: Astra preference round trip")
-                        return false
+            let legacyPreference = try JSONDecoder().decode(
+                CodexExecutionPreference.self,
+                from: Data(#"{"model":"gpt-6-astra","reasoningEffort":"low","serviceTier":"default"}"#.utf8)
+            )
+            guard legacyPreference == .defaultValue else {
+                print("Codex profile store self-test failed: legacy subagent mode default")
+                return false
+            }
+            let allCustomPresets: [String: CodexExecutionPreference.CustomPreset] = [
+                CodexExecutionPreference.SubagentMode.standard.rawValue: .init(
+                    name: String(repeating: "a", count: 64),
+                    useSavedModel: false,
+                    model: .terra,
+                    reasoningEffort: .xhigh,
+                    subagentsEnabled: true,
+                    subagentModel: .gpt55,
+                    subagentReasoningEffort: .high
+                ),
+                CodexExecutionPreference.SubagentMode.solLuna.rawValue: .init(
+                    name: "Builder",
+                    useSavedModel: true,
+                    model: .sol,
+                    reasoningEffort: .medium,
+                    subagentsEnabled: false,
+                    subagentModel: .luna,
+                    subagentReasoningEffort: .max
+                ),
+                CodexExecutionPreference.SubagentMode.lunaDirect.rawValue: .init(
+                    name: nil,
+                    useSavedModel: false,
+                    model: .luna,
+                    reasoningEffort: .high,
+                    subagentsEnabled: true,
+                    subagentModel: .astra,
+                    subagentReasoningEffort: .ultra
+                ),
+            ]
+            let customizedPreference = CodexExecutionPreference(
+                model: .astra,
+                reasoningEffort: .low,
+                serviceTier: .fast,
+                subagentMode: .standard,
+                customPresets: allCustomPresets
+            )
+            let customizedData = try JSONEncoder().encode(customizedPreference.validated())
+            guard try JSONDecoder().decode(CodexExecutionPreference.self, from: customizedData) == customizedPreference,
+                customizedPreference.effectiveStrategy == .init(
+                    mainModel: .terra,
+                    mainReasoningEffort: .xhigh,
+                    subagentModel: .gpt55,
+                    subagentReasoningEffort: .high,
+                    maximumConcurrentSubagents: 1
+                )
+            else {
+                print("Codex profile store self-test failed: three custom presets round trip")
+                return false
+            }
+            var followsSavedModel = customizedPreference
+            followsSavedModel.subagentMode = .solLuna
+            guard try followsSavedModel.validated().effectiveStrategy == .init(
+                mainModel: .astra,
+                mainReasoningEffort: .low,
+                subagentModel: nil,
+                subagentReasoningEffort: nil,
+                maximumConcurrentSubagents: 0
+            ) else {
+                print("Codex profile store self-test failed: custom preset did not follow saved model")
+                return false
+            }
+            var singleOverride = CodexExecutionPreference.defaultValue
+            singleOverride.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue] = .init(
+                name: "Solo",
+                useSavedModel: false,
+                model: .terra,
+                reasoningEffort: .medium,
+                subagentsEnabled: false,
+                subagentModel: .gpt52,
+                subagentReasoningEffort: .xhigh
+            )
+            singleOverride.subagentMode = .solLuna
+            guard try singleOverride.validated().effectiveStrategy == .init(
+                mainModel: .terra,
+                mainReasoningEffort: .medium,
+                subagentModel: nil,
+                subagentReasoningEffort: nil,
+                maximumConcurrentSubagents: 0
+            ), singleOverride.preset(for: .standard) == CodexExecutionPreference.defaultPreset(for: .standard),
+                singleOverride.restoringDefault(for: .solLuna).customPresets.isEmpty,
+                CodexExecutionPreference.defaultValue.customPresets.isEmpty
+            else {
+                print("Codex profile store self-test failed: single preset override or restore")
+                return false
+            }
+            let incompletePresetJSON = Data(
+                #"{"model":"gpt-6-astra","reasoningEffort":"low","serviceTier":"default","subagentMode":"standard","customPresets":{"standard":{"useSavedModel":true}}}"#.utf8
+            )
+            do {
+                _ = try JSONDecoder().decode(CodexExecutionPreference.self, from: incompletePresetJSON)
+                print("Codex profile store self-test failed: incomplete custom preset accepted")
+                return false
+            } catch DecodingError.keyNotFound {} catch {
+                print("Codex profile store self-test failed: incomplete preset wrong error")
+                return false
+            }
+            func expectsInvalid(_ preference: CodexExecutionPreference) -> Bool {
+                (try? preference.validated()) == nil
+            }
+            var invalidCustom = singleOverride
+            invalidCustom.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.name = String(repeating: "a", count: 65)
+            guard expectsInvalid(invalidCustom) else {
+                print("Codex profile store self-test failed: 65-byte preset name accepted")
+                return false
+            }
+            for invalidName in ["", " padded", "line\nbreak", String(repeating: "界", count: 22)] {
+                invalidCustom = singleOverride
+                invalidCustom.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.name = invalidName
+                guard expectsInvalid(invalidCustom) else {
+                    print("Codex profile store self-test failed: invalid preset name accepted")
+                    return false
+                }
+            }
+            invalidCustom = singleOverride
+            invalidCustom.customPresets["unknown"] = allCustomPresets[CodexExecutionPreference.SubagentMode.standard.rawValue]
+            guard expectsInvalid(invalidCustom) else {
+                print("Codex profile store self-test failed: unknown custom preset key accepted")
+                return false
+            }
+            invalidCustom = singleOverride
+            invalidCustom.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.model = .luna
+            invalidCustom.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.reasoningEffort = .ultra
+            guard expectsInvalid(invalidCustom) else {
+                print("Codex profile store self-test failed: unsupported custom main effort accepted")
+                return false
+            }
+            invalidCustom = singleOverride
+            invalidCustom.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.subagentModel = .gpt55
+            invalidCustom.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.subagentReasoningEffort = .max
+            guard expectsInvalid(invalidCustom) else {
+                print("Codex profile store self-test failed: unsupported custom child effort accepted")
+                return false
+            }
+            var invalidFastMain = singleOverride
+            invalidFastMain.serviceTier = .fast
+            invalidFastMain.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.model = .gpt52
+            guard expectsInvalid(invalidFastMain) else {
+                print("Codex profile store self-test failed: Fast unsupported custom main accepted")
+                return false
+            }
+            var fastWithDisabledChild = singleOverride
+            fastWithDisabledChild.serviceTier = .fast
+            guard (try? fastWithDisabledChild.validated()) != nil else {
+                print("Codex profile store self-test failed: disabled child incorrectly blocked Fast")
+                return false
+            }
+            var invalidFastChild = invalidFastMain
+            invalidFastChild.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.model = .terra
+            invalidFastChild.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.subagentsEnabled = true
+            guard expectsInvalid(invalidFastChild) else {
+                print("Codex profile store self-test failed: Fast unsupported custom child accepted")
+                return false
+            }
+            do {
+                let unsupported = try JSONDecoder().decode(
+                    CodexExecutionPreference.self,
+                    from: Data(#"{"model":"gpt-6-astra","reasoningEffort":"low","serviceTier":"default","subagentMode":"unknown"}"#.utf8)
+                )
+                let encoded = try JSONEncoder().encode(unsupported)
+                guard try JSONDecoder().decode(CodexExecutionPreference.self, from: encoded) == unsupported,
+                    unsupported.subagentMode.rawValue == "unknown", unsupported.savedModelSettingsAreValid
+                else { return false }
+                _ = try unsupported.validated()
+                print("Codex profile store self-test failed: unknown subagent mode accepted")
+                return false
+            } catch CodexExecutionPreferenceError.unsupportedExecutionMode {}
+            for mode in CodexExecutionPreference.SubagentMode.allCases {
+                for effort in CodexExecutionPreference.ReasoningEffort.allCases {
+                    for tier in CodexExecutionPreference.ServiceTier.allCases {
+                        let astra = CodexExecutionPreference(
+                            model: .astra,
+                            reasoningEffort: effort,
+                            serviceTier: tier,
+                            subagentMode: mode
+                        )
+                        let encoded = try JSONEncoder().encode(astra.validated())
+                        guard try JSONDecoder().decode(CodexExecutionPreference.self, from: encoded) == astra else {
+                            print("Codex profile store self-test failed: execution preference round trip")
+                            return false
+                        }
                     }
                 }
             }
@@ -2031,8 +2501,39 @@ enum CodexProfileStoreSelfTest {
             let fastPreference = CodexExecutionPreference(
                 model: .terra,
                 reasoningEffort: .ultra,
-                serviceTier: .fast
+                serviceTier: .fast,
+                subagentMode: .solLuna
             )
+            guard
+                fastPreference.effectiveStrategy
+                    == .init(
+                        mainModel: .sol,
+                        mainReasoningEffort: .high,
+                        subagentModel: .luna,
+                        subagentReasoningEffort: .max,
+                        maximumConcurrentSubagents: 1
+                    )
+            else {
+                print("Codex profile store self-test failed: Sol/Luna effective strategy")
+                return false
+            }
+            var independentlyUpdated = fastPreference
+            independentlyUpdated.model = .astra
+            independentlyUpdated.reasoningEffort = .low
+            independentlyUpdated.serviceTier = .standard
+            guard independentlyUpdated.subagentMode == .solLuna else {
+                print("Codex profile store self-test failed: independent settings lost subagent mode")
+                return false
+            }
+            var modeUpdated = CodexExecutionPreference.defaultValue
+            modeUpdated.subagentMode = .lunaDirect
+            guard modeUpdated.model == .astra,
+                modeUpdated.reasoningEffort == .low,
+                modeUpdated.serviceTier == .standard
+            else {
+                print("Codex profile store self-test failed: subagent mode changed saved defaults")
+                return false
+            }
             try first.setExecutionPreference(fastPreference, for: added.id)
             let addedAccountKey = first.profiles.first(where: { $0.id == added.id })?.recordedAccountKey
             let matchingPreferences = first.profiles
@@ -2048,8 +2549,30 @@ enum CodexProfileStoreSelfTest {
             let standardPreference = CodexExecutionPreference(
                 model: .gpt55,
                 reasoningEffort: .medium,
-                serviceTier: .standard
+                serviceTier: .standard,
+                subagentMode: .lunaDirect
             )
+            guard
+                standardPreference.effectiveStrategy
+                    == .init(
+                        mainModel: .luna,
+                        mainReasoningEffort: .max,
+                        subagentModel: nil,
+                        subagentReasoningEffort: nil,
+                        maximumConcurrentSubagents: 0
+                    ),
+                CodexExecutionPreference.defaultValue.effectiveStrategy
+                    == .init(
+                        mainModel: .astra,
+                        mainReasoningEffort: .low,
+                        subagentModel: nil,
+                        subagentReasoningEffort: nil,
+                        maximumConcurrentSubagents: 0
+                    )
+            else {
+                print("Codex profile store self-test failed: direct effective strategies")
+                return false
+            }
             try first.setExecutionPreference(standardPreference, for: duplicate.id, applyToAll: true)
             guard
                 first.profiles.filter({ !$0.isSystemProfile }).allSatisfy({
@@ -2057,6 +2580,15 @@ enum CodexProfileStoreSelfTest {
                 })
             else {
                 print("Codex profile store self-test failed: apply execution preference to all")
+                return false
+            }
+            let reloadedSequential = CodexProfileStore(homeDirectory: home, applicationSupportDirectory: support)
+            guard
+                reloadedSequential.profiles.filter({ !$0.isSystemProfile }).allSatisfy({
+                    $0.effectiveExecutionPreference == standardPreference
+                })
+            else {
+                print("Codex profile store self-test failed: subagent mode profile round trip")
                 return false
             }
             let astraPreference = CodexExecutionPreference(model: .astra, reasoningEffort: .max, serviceTier: .fast)
@@ -2079,15 +2611,19 @@ enum CodexProfileStoreSelfTest {
             )
             let fastCommand = try TerminalAppLauncher.configuredCodexCommand(
                 executable: "/usr/local/bin/codex",
-                preference: fastPreference
+                preference: fastPreference,
+                roleURL: URL(fileURLWithPath: "/fixture/next_preset_worker.toml")
             )
             guard standardCommand.contains("--model 'gpt-6-astra'"),
                 standardCommand.contains("'agents.default_subagent_model=\"gpt-6-astra\"'"),
                 standardCommand.contains("'agents.default_subagent_reasoning_effort=\"low\"'"),
-                standardCommand.contains("'service_tier=\"default\"' --disable fast_mode"),
-                fastCommand.contains("--model 'gpt-5.6-terra'"),
-                fastCommand.contains("'model_reasoning_effort=\"ultra\"'"),
-                fastCommand.contains("'service_tier=\"fast\"' --enable fast_mode")
+                standardCommand.contains("'service_tier=\"default\"'"), standardCommand.contains("--disable fast_mode"),
+                standardCommand.contains("'agents.enabled=false'"),
+                fastCommand.contains("--model 'gpt-5.6-sol'"),
+                fastCommand.contains("'model_reasoning_effort=\"high\"'"),
+                fastCommand.contains("'agents.default_subagent_model=\"gpt-5.6-luna\"'"),
+                fastCommand.contains("'agents.default_subagent_reasoning_effort=\"max\"'"),
+                fastCommand.contains("'service_tier=\"fast\"'"), fastCommand.contains("--enable fast_mode")
             else {
                 print("Codex profile store self-test failed: terminal execution preference command")
                 return false
@@ -2158,6 +2694,8 @@ enum CodexProfileStoreSelfTest {
             try first.record(secondSnapshot, for: "system", allowSystemAccountChange: true)
             guard let reboundSystem = first.profiles.first(where: { $0.id == "system" }),
                 reboundSystem.lastSnapshot?.email == "second@example.com",
+                reboundSystem.lastSnapshot?.creditBalance == nil,
+                reboundSystem.lastSnapshot?.creditBalanceUnlimited == nil,
                 reboundSystem.remark == nil,
                 reboundSystem.officialProfile == nil,
                 reboundSystem.lastWarmUpAt == nil,
@@ -2211,6 +2749,8 @@ enum CodexProfileStoreSelfTest {
                 restored.profiles.first(where: { $0.id == added.id })?.lastSnapshot?.availableResetCredits == 2,
                 restored.profiles.first(where: { $0.id == added.id })?.lastSnapshot?.resetCreditExpiries
                     == [Date(timeIntervalSince1970: 1_300)],
+                restored.profiles.first(where: { $0.id == added.id })?.lastSnapshot?.creditBalance == "0",
+                restored.profiles.first(where: { $0.id == added.id })?.lastSnapshot?.creditBalanceUnlimited == false,
                 !CodexProfile.participatesInAutomaticSwitch(added.id, among: restored.profiles),
                 restored.profiles[0].matchesRecordedAccount(email: "FIRST@example.com"),
                 !restored.profiles[0].matchesRecordedAccount(email: "other@example.com"),
@@ -2258,6 +2798,39 @@ enum CodexProfileStoreSelfTest {
                 print("Codex profile store self-test failed: automatic-switch scope migration")
                 return false
             }
+            var unknownModeProfiles = legacyProfiles
+            guard let unknownModeIndex = unknownModeProfiles.firstIndex(where: {
+                ($0["isSystemProfile"] as? Bool) == false
+            }) else {
+                print("Codex profile store self-test failed: unknown mode fixture")
+                return false
+            }
+            unknownModeProfiles[unknownModeIndex]["executionPreference"] = [
+                "model": "gpt-6-astra",
+                "reasoningEffort": "low",
+                "serviceTier": "default",
+                "subagentMode": "future_slot",
+            ]
+            legacyState["profiles"] = unknownModeProfiles
+            try JSONSerialization.data(withJSONObject: legacyState).write(to: stateURL, options: .atomic)
+            let unknownModeRestored = CodexProfileStore(
+                fileManager: fileManager,
+                homeDirectory: home,
+                applicationSupportDirectory: support
+            )
+            guard unknownModeRestored.profiles.count == unknownModeProfiles.count,
+                let unknownModeProfile = unknownModeRestored.profiles.first(where: {
+                    $0.executionPreference?.subagentMode.rawValue == "future_slot"
+                })
+            else {
+                print("Codex profile store self-test failed: unknown mode hid profiles")
+                return false
+            }
+            do {
+                _ = try unknownModeProfile.validatedExecutionPreference()
+                print("Codex profile store self-test failed: unknown mode profile could start")
+                return false
+            } catch CodexExecutionPreferenceError.unsupportedExecutionMode {}
             var invalidProfiles = legacyState["profiles"] as? [[String: Any]] ?? []
             guard
                 let invalidIndex = invalidProfiles.firstIndex(where: {
@@ -2591,9 +3164,35 @@ enum CodexProfileStoreSelfTest {
             }
             guard
                 CodexWarmUpPolicy.nextEligibleDate(for: lowWeekly, selection: sevenDayOnly, now: now)
-                    == sevenDayReset.addingTimeInterval(CodexWarmUpPolicy.resetGrace)
+                    == nil,
+                !CodexWarmUpPolicy.canSendWarmUpRequest(lowWeekly, now: now)
             else {
-                print("Codex profile store self-test failed: 7-day switch still waits when remaining is low")
+                print("Codex profile store self-test failed: exhausted weekly quota must block every warm-up request")
+                return false
+            }
+            for balance: String? in [nil, "0", "125.75"] {
+                var exhausted = idleWeek
+                exhausted.lastSnapshot = CodexAccountSnapshot(
+                    accountType: "chatgpt", planType: "plus", email: "managed@example.com",
+                    limitId: "codex", limitName: nil,
+                    fiveHour: CodexQuotaWindowSnapshot(RateWindow(
+                        usedPercent: 100, windowDurationMins: 300, resetsAt: now.addingTimeInterval(-10))),
+                    sevenDay: idleWeek.lastSnapshot?.sevenDay, monthly: nil, creditBalance: balance,
+                    fetchedAt: now, appServerVersion: nil)
+                guard !CodexWarmUpPolicy.canSendWarmUpRequest(exhausted, now: now),
+                    !CodexWarmUpPolicy.isDue(exhausted, selection: sevenDayOnly, unexpected: [.sevenDay], now: now),
+                    CodexWarmUpPolicy.nextEligibleDate(for: exhausted, selection: bothWindows, now: now) == nil,
+                    CodexWarmUpPolicy.nextQuotaResetRefreshDate(for: exhausted, now: now) != nil
+                else {
+                    print("Codex profile store self-test failed: a balance or elapsed reset must not unlock an exhausted 5-hour window")
+                    return false
+                }
+            }
+            guard CodexWarmUpPolicy.canSendWarmUpRequest(idleWeek, now: now),
+                !CodexWarmUpPolicy.canSendWarmUpRequest(
+                    idleWeek, now: now.addingTimeInterval(CodexWarmUpPolicy.maximumQuotaAge + 1))
+            else {
+                print("Codex profile store self-test failed: warm-up resumes only with fresh recovered quota")
                 return false
             }
             guard CodexWarmUpPolicy.hasFreshQuotaEvidence(idleWeek, now: now),
@@ -2681,7 +3280,7 @@ enum CodexProfileStoreSelfTest {
             }
             guard !CodexWarmUpPolicy.isDue(exhaustedRetry, selection: bothWindows, now: retryAt),
                 CodexWarmUpPolicy.nextEligibleDate(for: exhaustedRetry, selection: bothWindows, now: retryAt)
-                    == exhaustedRetry.lastSnapshot!.sevenDay!.resetsAt!.addingTimeInterval(CodexWarmUpPolicy.resetGrace)
+                    == nil
             else {
                 print("Codex profile store self-test failed: a failed idle window must not bypass an exhausted weekly window")
                 return false
@@ -3244,6 +3843,40 @@ enum CodexProfileStoreSelfTest {
         return true
     }
 
+    private static func testSystemSwitchObservationOrdering(root: URL, fileManager: FileManager) throws -> Bool {
+        let home = root.appendingPathComponent("switch-ordering-home")
+        let store = CodexProfileStore(homeDirectory: home, applicationSupportDirectory: root.appendingPathComponent("switch-ordering-support"))
+        let system = store.profiles.first(where: \.isSystemProfile)!
+        let authURL = system.codexHomeURL.appendingPathComponent("auth.json")
+        try fileManager.createDirectory(at: system.codexHomeURL, withIntermediateDirectories: true)
+        let old = testSnapshot(email: "old@example.invalid", usedPercent: 80, at: Date(timeIntervalSince1970: 200))
+        let target = testSnapshot(email: "target@example.invalid", usedPercent: 20, at: Date(timeIntervalSince1970: 100))
+        try testAuthData(email: "old@example.invalid", accessToken: "fixture").write(to: authURL)
+        try store.record(old, for: system.id, allowSystemAccountChange: true)
+        try testAuthData(email: "target@example.invalid", accessToken: "fixture").write(to: authURL)
+        try store.record(target, for: system.id, allowSystemAccountChange: true)
+        guard store.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.email == "target@example.invalid" else {
+            print("Codex switch observation self-test failed: preflight timestamp hid the new Desktop account")
+            return false
+        }
+        let late = testSnapshot(email: "old@example.invalid", usedPercent: 90, at: Date(timeIntervalSince1970: 300))
+        try store.record(late, for: system.id, allowSystemAccountChange: true)
+        let stale = testSnapshot(email: "target@example.invalid", usedPercent: 70, at: Date(timeIntervalSince1970: 50))
+        try store.record(stale, for: system.id, allowSystemAccountChange: true)
+        guard let current = store.profiles.first(where: \.isSystemProfile)?.lastSnapshot,
+            current.email == "target@example.invalid", current.sevenDay?.usedPercent == 20,
+            current.fetchedAt == target.refreshedAt
+        else {
+            print("Codex switch observation self-test failed: late reads replaced the current account")
+            return false
+        }
+        try testAuthData(email: "old@example.invalid", accessToken: "fixture").write(to: authURL)
+        try store.record(testSnapshot(email: "old@example.invalid", usedPercent: 60, at: Date(timeIntervalSince1970: 80)), for: system.id, allowSystemAccountChange: true)
+        guard store.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.email == "old@example.invalid" else { return false }
+        print("Codex switch observation self-test passed: verified identity changes and late-read rejection")
+        return true
+    }
+
     private static func testQuotaObservationOrdering(root: URL, fileManager: FileManager) throws -> Bool {
         let home = root.appendingPathComponent("quota-ordering-home", isDirectory: true)
         let support = root.appendingPathComponent("quota-ordering-support", isDirectory: true)
@@ -3266,7 +3899,9 @@ enum CodexProfileStoreSelfTest {
             used: Double? = nil,
             messages: [String] = [],
             email: String? = "ordering@example.invalid",
-            succeeded: Bool? = nil
+            succeeded: Bool? = nil,
+            balance: String? = nil,
+            unlimited: Bool? = nil
         ) -> UsageSnapshot {
             UsageSnapshot(
                 refreshedAt: base.addingTimeInterval(seconds),
@@ -3279,7 +3914,14 @@ enum CodexProfileStoreSelfTest {
                     RateWindow(usedPercent: $0, windowDurationMins: 10_080, resetsAt: base.addingTimeInterval(604_800))
                 },
                 monthlyQuota: nil,
-                credits: nil,
+                credits: balance != nil || unlimited != nil
+                    ? CreditsInfo(
+                        hasCredits: true,
+                        unlimited: unlimited ?? false,
+                        balance: balance,
+                        resetCredits: nil,
+                        resetCreditDetails: nil
+                    ) : nil,
                 cloudLifetimeTokens: nil,
                 local: nil,
                 taskBoard: nil,
@@ -3380,6 +4022,35 @@ enum CodexProfileStoreSelfTest {
         expect(
             store.profiles.first { $0.id == fifth.id } == fifthAfterSuccess,
             "equal-time failure must not override a successful observation without quota windows"
+        )
+
+        let balanceProfile = try store.addManagedProfile()
+        try store.record(
+            observation(80, succeeded: true, balance: "1,234.50", unlimited: false),
+            for: balanceProfile.id
+        )
+        try store.record(observation(80, used: 20), for: balanceProfile.id)
+        let enrichedBalance = store.profiles.first { $0.id == balanceProfile.id }?.lastSnapshot
+        expect(
+            enrichedBalance?.creditBalance == "1,234.50"
+                && enrichedBalance?.creditBalanceUnlimited == false,
+            "equal-time quota enrichment must preserve explicit balance metadata"
+        )
+        try store.record(
+            observation(79, succeeded: true, balance: "999", unlimited: true),
+            for: balanceProfile.id
+        )
+        expect(
+            store.profiles.first { $0.id == balanceProfile.id }?.lastSnapshot == enrichedBalance,
+            "stale balance observation must not replace the current account snapshot"
+        )
+        try store.record(
+            observation(90, succeeded: true, balance: "1,2.3.4", unlimited: false),
+            for: balanceProfile.id
+        )
+        expect(
+            store.profiles.first { $0.id == balanceProfile.id }?.lastSnapshot?.creditBalance == nil,
+            "malformed balance text must not be persisted"
         )
         let accountOnlySnapshot = CodexAccountSnapshot(
             accountType: "chatgpt",
@@ -3592,7 +4263,9 @@ enum CodexProfileStoreSelfTest {
         email: String,
         usedPercent: Double,
         at date: Date,
-        resetCredits: Int? = nil
+        resetCredits: Int? = nil,
+        balance: String? = nil,
+        unlimited: Bool? = nil
     ) -> UsageSnapshot {
         UsageSnapshot(
             refreshedAt: date,
@@ -3603,17 +4276,16 @@ enum CodexProfileStoreSelfTest {
             fiveHourQuota: nil,
             sevenDayQuota: RateWindow(usedPercent: usedPercent, windowDurationMins: 10_080, resetsAt: nil),
             monthlyQuota: nil,
-            credits: resetCredits.map {
-                CreditsInfo(
-                    hasCredits: false,
-                    unlimited: false,
-                    balance: nil,
-                    resetCredits: $0,
-                    resetCreditDetails: [
-                        ResetCreditDetail(id: "test-reset", expiresAt: date.addingTimeInterval(1_000))
-                    ]
-                )
-            },
+            credits: resetCredits != nil || balance != nil || unlimited != nil
+                ? CreditsInfo(
+                    hasCredits: balance != nil || unlimited == true,
+                    unlimited: unlimited ?? false,
+                    balance: balance,
+                    resetCredits: resetCredits,
+                    resetCreditDetails: resetCredits.map { _ in
+                        [ResetCreditDetail(id: "test-reset", expiresAt: date.addingTimeInterval(1_000))]
+                    }
+                ) : nil,
             cloudLifetimeTokens: nil,
             local: nil,
             taskBoard: nil,
@@ -4122,6 +4794,9 @@ enum CodexWarmUpPolicySelfTest {
                     store.profiles.first?.lastWarmUpFailureReason == nil,
                     "warm-up success clears failure category"
                 )
+            else { return false }
+            guard expect(store.profiles.first?.warmUpHistory?.count == 2, "success preserves earlier failure history"),
+                expect(store.profiles.first?.warmUpHistory?.first?.failureReason == "timeout", "failure timestamp and reason remain available")
             else { return false }
             try store.record(
                 testWindowSnapshot(email: "f@example.com", at: now),

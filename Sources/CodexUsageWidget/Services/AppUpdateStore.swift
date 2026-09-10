@@ -7,12 +7,14 @@ final class AppUpdateStore: ObservableObject {
     @Published private(set) var isChecking = false
 
     private let settings: AppSettings
-    private let checker: GitHubReleaseUpdateChecker
+    private let checker: any AppUpdateChecking
+    private var activeCheckID: UUID?
+    private var activeCheckIsAutomatic = false
     private var cancellables = Set<AnyCancellable>()
 
     init(
         settings: AppSettings,
-        checker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker()
+        checker: any AppUpdateChecking = GitHubReleaseUpdateChecker()
     ) {
         self.settings = settings
         self.checker = checker
@@ -53,6 +55,9 @@ final class AppUpdateStore: ObservableObject {
 
     private func check(force: Bool) {
         guard !isChecking else { return }
+        let checkID = UUID()
+        activeCheckID = checkID
+        activeCheckIsAutomatic = !force
         isChecking = true
         result = AppUpdateResult(
             status: .checking,
@@ -69,7 +74,10 @@ final class AppUpdateStore: ObservableObject {
             force: force
         ) { [weak self] result in
             DispatchQueue.main.async {
-                self?.apply(result, force: force)
+                guard let self, self.activeCheckID == checkID else { return }
+                self.activeCheckID = nil
+                self.activeCheckIsAutomatic = false
+                self.apply(result, force: force)
             }
         }
     }
@@ -101,7 +109,9 @@ final class AppUpdateStore: ObservableObject {
                 guard let self else { return }
                 if enabled {
                     self.startAutomaticCheck()
-                } else {
+                } else if self.activeCheckIsAutomatic || !self.isChecking {
+                    self.activeCheckID = nil
+                    self.activeCheckIsAutomatic = false
                     self.isChecking = false
                     self.result = self.disabledResult()
                 }
@@ -118,5 +128,49 @@ final class AppUpdateStore: ObservableObject {
             preferredAsset: result.preferredAsset,
             errorMessage: nil
         )
+    }
+
+    static func selfTest() -> Bool {
+        final class ControlledChecker: AppUpdateChecking {
+            var completions: [(AppUpdateResult) -> Void] = []
+
+            func check(currentVersion: String, includePrereleases: Bool, force: Bool, completion: @escaping (AppUpdateResult) -> Void) {
+                completions.append(completion)
+            }
+        }
+        let suite = "CodexManagerNext.update-callback-test.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        let checker = ControlledChecker()
+        let store = AppUpdateStore(settings: settings, checker: checker)
+        let reply = AppUpdateResult(status: .upToDate, checkedAt: Date(), currentVersion: "1.0.0", latestRelease: nil, preferredAsset: nil, errorMessage: nil)
+        func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+
+        store.startAutomaticCheck()
+        guard checker.completions.count == 1, store.isChecking else { return false }
+        settings.automaticUpdateChecksEnabled = false
+        settle()
+        checker.completions[0](reply)
+        settle()
+        guard store.result.status == .disabled, !store.isChecking else { return false }
+
+        settings.automaticUpdateChecksEnabled = true
+        settle()
+        guard checker.completions.count == 2, store.isChecking else { return false }
+        checker.completions[0](reply)
+        settle()
+        guard store.result.status == .checking, store.isChecking else { return false }
+        checker.completions[1](reply)
+        settle()
+        guard store.result.status == .upToDate, !store.isChecking else { return false }
+
+        store.checkNow()
+        settings.automaticUpdateChecksEnabled = false
+        settle()
+        guard checker.completions.count == 3, store.isChecking else { return false }
+        checker.completions[2](reply)
+        settle()
+        return store.result.status == .upToDate && !store.isChecking
     }
 }

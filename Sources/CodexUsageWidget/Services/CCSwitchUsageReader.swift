@@ -1,3 +1,5 @@
+import Darwin
+import CoreFoundation
 import Foundation
 
 struct AgentTokenShare: Equatable, Identifiable {
@@ -25,7 +27,7 @@ func customTokenCount(fromWanText text: String) -> Int64? {
         wan > 0,
         wan <= Double(Int64.max) / 10_000
     else { return nil }
-    return Int64(wan * 10_000)
+    return Int64(exactly: (wan * 10_000).rounded(.towardZero))
 }
 
 struct CCSwitchUsageSummary: Equatable {
@@ -360,20 +362,7 @@ final class CCSwitchUsageReader {
 
     private func query(_ sql: String) throws -> [[String: Any]] {
         guard let sqliteURL else { throw CCSwitchUsageError.sqliteMissing }
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = sqliteURL
-        process.arguments = ["-readonly", "-json", databaseURL.path, sql]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        let maximumOutputBytes = 1 * 1_024 * 1_024
-        let data = try output.fileHandleForReading.read(upToCount: maximumOutputBytes + 1) ?? Data()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0, data.count <= maximumOutputBytes else {
-            throw CCSwitchUsageError.queryFailed
-        }
-        return try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
+        return try LocalSQLiteQuery.rows(executable: sqliteURL, database: databaseURL, sql: sql)
     }
 
     private func int(_ value: Any?) -> Int? {
@@ -382,6 +371,22 @@ final class CCSwitchUsageReader {
 
     private func int64(_ value: Any?) -> Int64? {
         (value as? NSNumber)?.int64Value
+    }
+}
+
+private enum LocalSQLiteQuery {
+    static func rows(executable: URL, database: URL, sql: String, timeout: TimeInterval = 5) throws -> [[String: Any]] {
+        let data: Data
+        do {
+            data = try BoundedLocalProcess.run(executable: executable,
+                arguments: ["-readonly", "-json", database.path, sql], timeout: timeout)
+        } catch {
+            throw CCSwitchUsageError.queryFailed
+        }
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw CCSwitchUsageError.queryFailed
+        }
+        return rows
     }
 }
 
@@ -476,11 +481,37 @@ enum CCSwitchUsageReaderSelfTest {
                 customTokenCount(fromWanText: "1,5") == 15_000,
                 customTokenCount(fromWanText: "inf") == nil,
                 customTokenCount(fromWanText: "1e999") == nil,
+                customTokenCount(fromWanText: "922337203685477.6") == nil,
+                customTokenCount(fromWanText: "922337203685477.4") != nil,
                 AgentTokenShare(name: "codex", tokens: 1).id
                     != AgentTokenShare(name: "codex", tokens: 1, manual: true).id
             else {
                 print("CC Switch reader self-test failed: custom token input boundary")
                 return false
+            }
+            let sqlite = URL(fileURLWithPath: "/usr/bin/sqlite3")
+            let largeRows = try LocalSQLiteQuery.rows(
+                executable: sqlite, database: database, sql: "SELECT hex(zeroblob(40000)) AS payload;"
+            )
+            guard (largeRows.first?["payload"] as? String)?.count == 80_000 else {
+                print("CC Switch reader self-test failed: multi-chunk output")
+                return false
+            }
+            for (sql, timeout) in [
+                ("SELECT hex(zeroblob(600000)) AS payload;", 5.0),
+                ("WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<100000000) SELECT sum(n) FROM x;", 0.05),
+            ] {
+                let started = Date()
+                do {
+                    _ = try LocalSQLiteQuery.rows(executable: sqlite, database: database, sql: sql, timeout: timeout)
+                    print("CC Switch reader self-test failed: query limit did not reject")
+                    return false
+                } catch CCSwitchUsageError.queryFailed {
+                    guard Date().timeIntervalSince(started) < 3 else {
+                        print("CC Switch reader self-test failed: query cleanup exceeded deadline")
+                        return false
+                    }
+                }
             }
             print("CC Switch reader self-test passed")
             return true
@@ -567,21 +598,10 @@ enum ZCodeUsageReader {
                      + cache_read_input_tokens + cache_creation_input_tokens ELSE 0 END), 0) AS today_total
             FROM turn_usage;
             """
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: sqlitePath)
-        process.arguments = ["-readonly", "-json", database.path, sql]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        let data = (try? output.fileHandleForReading.read(upToCount: 1 << 20)) ?? Data()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0,
-            let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+        guard
+            let rows = try? LocalSQLiteQuery.rows(
+                executable: URL(fileURLWithPath: sqlitePath), database: database, sql: sql
+            ),
             let first = rows.first
         else { return nil }
         return Usage(
@@ -628,70 +648,95 @@ enum CustomTokenSourceStore {
 
 /// Grok CLI 与 Grok 桌面工作区会话的本机全时段 token 用量（~/.grok/sessions/*/*/updates.jsonl 的 usage 记录）。
 enum GrokUsageReader {
+    struct Limits {
+        var maximumFileBytes = 16 * 1_024 * 1_024
+        var maximumTotalBytes = 64 * 1_024 * 1_024
+        var maximumEntries = 10_000
+        var maximumLineBytes = 1_024 * 1_024
+        var timeout: TimeInterval = 10
+    }
+
+    private enum ReadError: Error { case invalidUsage, nestingLimit }
+
     static func lifetimeTokens(
         fileManager: FileManager = .default,
-        homeDirectory: URL? = nil
+        homeDirectory: URL? = nil,
+        limits: Limits = .init()
     ) -> Int64? {
+        guard limits.maximumFileBytes > 0, limits.maximumTotalBytes > 0,
+            limits.maximumEntries > 0, limits.maximumLineBytes > 0,
+            limits.timeout.isFinite, limits.timeout > 0
+        else { return nil }
         let home = homeDirectory ?? fileManager.homeDirectoryForCurrentUser
         let sessionsRoot = home.appendingPathComponent(".grok/sessions", isDirectory: true)
-        guard fileManager.fileExists(atPath: sessionsRoot.path) else { return nil }
-
-        var workDirectories: [URL] = []
-        if let workspaceDirs = try? fileManager.contentsOfDirectory(
+        guard sessionsRoot.standardizedFileURL == sessionsRoot.resolvingSymlinksInPath().standardizedFileURL,
+            let rootValues = try? sessionsRoot.resourceValues(forKeys: [.isDirectoryKey]),
+            rootValues.isDirectory == true
+        else { return nil }
+        var enumerationFailed = false
+        guard let entries = fileManager.enumerator(
             at: sessionsRoot,
-            includingPropertiesForKeys: nil
-        ) {
-            for workspace in workspaceDirs {
-                if let sessionDirs = try? fileManager.contentsOfDirectory(
-                    at: workspace,
-                    includingPropertiesForKeys: nil
-                ) {
-                    for session in sessionDirs {
-                        workDirectories.append(session)
-                    }
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            errorHandler: { _, _ in enumerationFailed = true; return false }
+        ) else { return nil }
+        let started = ProcessInfo.processInfo.systemUptime
+        var entryCount = 0
+        var remainingBytes = limits.maximumTotalBytes
+        var total: Int64 = 0
+        do {
+            for case let entry as URL in entries {
+                entryCount += 1
+                guard !enumerationFailed, entryCount <= limits.maximumEntries,
+                    ProcessInfo.processInfo.systemUptime - started < limits.timeout
+                else { return nil }
+                let values = try entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                guard values.isSymbolicLink != true else { return nil }
+                if entries.level >= 2 { entries.skipDescendants() }
+                guard entries.level == 2, values.isDirectory == true else { continue }
+                let updates = entry.appendingPathComponent("updates.jsonl")
+                guard remainingBytes > 0 else { return nil }
+                guard let data = try DispatchParticipationSync.readBoundedRegularFile(
+                    updates,
+                    maximumBytes: min(limits.maximumFileBytes, remainingBytes),
+                    allowMissing: true
+                ) else { continue }
+                remainingBytes -= data.count
+                var start = data.startIndex
+                while start < data.endIndex {
+                    let end = data[start...].firstIndex(of: 0x0A) ?? data.endIndex
+                    guard end - start <= limits.maximumLineBytes,
+                        ProcessInfo.processInfo.systemUptime - started < limits.timeout
+                    else { return nil }
+                    let line = data[start..<end]
+                    start = end < data.endIndex ? end + 1 : end
+                    guard !line.isEmpty,
+                        let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                        let usage = try findUsage(in: object)
+                    else { continue }
+                    let input = try tokenCount(usage["inputTokens"])
+                    let output = try tokenCount(usage["outputTokens"])
+                    let pair = input.addingReportingOverflow(output)
+                    let sum = total.addingReportingOverflow(pair.partialValue)
+                    guard !pair.overflow, !sum.overflow else { return nil }
+                    total = sum.partialValue
                 }
             }
-        }
-
-        var total: Int64 = 0
-        for sessionDirectory in workDirectories {
-            let updates = sessionDirectory.appendingPathComponent("updates.jsonl")
-            guard fileManager.fileExists(atPath: updates.path),
-                let data = try? Data(contentsOf: updates, options: .mappedIfSafe)
-            else { continue }
-            for lineSubdata in splitLines(data) {
-                guard lineSubdata.contains(Data("\"usage\"".utf8)),
-                    let object = try? JSONSerialization.jsonObject(with: lineSubdata) as? [String: Any],
-                    let usage = findUsage(in: object)
-                else { continue }
-                let input = (usage["inputTokens"] as? NSNumber)?.int64Value ?? 0
-                let output = (usage["outputTokens"] as? NSNumber)?.int64Value ?? 0
-                total += input + output
-            }
-        }
+        } catch { return nil }
+        guard !enumerationFailed, ProcessInfo.processInfo.systemUptime - started < limits.timeout else { return nil }
         return total
     }
 
-    private static func splitLines(_ data: Data) -> [Data] {
-        var lines: [Data] = []
-        var start = data.startIndex
-        var index = data.startIndex
-        while index < data.endIndex {
-            if data[index] == 0x0A {
-                if index > start {
-                    lines.append(data.subdata(in: start..<index))
-                }
-                start = data.index(after: index)
-            }
-            index = data.index(after: index)
-        }
-        if start < data.endIndex {
-            lines.append(data.subdata(in: start..<data.endIndex))
-        }
-        return lines
+    private static func tokenCount(_ value: Any?) throws -> Int64 {
+        guard let value else { return 0 }
+        guard let number = value as? NSNumber,
+            CFGetTypeID(number) != CFBooleanGetTypeID(),
+            let count = Int64(number.stringValue), count >= 0
+        else { throw ReadError.invalidUsage }
+        return count
     }
 
-    private static func findUsage(in object: [String: Any]) -> [String: Any]? {
+    private static func findUsage(in object: [String: Any], depth: Int = 0) throws -> [String: Any]? {
+        guard depth <= 32 else { throw ReadError.nestingLimit }
         if let usage = object["usage"] as? [String: Any],
             usage["totalTokens"] != nil
         {
@@ -699,13 +744,13 @@ enum GrokUsageReader {
         }
         for value in object.values {
             if let dictionary = value as? [String: Any],
-                let usage = findUsage(in: dictionary)
+                let usage = try findUsage(in: dictionary, depth: depth + 1)
             {
                 return usage
             }
             if let array = value as? [[String: Any]] {
                 for item in array {
-                    if let usage = findUsage(in: item) {
+                    if let usage = try findUsage(in: item, depth: depth + 1) {
                         return usage
                     }
                 }

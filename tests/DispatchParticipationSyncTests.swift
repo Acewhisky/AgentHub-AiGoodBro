@@ -831,12 +831,29 @@ test("centralized paths resolve build sibling and explicit override without prob
         environment: [DispatchParticipationPaths.hubConfigEnvironmentKey: f.paths.hubConfig.path])
     try require(override.hubConfig == f.paths.hubConfig)
     try expectError(.hubLocation) {
-        _ = try DispatchParticipationPaths.live(snapshot: f.paths.snapshot, bundleURL: installed, environment: [:])
+        _ = try DispatchParticipationPaths.live(snapshot: f.paths.snapshot, bundleURL: installed, environment: [:], launchAgentURL: nil)
     }
     try expectError(.hubLocation) {
         _ = try DispatchParticipationPaths.live(
             snapshot: f.paths.snapshot, bundleURL: bundle,
             environment: [DispatchParticipationPaths.hubConfigEnvironmentKey: "relative/config.json"])
+    }
+}
+
+test("installed app discovers only its existing named Hub service") {
+    let f = try DispatchFixture()
+    let installed = f.root.appendingPathComponent("Applications/CodexAccountManagerNext.app")
+    let plist = f.root.appendingPathComponent("fixture-hub.plist")
+    let data = try PropertyListSerialization.data(fromPropertyList: [
+        "Label": "com.agenthub.arc-hub", "WorkingDirectory": f.paths.hubConfig.deletingLastPathComponent().path
+    ], format: .xml, options: 0)
+    try data.write(to: plist)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: plist.path)
+    let discovered = try DispatchParticipationPaths.live(snapshot: f.paths.snapshot, bundleURL: installed, environment: [:], launchAgentURL: plist)
+    try require(discovered.hubConfig == f.paths.hubConfig)
+    try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: plist.path)
+    try expectError(.hubLocation) {
+        _ = try DispatchParticipationPaths.live(snapshot: f.paths.snapshot, bundleURL: installed, environment: [:], launchAgentURL: plist)
     }
 }
 

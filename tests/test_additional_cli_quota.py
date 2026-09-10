@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import pathlib
+import platform
+import subprocess
+import tempfile
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+class AdditionalCLIQuotaTests(unittest.TestCase):
+    def test_synthetic_swift_fixture(self) -> None:
+        sources = [
+            ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/AdditionalCLIQuotaReader.swift",
+            ROOT / "tests/AdditionalCLIQuotaFixture.swift",
+        ]
+        for source in sources:
+            self.assertTrue(source.is_file(), source)
+
+        with tempfile.TemporaryDirectory(prefix="additional-cli-quota-") as directory:
+            executable = pathlib.Path(directory) / "fixture"
+            compat_sdk = pathlib.Path("/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk")
+            if compat_sdk.is_dir():
+                sdk = str(compat_sdk)
+            else:
+                sdk = subprocess.check_output(
+                    ["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True
+                ).strip()
+            compile_result = subprocess.run(
+                [
+                    "xcrun",
+                    "swiftc",
+                    "-target",
+                    f"{platform.machine()}-apple-macos13.0",
+                    "-sdk",
+                    sdk,
+                    "-module-cache-path",
+                    str(pathlib.Path(directory) / "ModuleCache"),
+                    "-o",
+                    str(executable),
+                    *(str(source) for source in sources),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+            self.assertEqual(
+                compile_result.returncode,
+                0,
+                f"swiftc failed:\n{compile_result.stdout}\n{compile_result.stderr}",
+            )
+            run_result = subprocess.run(
+                [str(executable)],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(
+                run_result.returncode,
+                0,
+                f"fixture failed:\n{run_result.stdout}\n{run_result.stderr}",
+            )
+            self.assertEqual(run_result.stdout.strip(), "additional-cli-quota-fixture: ok")
+
+    def test_static_workbuddy_trae_and_privacy_contract(self) -> None:
+        source = (
+            ROOT / "Sources/CodexUsageWidget/Services/AdditionalCLIQuotaReader.swift"
+        ).read_text(encoding="utf-8")
+        fixture = (ROOT / "tests/AdditionalCLIQuotaFixture.swift").read_text(encoding="utf-8")
+        self.assertIn("case .workBuddy, .trae:", source)
+        self.assertIn('messageCode: "local_cli_unsupported"', source)
+        self.assertIn("case .workBuddy: \"WorkBuddy CLI\"", source)
+        self.assertIn("case .trae: \"TRAE SOLO\"", source)
+        self.assertNotIn("ProcessInfo.processInfo.environment", source)
+        self.assertNotIn("Data(contentsOf:", source)
+        self.assertNotIn("URLSession.shared", source)
+        self.assertNotIn("credentials.json", source)
+        self.assertNotIn("/api/v1/zcode-plan/billing", source)
+        self.assertIn("testWorkBuddyAndTraeUnsupportedWithoutIO", fixture)
+        self.assertIn("LocalCLIKind.workBuddy, .trae", fixture)
+        self.assertIn("local_cli_unsupported", fixture)
+        self.assertIn("testGeminiExhaustedRemainsAvailable", fixture)
+        self.assertIn("remainingFraction\": 0.0", fixture)
+        self.assertNotIn("sk-ant-", fixture)
+        self.assertNotIn("sk-or-", fixture)
+
+
+if __name__ == "__main__":
+    unittest.main()

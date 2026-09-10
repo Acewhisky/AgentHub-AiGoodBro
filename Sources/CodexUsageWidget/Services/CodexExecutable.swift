@@ -2,45 +2,49 @@ import Cocoa
 import Foundation
 
 enum CodexExecutable {
-    static func path(fileManager: FileManager = .default) -> String? {
+    static let preferredPathKey = "CodexManagerNext.runtime.codexPath"
+
+    static func independentPath(fileManager: FileManager = .default) -> String? {
+        let preferred = UserDefaults.standard.string(forKey: preferredPathKey)
+        let candidates = [preferred,
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/codex").path,
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/packages/standalone/current/bin/codex").path,
+            "/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex",
+        ].compactMap { $0 }
+        return candidates.first { $0.hasPrefix("/") && fileManager.isExecutableFile(atPath: $0) }
+    }
+
+    static func candidates(fileManager: FileManager = .default) -> [String] {
         var candidates: [String] = []
+        if let preferred = UserDefaults.standard.string(forKey: preferredPathKey) {
+            candidates.append(preferred)
+        }
+        candidates.append(contentsOf: [
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/codex").path,
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/packages/standalone/current/bin/codex").path,
+        ])
         if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") {
             candidates.append(appURL.appendingPathComponent("Contents/Resources/codex").path)
         }
         candidates.append(contentsOf: [
             "/Applications/ChatGPT.app/Contents/Resources/codex",
             "/Applications/Codex.app/Contents/Resources/codex",
-            "/opt/homebrew/bin/codex",
-            "/usr/local/bin/codex",
-            "/usr/bin/codex",
+            "/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex",
         ])
-        return candidates.first { fileManager.isExecutableFile(atPath: $0) }
+        var seen = Set<String>()
+        return candidates.filter {
+            $0.hasPrefix("/") && seen.insert($0).inserted && fileManager.isExecutableFile(atPath: $0)
+        }
+    }
+
+    static func path(fileManager: FileManager = .default) -> String? {
+        candidates(fileManager: fileManager).first
     }
 
     static func version() -> String? {
         guard let executable = path() else { return nil }
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = ["--version"]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        let finished = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in finished.signal() }
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        guard finished.wait(timeout: .now() + 2) == .success else {
-            process.terminate()
-            return nil
-        }
-        guard process.terminationStatus == 0 else { return nil }
-        let maximumVersionBytes = 4 * 1_024
-        guard let data = try? pipe.fileHandleForReading.read(upToCount: maximumVersionBytes + 1),
-            data.count <= maximumVersionBytes
-        else { return nil }
+        guard let data = try? BoundedLocalProcess.run(executable: URL(fileURLWithPath: executable),
+            arguments: ["--version"], maximumOutputBytes: 4 * 1_024, timeout: 2) else { return nil }
         return String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }

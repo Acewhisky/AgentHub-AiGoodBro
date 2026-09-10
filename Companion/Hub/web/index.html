@@ -1,0 +1,3055 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0e12" media="(prefers-color-scheme: dark)">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>Arc Hub</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f7f8;
+      --surface: #ffffff;
+      --surface-raised: #ffffff;
+      --surface-soft: #f3f4f6;
+      --surface-hover: #eceef1;
+      --text: #191a1d;
+      --muted: #656970;
+      --faint: #8c9097;
+      --line: #e3e4e7;
+      --line-strong: #d3d5da;
+      --accent: #5b5bd6;
+      --accent-hover: #4e4ec5;
+      --accent-soft: #efefff;
+      --success: #16815d;
+      --success-soft: #eaf8f2;
+      --warning: #a15c00;
+      --warning-soft: #fff5df;
+      --danger: #c0342b;
+      --danger-soft: #fff0ef;
+      --code-bg: #181a20;
+      --code-text: #eff1f6;
+      --radius-sm: 10px;
+      --radius-md: 14px;
+      --radius-lg: 18px;
+      --shadow-sm: 0 1px 2px rgb(20 22 28 / 5%);
+      --shadow-md: 0 10px 32px rgb(20 22 28 / 7%);
+      --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d0e12;
+        --surface: #141519;
+        --surface-raised: #191a20;
+        --surface-soft: #1d1f25;
+        --surface-hover: #252830;
+        --text: #f2f3f5;
+        --muted: #a1a5ad;
+        --faint: #777c86;
+        --line: #292c33;
+        --line-strong: #383b44;
+        --accent: #8b8cf5;
+        --accent-hover: #a2a3ff;
+        --accent-soft: #25264a;
+        --success: #55c99a;
+        --success-soft: #15382e;
+        --warning: #e6ad55;
+        --warning-soft: #3b2d18;
+        --danger: #ff8580;
+        --danger-soft: #422321;
+        --code-bg: #090a0d;
+        --code-text: #e7e9ee;
+        --shadow-sm: 0 1px 2px rgb(0 0 0 / 22%);
+        --shadow-md: 0 18px 46px rgb(0 0 0 / 24%);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    body {
+      min-width: 320px;
+      min-height: 100dvh;
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--text);
+      background: var(--bg);
+      font: 400 15px/1.55 var(--font-sans);
+      letter-spacing: -.006em;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    button, input, textarea, select { color: inherit; font: inherit; }
+    button { cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+    button:disabled, input:disabled, textarea:disabled, select:disabled { cursor: not-allowed; opacity: .52; }
+    :where(button, input, textarea, select, summary):focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--accent) 48%, transparent);
+      outline-offset: 2px;
+    }
+    ::selection { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+    ::placeholder { color: var(--faint); opacity: 1; }
+    [hidden] { display: none !important; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1, h2, h3 { color: var(--text); letter-spacing: -.025em; }
+    h1 { margin-bottom: 1px; font-size: 19px; font-weight: 680; line-height: 1.25; }
+    h2 { margin-bottom: 3px; font-size: 17px; font-weight: 670; line-height: 1.35; }
+    h3 { margin-bottom: 3px; font-size: 14px; font-weight: 660; line-height: 1.4; }
+    .skip {
+      position: fixed;
+      z-index: 20;
+      top: max(8px, env(safe-area-inset-top));
+      left: max(8px, env(safe-area-inset-left));
+      min-height: 40px;
+      padding: 9px 13px;
+      border-radius: var(--radius-sm);
+      background: var(--text);
+      color: var(--surface);
+      transform: translateY(-160%);
+    }
+    .skip:focus { transform: none; }
+    .topbar {
+      position: sticky;
+      z-index: 6;
+      top: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 68px;
+      padding: max(12px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) 12px max(24px, env(safe-area-inset-left));
+      border-bottom: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(18px) saturate(135%);
+      -webkit-backdrop-filter: blur(18px) saturate(135%);
+    }
+    .topbar::after {
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      width: 100%;
+      height: 1px;
+      background: color-mix(in srgb, var(--surface) 72%, transparent);
+      content: "";
+      pointer-events: none;
+    }
+    .brand-lockup { display: flex; align-items: center; min-width: 0; gap: 10px; }
+    .brand-mark {
+      display: grid;
+      width: 36px;
+      height: 36px;
+      flex: 0 0 auto;
+      place-items: center;
+      border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+      border-radius: 11px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 760;
+      letter-spacing: -.04em;
+    }
+    .topbar p { margin: 0; color: var(--muted); font-size: 12px; }
+    .top-actions, .section-actions, .actions {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    main {
+      width: min(1360px, 100%);
+      margin: 0 auto;
+      padding: 24px max(24px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+    }
+    #workspace {
+      display: grid;
+      grid-template-columns: minmax(360px, .78fr) minmax(560px, 1.22fr);
+      align-items: start;
+      gap: 16px;
+    }
+    #quota-panel { grid-column: 1 / -1; }
+    #cli-panel { grid-column: 1; }
+    #desktop-panel { grid-column: 2; grid-row: 2 / span 2; }
+    #kimi-panel { grid-column: 1; }
+    #past { grid-column: 1 / -1; }
+    .panel, details {
+      min-width: 0;
+      margin: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow-sm);
+    }
+    .panel { padding: 20px; }
+    .connect-panel { width: min(520px, 100%); margin: 12vh auto 0; box-shadow: var(--shadow-md); }
+    .connect-form { display: grid; gap: 10px; }
+    label { color: var(--muted); font-size: 12px; font-weight: 630; letter-spacing: .01em; }
+    input, textarea, .form-select {
+      width: 100%;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-sm);
+      background: var(--surface-soft);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 3%);
+      transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
+    }
+    input { min-height: 44px; padding: 0 12px; }
+    textarea { min-height: 104px; padding: 11px 12px; resize: vertical; }
+    .form-select { min-height: 44px; padding: 0 36px 0 12px; }
+    input:hover:not(:disabled), textarea:hover:not(:disabled), .form-select:hover:not(:disabled) { border-color: var(--faint); }
+    input:focus, textarea:focus, .form-select:focus {
+      border-color: var(--accent);
+      background: var(--surface-raised);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent);
+      outline: none;
+    }
+    .hint, .meta, .empty, .helper { color: var(--muted); }
+    .hint, .meta, .helper { font-size: 12px; }
+    .empty {
+      display: grid;
+      min-height: 96px;
+      margin: 0;
+      padding: 20px 14px;
+      place-items: center;
+      align-content: center;
+      border: 1px dashed var(--line-strong);
+      border-radius: var(--radius-md);
+      background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+      text-align: center;
+    }
+    .empty::before {
+      width: 8px;
+      height: 8px;
+      margin-bottom: 9px;
+      border-radius: 50%;
+      background: var(--line-strong);
+      box-shadow: -11px 0 0 var(--line), 11px 0 0 var(--line);
+      content: "";
+    }
+    .empty.loading::before {
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--line-strong);
+      border-top-color: var(--accent);
+      background: transparent;
+      box-shadow: none;
+      animation: spin .8s linear infinite;
+    }
+    .empty.error-state { border-color: color-mix(in srgb, var(--danger) 25%, var(--line)); background: var(--danger-soft); color: var(--danger); }
+    .empty.error-state::before { background: var(--danger); box-shadow: none; }
+    .button {
+      min-height: 42px;
+      padding: 8px 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-sm);
+      background: var(--surface-raised);
+      color: var(--text);
+      box-shadow: var(--shadow-sm);
+      font-size: 13px;
+      font-weight: 640;
+      transition: border-color .16s ease, background-color .16s ease, color .16s ease, transform .12s ease;
+    }
+    .button:hover:not(:disabled) { border-color: var(--faint); background: var(--surface-hover); }
+    .button:active:not(:disabled) { transform: translateY(1px); }
+    .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; box-shadow: none; }
+    .button.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
+    .button.danger { border-color: color-mix(in srgb, var(--danger) 34%, var(--line)); background: var(--danger-soft); color: var(--danger); }
+    .button.small { min-height: 40px; padding: 7px 11px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-height: 26px;
+      padding: 3px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface-soft);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+      line-height: 1.35;
+      white-space: nowrap;
+    }
+    .badge::before {
+      width: 6px;
+      height: 6px;
+      margin-right: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      content: "";
+      opacity: .72;
+    }
+    .badge.live, .badge.state-succeeded, .badge.state-ready { border-color: color-mix(in srgb, var(--success) 28%, var(--line)); background: var(--success-soft); color: var(--success); }
+    .badge.attention, .badge.state-awaiting_approval, .badge.state-uncertain { border-color: color-mix(in srgb, var(--warning) 30%, var(--line)); background: var(--warning-soft); color: var(--warning); }
+    .badge.state-starting, .badge.state-running, .badge.state-cancel_requested, .badge.state-working, .badge.state-inProgress { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); background: var(--accent-soft); color: var(--accent); }
+    .badge.state-cancelled { border-color: color-mix(in srgb, var(--danger) 24%, var(--line)); background: var(--danger-soft); color: var(--danger); }
+    .badge.state-failed, .badge.state-blocked_configuration, .badge.state-error { border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); background: var(--danger-soft); color: var(--danger); }
+    .badge.state-starting::before, .badge.state-running::before, .badge.state-cancel_requested::before, .badge.state-working::before, .badge.state-inProgress::before, .badge.is-busy::before { animation: pulse 1.25s ease-in-out infinite; }
+    .section-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; gap: 14px; }
+    .section-head p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+    .feedback {
+      position: relative;
+      margin-bottom: 16px;
+      padding: 12px 14px 12px 38px;
+      border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+      border-radius: var(--radius-md);
+      background: var(--accent-soft);
+      color: var(--text);
+      box-shadow: var(--shadow-sm);
+    }
+    .feedback::before { position: absolute; top: 12px; left: 15px; color: var(--accent); font-weight: 750; content: "i"; }
+    .feedback.error { border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); background: var(--danger-soft); color: var(--danger); }
+    .feedback.error::before { color: currentColor; content: "!"; }
+    .desktop-grid {
+      display: grid;
+      grid-template-columns: minmax(190px, 29%) minmax(0, 1fr);
+      min-height: 600px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--surface-raised);
+    }
+    .thread-nav { min-width: 0; padding: 12px; overflow: auto; border-right: 1px solid var(--line); background: var(--surface-soft); overscroll-behavior: contain; }
+    .thread-nav h3 { margin: 2px 2px 10px; color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+    .thread-list { display: grid; min-width: 0; gap: 7px; }
+    .thread-button {
+      width: 100%;
+      min-height: 54px;
+      padding: 9px 10px;
+      overflow: hidden;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      transition: border-color .15s ease, background-color .15s ease;
+    }
+    .thread-button:hover { border-color: var(--line); background: var(--surface-hover); }
+    .thread-button[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 22%, var(--line)); background: var(--accent-soft); }
+    .thread-button strong, .thread-button span { display: block; }
+    .thread-button strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+    .thread-button span { margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .thread-button.status-working span, .thread-button.status-needs_input span { color: var(--accent); }
+    .thread-detail { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(220px, 1fr) auto; }
+    .thread-heading { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
+    .thread-heading .meta { margin-bottom: 0; overflow-wrap: anywhere; }
+    .content {
+      min-width: 0;
+      min-height: 220px;
+      max-height: 64vh;
+      padding: 18px;
+      overflow: auto;
+      background: var(--surface-raised);
+      overscroll-behavior: contain;
+      scroll-behavior: smooth;
+      scrollbar-gutter: stable;
+      -webkit-overflow-scrolling: touch;
+    }
+    .turn-list { display: grid; min-width: 0; gap: 18px; }
+    .turn { min-width: 0; }
+    .turn-head { display: flex; justify-content: space-between; margin-bottom: 8px; gap: 10px; color: var(--faint); font-size: 10px; }
+    .turn.status-inProgress .turn-head strong { color: var(--accent); }
+    .turn.status-inProgress .turn-head strong::after {
+      display: inline-block;
+      width: 5px;
+      height: 5px;
+      margin-left: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      vertical-align: 2px;
+      animation: pulse 1.15s ease-in-out infinite;
+      content: "";
+    }
+    .content-items { display: grid; min-width: 0; gap: 9px; }
+    .content-item {
+      width: fit-content;
+      max-width: min(92%, 760px);
+      min-width: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px var(--radius-md) var(--radius-md) var(--radius-md);
+      background: var(--surface-soft);
+      box-shadow: var(--shadow-sm);
+    }
+    .content-item.user { margin-left: auto; border-color: color-mix(in srgb, var(--accent) 25%, var(--line)); border-radius: var(--radius-md) 6px var(--radius-md) var(--radius-md); background: var(--accent-soft); }
+    .content-item.plan { border-style: dashed; }
+    .content-item.command { width: 100%; max-width: 100%; }
+    .content-item.has-code { width: 100%; max-width: 100%; }
+    .content-item.error { border-color: color-mix(in srgb, var(--danger) 28%, var(--line)); background: var(--danger-soft); }
+    .content-item > strong { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+    .message-text { max-width: 100%; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; font: inherit; }
+    .message-text + .code-block, .code-block + .message-text, .code-block + .code-block { margin-top: 9px; }
+    .code-block {
+      position: relative;
+      max-width: 100%;
+      margin: 0;
+      padding: 28px 12px 12px;
+      overflow-x: auto;
+      border: 1px solid rgb(255 255 255 / 8%);
+      border-radius: var(--radius-sm);
+      background: var(--code-bg);
+      color: var(--code-text);
+      font: 12px/1.62 var(--font-mono);
+      tab-size: 2;
+      white-space: pre;
+      -webkit-overflow-scrolling: touch;
+    }
+    .code-block::before {
+      position: absolute;
+      top: 7px;
+      left: 11px;
+      color: #9399a7;
+      font: 600 9px/1.2 var(--font-sans);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      content: attr(data-language);
+    }
+    .composer { display: grid; padding: 13px 16px 16px; border-top: 1px solid var(--line); background: var(--surface); gap: 8px; }
+    .composer textarea { min-height: 86px; max-height: 38vh; }
+    .composer-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .composer-row .helper { margin: 0; flex: 1 1 220px; }
+    .composer-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+    .tool-button, .tool-select {
+      min-height: 40px;
+      border: 1px solid var(--line-strong);
+      background: var(--surface-soft);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 630;
+    }
+    .tool-button { width: 40px; flex: 0 0 auto; padding: 0; border-radius: 999px; font-size: 21px; line-height: 1; }
+    .tool-select { width: auto; min-width: 0; max-width: min(230px, 38vw); padding: 0 30px 0 11px; border-radius: 999px; }
+    .attachment-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .attachment-chip {
+      display: inline-flex;
+      align-items: center;
+      min-width: 0;
+      max-width: 100%;
+      min-height: 42px;
+      padding: 1px 2px 1px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface-soft);
+      font-size: 12px;
+    }
+    .attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .attachment-chip button { flex: 0 0 auto; width: 40px; height: 40px; margin-left: 2px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--muted); }
+    .task-list, .kimi-list { display: grid; min-width: 0; gap: 10px; }
+    .task-form { display: grid; margin-bottom: 16px; padding-bottom: 18px; border-bottom: 1px solid var(--line); gap: 10px; }
+    .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+    .form-field { display: grid; min-width: 0; gap: 5px; }
+    .task-output { max-height: 260px; margin: 10px 0 0; overflow: auto; white-space: pre; font: 12px/1.62 var(--font-mono); -webkit-overflow-scrolling: touch; }
+    .result.task-output { white-space: pre; overflow-wrap: normal; }
+    .quota-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+    .quota-card, .task, .kimi-task {
+      min-width: 0;
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--surface-soft);
+      transition: border-color .15s ease, background-color .15s ease;
+    }
+    .quota-card:hover, .task:hover, .kimi-task:hover { border-color: var(--line-strong); }
+    .quota-card-head, .quota-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .quota-card-head { margin-bottom: 11px; }
+    .quota-card-head span, .quota-reset { color: var(--muted); font-size: 11px; }
+    .quota-window + .quota-window { margin-top: 10px; }
+    .quota-line { font-size: 12px; }
+    .quota-line strong { font-variant-numeric: tabular-nums; }
+    .quota-track { height: 5px; margin: 6px 0; overflow: hidden; border-radius: 999px; background: var(--line-strong); }
+    .quota-fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width .28s ease; }
+    .quota-fill.low { background: var(--danger); }
+    .task[data-state="awaiting_approval"] { border-color: color-mix(in srgb, var(--warning) 25%, var(--line)); background: color-mix(in srgb, var(--warning-soft) 58%, var(--surface)); }
+    .task[data-state="running"], .task[data-state="starting"] { border-color: color-mix(in srgb, var(--accent) 25%, var(--line)); }
+    .task[data-state="failed"], .task[data-state="uncertain"], .task[data-state="blocked_configuration"] { border-color: color-mix(in srgb, var(--danger) 25%, var(--line)); }
+    .task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .task-head > :first-child { min-width: 0; }
+    .task p { margin-bottom: 7px; }
+    .task .actions { margin-top: 10px; }
+    .result { padding: 10px 11px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .task-conversation { display: grid; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); gap: 10px; }
+    .task-conversation .content-items { max-height: 52vh; padding: 2px; overflow: auto; }
+    .task-message-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; gap: 8px; }
+    .task-message-head > strong { color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+    .task-stream-status { min-height: 22px; padding: 2px 7px; font-size: 10px; }
+    .content-item.live-stream { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); }
+    .content-item.live-interrupted { border-color: color-mix(in srgb, var(--danger) 32%, var(--line)); background: color-mix(in srgb, var(--danger-soft) 48%, var(--surface-soft)); }
+    .task-live-indicator { display: flex; align-items: center; margin: 0; gap: 8px; color: var(--muted); font-size: 12px; }
+    .task-message-time { margin-top: 5px; color: var(--faint); font-size: 10px; }
+    .task-conversation-composer { display: grid; padding-top: 10px; border-top: 1px solid var(--line); gap: 8px; }
+    .task-conversation-composer textarea { min-height: 84px; }
+    .task-conversation-composer .actions { justify-content: flex-end; margin-top: 0; }
+    details { overflow: clip; }
+    summary { min-height: 60px; padding: 17px 20px; cursor: pointer; font-weight: 660; list-style-position: outside; }
+    summary::marker { color: var(--faint); }
+    details[open] > summary { border-bottom: 1px solid var(--line); }
+    .detail-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .details-body { min-width: 0; padding: 16px 18px 18px; }
+    .byte-counter { margin-block: -2px 0; color: var(--faint); font-variant-numeric: tabular-nums; }
+    .byte-counter.near { color: var(--warning); font-weight: 650; }
+    .byte-counter.over { color: var(--danger); font-weight: 650; }
+    .kimi-task .task-head { align-items: center; }
+    .kimi-task p { margin: 7px 0 0; }
+    .past-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 18px 18px; gap: 18px; }
+    .past-body section { min-width: 0; padding-top: 16px; }
+    .past-body h3 { margin-bottom: 10px; }
+    dialog {
+      width: min(520px, calc(100% - 24px));
+      max-height: calc(100dvh - 24px);
+      padding: 0;
+      overflow: auto;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-lg);
+      background: var(--surface-raised);
+      color: var(--text);
+      box-shadow: 0 28px 80px rgb(0 0 0 / 34%);
+    }
+    dialog::backdrop { background: rgb(5 6 10 / 56%); backdrop-filter: blur(4px); }
+    .dialog-body { padding: 22px; }
+    .dialog-copy { padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .danger-text { color: var(--danger); }
+    .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; margin-top: 18px; gap: 8px; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%, 100% { opacity: .35; transform: scale(.82); } 50% { opacity: 1; transform: scale(1); } }
+
+    @media (max-width: 1050px) {
+      main { width: min(860px, 100%); }
+      #workspace { grid-template-columns: minmax(0, 1fr); }
+      #quota-panel, #cli-panel, #desktop-panel, #kimi-panel, #past { grid-column: 1; grid-row: auto; }
+      .desktop-grid { grid-template-columns: minmax(210px, 30%) minmax(0, 1fr); min-height: 560px; }
+    }
+
+    @media (max-width: 767px) {
+      .topbar { align-items: stretch; min-height: auto; padding-right: max(14px, env(safe-area-inset-right)); padding-left: max(14px, env(safe-area-inset-left)); gap: 10px; }
+      .top-actions { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; padding-bottom: 1px; scrollbar-width: none; }
+      .top-actions::-webkit-scrollbar { display: none; }
+      main { padding: 12px max(12px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+      #workspace { gap: 12px; }
+      .panel { padding: 15px; }
+      .connect-panel { margin-top: 8vh; }
+      .section-head { align-items: stretch; flex-direction: column; margin-bottom: 13px; }
+      .section-actions { justify-content: flex-start; }
+      .desktop-grid { display: block; min-height: 0; border: 0; border-radius: 0; }
+      .thread-nav { padding: 0 0 12px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); background: transparent; scrollbar-width: none; }
+      .thread-nav::-webkit-scrollbar { display: none; }
+      .thread-nav h3 { margin-left: 1px; }
+      .thread-nav .thread-list { display: flex; width: max-content; max-width: none; }
+      .thread-nav .thread-button { width: min(72vw, 260px); flex: 0 0 auto; }
+      .thread-detail { display: grid; }
+      .thread-heading { padding: 14px 2px 10px; }
+      .content { min-height: 220px; max-height: 56dvh; padding: 14px 2px; }
+      .content-item { max-width: 94%; }
+      .composer { margin-inline: -2px; padding: 12px 0 0; background: var(--surface); }
+      .composer textarea { max-height: 32dvh; font-size: 16px; }
+      .composer-tools { align-items: stretch; }
+      .tool-select { max-width: none; flex: 1 1 155px; font-size: 16px; }
+      .form-grid { grid-template-columns: 1fr; }
+      .task-head { align-items: flex-start; }
+      .actions .button { flex: 1 1 auto; }
+      input, textarea, .form-select { font-size: 16px; }
+      summary { padding: 16px; }
+      .details-body { padding: 14px; }
+      .past-body { grid-template-columns: minmax(0, 1fr); padding: 0 14px 14px; }
+      .dialog-body { padding: 18px; }
+      .dialog-actions .button { flex: 1 1 120px; }
+    }
+
+    @media (max-width: 480px) {
+      .topbar h1 { font-size: 18px; }
+      .badge { flex: 0 0 auto; }
+      .quota-grid { grid-template-columns: minmax(0, 1fr); }
+      .composer-tools { display: grid; grid-template-columns: 40px minmax(0, 1fr); }
+      .composer-tools .tool-select { grid-column: 1 / -1; width: 100%; }
+      .composer-row { align-items: stretch; flex-direction: column; }
+      .composer-row .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+      .composer-row .actions .primary:last-child:nth-child(3) { grid-column: 1 / -1; }
+      .task-head { flex-direction: column; }
+      .task-head .badge { align-self: flex-start; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">跳到主要内容</a>
+  <header class="topbar">
+    <div class="brand-lockup">
+      <span class="brand-mark" aria-hidden="true">arc</span>
+      <div>
+        <h1>Arc Hub</h1>
+        <p>本机 Agent 远程控制台</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span class="badge" id="connection-status" aria-live="polite">未连接</span>
+      <span class="badge" id="attention-status" aria-live="polite">待审批 0</span>
+      <button class="button small" id="refresh" type="button" hidden>刷新</button>
+      <button class="button small" id="disconnect" type="button" hidden>断开</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="feedback" id="notice" role="status" aria-live="polite" hidden></div>
+    <div class="feedback error" id="error" role="alert" hidden></div>
+
+    <section class="panel connect-panel" id="connect-panel" aria-labelledby="connect-title" hidden>
+      <h2 id="connect-title">连接内网管理器</h2>
+      <p class="hint">当前页面仅通过内网连接，不使用访问令牌。</p>
+      <form class="connect-form" id="connect-form">
+        <button class="button primary" id="connect" type="submit">重新连接</button>
+      </form>
+    </section>
+
+    <div id="workspace" hidden>
+      <section class="panel" id="quota-panel" aria-labelledby="quota-title">
+        <div class="section-head">
+          <div>
+            <h2 id="quota-title">账号额度</h2>
+            <p id="quota-summary">每 15 秒读取 Next 的最新快照；这里只查看，不发送暖号请求。</p>
+          </div>
+          <span class="badge" id="quota-updated">等待读取</span>
+        </div>
+        <div class="quota-grid" id="quota-list"></div>
+        <p class="empty loading" id="quota-empty">正在读取账号额度</p>
+      </section>
+
+      <section class="panel" id="cli-panel" aria-labelledby="cli-title">
+        <div class="section-head">
+          <div>
+            <h2 id="cli-title">CLI Agent 对话</h2>
+            <p id="cli-summary">正在读取任务。</p>
+          </div>
+        </div>
+        <form class="task-form" id="task-form">
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="task-agent">Agent</label>
+              <select class="form-select" id="task-agent" name="agent" disabled required></select>
+            </div>
+            <div class="form-field">
+              <label for="task-project">项目</label>
+              <select class="form-select" id="task-project" name="project" disabled required></select>
+            </div>
+            <div class="form-field">
+              <label for="task-account">账号</label>
+              <select class="form-select" id="task-account" name="account" disabled></select>
+            </div>
+          </div>
+          <label for="task-prompt">新对话消息</label>
+          <textarea id="task-prompt" name="prompt" autocomplete="off" placeholder="输入任务说明…" disabled required></textarea>
+          <p class="helper" id="task-agent-hint">连接后选择 Agent。Codex 的权限与模型胶囊仅用于 Desktop 对话。</p>
+          <p class="helper byte-counter" id="task-bytes" aria-live="polite">0 / 64 KiB UTF-8</p>
+          <div class="actions">
+            <button class="button primary" id="task-create" type="submit" disabled>创建待审批对话</button>
+          </div>
+        </form>
+        <div class="task-list" id="cli-list"></div>
+        <p class="empty loading" id="cli-empty">正在读取</p>
+      </section>
+
+      <details id="desktop-panel">
+        <summary class="detail-summary">
+          <span>Codex Desktop 当前对话 · <span id="desktop-summary">正在读取</span></span>
+          <span class="badge" id="observer-status">检查连接中</span>
+        </summary>
+        <div class="details-body">
+          <div class="desktop-grid">
+            <nav class="thread-nav" aria-label="当前 Desktop 对话">
+              <h3>当前</h3>
+              <div class="thread-list" id="desktop-list"></div>
+              <p class="empty loading" id="desktop-empty">正在读取</p>
+            </nav>
+
+            <article class="thread-detail" aria-labelledby="thread-title">
+              <header class="thread-heading">
+                <h3 id="thread-title">选择一个对话</h3>
+                <p class="meta" id="thread-meta">选择后显示最近内容。</p>
+              </header>
+              <div class="content" id="thread-content">
+                <p class="empty">尚未选择对话</p>
+              </div>
+              <form class="composer" id="thread-form">
+                <label for="thread-input">发送给 Codex</label>
+                <textarea id="thread-input" name="message" autocomplete="off" placeholder="输入消息…" disabled></textarea>
+                <div class="composer-tools" aria-label="消息工具栏">
+                  <button class="tool-button" id="add-attachment" type="button" aria-label="添加图片或文件" title="添加图片或文件" disabled>+</button>
+                  <input id="attachment-input" type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown" multiple hidden>
+                  <select class="tool-select" id="sandbox-select" aria-label="Codex 权限" disabled></select>
+                  <select class="tool-select" id="model-select" aria-label="Codex 模型" disabled></select>
+                </div>
+                <div class="attachment-list" id="attachment-list" aria-live="polite"></div>
+                <p class="helper" id="settings-status">权限与模型按对话保存。</p>
+                <p class="helper byte-counter" id="thread-bytes" aria-live="polite">0 / 32 KiB UTF-8</p>
+                <div class="composer-row">
+                  <p class="helper" id="thread-status">只有实时共享连接可从网页发送。</p>
+                  <div class="actions">
+                    <button class="button" id="open-thread" type="button" disabled>在 Codex 打开</button>
+                    <button class="button danger" id="interrupt" type="button" hidden>停止当前回复</button>
+                    <button class="button primary" id="send-message" type="submit" disabled>发送</button>
+                  </div>
+                </div>
+              </form>
+            </article>
+          </div>
+        </div>
+      </details>
+
+      <details id="kimi-panel">
+        <summary class="detail-summary">
+          <span>Kimi 桌面端任务</span>
+          <span class="badge" id="kimi-count">等待读取</span>
+        </summary>
+        <div class="details-body">
+          <p class="hint" id="kimi-summary">只读展示本机 Kimi 自动化，不提供操作。</p>
+          <div class="kimi-list" id="kimi-list"></div>
+          <p class="empty loading" id="kimi-empty">正在读取 Kimi 任务</p>
+        </div>
+      </details>
+
+      <details id="past">
+        <summary>过去内容 <span id="past-count">0</span></summary>
+        <div class="past-body">
+          <section aria-labelledby="past-desktop-title">
+            <h3 id="past-desktop-title">Desktop 其他对话</h3>
+            <div class="thread-list" id="past-desktop"></div>
+            <p class="empty" id="past-desktop-empty">暂无其他对话</p>
+          </section>
+          <section aria-labelledby="past-cli-title">
+            <h3 id="past-cli-title">CLI 过去任务</h3>
+            <div class="task-list" id="past-cli"></div>
+            <p class="empty" id="past-cli-empty">暂无过去任务</p>
+          </section>
+        </div>
+      </details>
+    </div>
+  </main>
+
+  <dialog id="approval-dialog" aria-labelledby="approval-title">
+    <div class="dialog-body">
+      <h2 id="approval-title">再次确认执行</h2>
+      <p>批准后会真实运行对应 CLI 并消耗额度；账号池 Codex 还会复核最近 45 秒的额度快照。</p>
+      <p class="dialog-copy" id="approval-copy"></p>
+      <p class="hint" id="approval-status" aria-live="polite">正在检查额度快照。</p>
+      <div class="dialog-actions">
+        <button class="button" id="reject" type="button">返回</button>
+        <button class="button" id="approval-recheck" type="button">重新检查</button>
+        <button class="button primary" id="approve" type="button" disabled>确认批准</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="resume-dialog" aria-labelledby="resume-title">
+    <form class="dialog-body" id="resume-form">
+      <h2 id="resume-title">继续 CLI 会话</h2>
+      <p class="dialog-copy" id="resume-copy"></p>
+      <label for="resume-text">继续任务说明</label>
+      <textarea id="resume-text" name="prompt" autocomplete="off" required></textarea>
+      <p class="hint byte-counter" id="resume-bytes" aria-live="polite">0 / 64 KiB UTF-8</p>
+      <p class="hint">提交后只会创建待审批任务，仍需再次批准。</p>
+      <div class="dialog-actions">
+        <button class="button" id="resume-cancel" type="button">取消</button>
+        <button class="button primary" id="resume-submit" type="submit">创建待审批任务</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const ids = [
+        "connection-status", "attention-status", "refresh", "disconnect", "connect-panel", "connect-form", "connect",
+        "workspace", "notice", "error", "desktop-panel", "observer-status", "desktop-summary", "desktop-list", "desktop-empty",
+        "thread-title", "thread-meta", "thread-content", "thread-form", "thread-input", "thread-bytes", "thread-status",
+        "send-message", "interrupt", "open-thread", "add-attachment", "attachment-input", "attachment-list",
+        "sandbox-select", "model-select", "settings-status", "cli-summary", "task-form", "task-agent", "task-project",
+        "task-account", "task-prompt", "task-agent-hint", "task-bytes", "task-create", "cli-list", "cli-empty",
+        "quota-summary", "quota-updated", "quota-list", "quota-empty", "past", "past-count", "past-desktop",
+        "past-desktop-empty", "past-cli", "past-cli-empty", "kimi-panel", "kimi-count", "kimi-summary", "kimi-list", "kimi-empty",
+        "approval-dialog", "approval-copy", "reject",
+        "approval-status", "approval-recheck", "approve", "resume-dialog", "resume-form", "resume-copy",
+        "resume-text", "resume-bytes", "resume-cancel", "resume-submit"
+      ];
+      const ui = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+      const state = {
+        connected: false,
+        seq: 0,
+        agents: [],
+        projects: [],
+        taskAccounts: [],
+        tasks: [],
+        overviewLoaded: false,
+        accounts: [],
+        managerLoaded: false,
+        managerUpdatedAt: "",
+        managerError: "",
+        kimiTasks: [],
+        kimiLoaded: false,
+        kimiNotice: "",
+        kimiError: "",
+        observer: { mode: "unavailable", code: "not_connected" },
+        codexLoaded: false,
+        threads: [],
+        sandboxOptions: [],
+        models: [],
+        selectedRef: "",
+        selectedByUser: false,
+        content: null,
+        contentRef: "",
+        contentLoading: false,
+        contentError: "",
+        contentUnavailableRef: "",
+        contentRequest: 0,
+        pending: new Set(),
+        attachments: new Map(),
+        taskOutput: new Map(),
+        taskLiveMessages: new Map(),
+        taskConversations: new Map(),
+        taskDrafts: new Map(),
+        approval: null,
+        approvalQuota: null,
+        approvalCheck: 0,
+        resume: null,
+        streamController: null,
+        streamEpoch: 0,
+        retryTimer: null,
+        retryDelay: 1000,
+        overviewTimer: null,
+        codexTimer: null,
+        codexPoll: null,
+        managerPoll: null,
+        relativeTimer: null,
+        pastDesktopLimit: 40,
+        pastTaskLimit: 40
+      };
+
+      const taskLabels = {
+        awaiting_approval: "待审批",
+        starting: "启动中",
+        running: "执行中",
+        cancel_requested: "正在取消",
+        succeeded: "已完成",
+        failed: "失败",
+        cancelled: "已取消",
+        uncertain: "状态不确定",
+        blocked_configuration: "配置阻止"
+      };
+      const runtimeLabels = {
+        needs_input: "等你回复",
+        working: "正在回复",
+        ready: "空闲",
+        error: "出错",
+        not_loaded: "未加载"
+      };
+      const turnLabels = {
+        inProgress: "进行中",
+        completed: "已完成",
+        interrupted: "已停止",
+        failed: "失败",
+        unknown: "状态不清楚"
+      };
+      const contentLabels = {
+        user: "你",
+        assistant: "Codex",
+        plan: "计划",
+        command: "命令与输出",
+        error: "错误"
+      };
+      const terminalTaskStates = new Set(["succeeded", "failed", "cancelled", "blocked_configuration"]);
+      const messageByteLimit = 32 * 1024;
+      const promptByteLimit = 64 * 1024;
+      const requestBodyByteLimit = 72 * 1024;
+      const attachmentRequestByteLimit = 25 * 1024 * 1024;
+      const attachmentByteLimit = 20 * 1024 * 1024;
+      const imageAttachmentByteLimit = 10 * 1024 * 1024;
+      const attachmentCountLimit = 16;
+      const byteWarningRatio = 0.85;
+      const sampleRequestID = "00000000-0000-4000-8000-000000000000";
+      const utf8Encoder = new TextEncoder();
+      const dispatchCodes = {
+        evan: "A", liuye5985: "B", kadoocasyunda74: "C",
+        blackielovelife998: "D", yangjinchen00: "E", axuanzai0917: "F"
+      };
+
+      /* task-live-logic:start */
+      function appendLiveAssistant(current, chunk, occurredAt, messageOffset) {
+        const previous = current && typeof current.text === "string" ? current : null;
+        const text = typeof chunk === "string" ? chunk : "";
+        const previousSegments = previous && Array.isArray(previous.segments) ? previous.segments : [];
+        const inferredOffset = previousSegments.reduce((end, segment) =>
+          Math.max(end, segment.offset + Array.from(segment.text).length), 0);
+        const offset = Number.isSafeInteger(messageOffset) && messageOffset >= 0 ? messageOffset : inferredOffset;
+        const segments = previousSegments.filter(segment => segment.offset !== offset);
+        segments.push({ offset, text });
+        segments.sort((left, right) => left.offset - right.offset);
+        return {
+          text: (previous ? previous.text : "") + text,
+          createdAt: previous && previous.createdAt ? previous.createdAt : occurredAt || "",
+          phase: "streaming",
+          segments
+        };
+      }
+
+      function mergeAssistantSegments(persistedText, segments) {
+        const merged = Array.from(typeof persistedText === "string" ? persistedText : "");
+        const ordered = Array.isArray(segments) ? segments.slice().sort((left, right) => left.offset - right.offset) : [];
+        for (const segment of ordered) {
+          if (!segment || !Number.isSafeInteger(segment.offset) || segment.offset < 0 || typeof segment.text !== "string") continue;
+          const chunk = Array.from(segment.text);
+          if (segment.offset > merged.length) continue;
+          for (let index = 0; index < chunk.length; index += 1) {
+            const target = segment.offset + index;
+            if (target < merged.length) merged[target] = chunk[index];
+            else merged.push(chunk[index]);
+          }
+        }
+        return merged.join("");
+      }
+
+      function taskConversationMessages(messages, live) {
+        const result = Array.isArray(messages)
+          ? messages.filter(message => message && (message.role === "user" || message.role === "assistant")
+            && typeof message.text === "string").map(message => ({ ...message }))
+          : [];
+        if (!live || typeof live.text !== "string" || !live.text) return result;
+        const phase = live.phase === "interrupted" ? "interrupted" : "streaming";
+        const last = result[result.length - 1];
+        if (last && last.role === "assistant") {
+          last.text = mergeAssistantSegments(last.text, live.segments);
+          last.livePhase = phase;
+          return result;
+        }
+        const merged = mergeAssistantSegments("", live.segments);
+        if (!merged) return result;
+        result.push({
+          role: "assistant",
+          text: merged,
+          createdAt: live.createdAt || "",
+          livePhase: phase
+        });
+        return result;
+      }
+
+      function taskCancelControl(taskState, pending, approvalExpired) {
+        if (taskState === "cancel_requested") {
+          return { visible: true, enabled: false, label: "停止中" };
+        }
+        if (taskState === "starting" || taskState === "running") {
+          return { visible: true, enabled: !pending, label: pending ? "停止中" : "停止" };
+        }
+        if (taskState === "awaiting_approval" && !approvalExpired) {
+          return { visible: true, enabled: !pending, label: pending ? "取消中" : "取消" };
+        }
+        return { visible: false, enabled: false, label: "" };
+      }
+      /* task-live-logic:end */
+
+      function idempotencyKey() {
+        if (crypto.randomUUID) return crypto.randomUUID();
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 15) | 64;
+        bytes[8] = (bytes[8] & 63) | 128;
+        const hex = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+        return [
+          hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)
+        ].join("-");
+      }
+
+      async function request(path, options = {}) {
+        const method = options.method || "GET";
+        const headers = { Accept: "application/json" };
+        const formData = options.formData instanceof FormData ? options.formData : null;
+        if (options.body !== undefined && !formData) headers["Content-Type"] = "application/json";
+        const body = formData || (options.body === undefined ? undefined : JSON.stringify(options.body));
+        if (!formData && body !== undefined && utf8Bytes(body) > requestBodyByteLimit) {
+          throw new Error("请求内容超过安全上限，请缩短后再提交。");
+        }
+        const response = await fetch(path, {
+          method,
+          headers,
+          body,
+          cache: "no-store",
+          credentials: "omit",
+          redirect: "error",
+          signal: options.signal
+        });
+        const raw = response.status === 204 ? "" : await response.text();
+        let data = null;
+        try { data = raw ? JSON.parse(raw) : null; }
+        catch {}
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) {
+            if (state.connected) disconnect();
+            const error = new Error("当前内网连接被服务端拒绝，请检查 Hub 配置。");
+            error.code = "authentication_required";
+            throw error;
+          }
+          const code = data && typeof data.reasonCode === "string"
+            ? data.reasonCode
+            : data && typeof data.error === "string" ? data.error : "";
+          const error = new Error("请求失败（HTTP " + response.status + (code ? "，原因 " + cleanText(code, 80) : "") + "）。");
+          error.code = code;
+          throw error;
+        }
+        return data;
+      }
+
+      function cleanText(value, limit = 120000) {
+        let text = typeof value === "string" ? value : value === null || value === undefined ? "" : String(value);
+        text = text
+          .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[账号已隐藏]")
+          .replace(/\/Users\/[^\s"']+/g, "/Users/[本机路径已隐藏]")
+          .replace(/\/home\/[^\s"']+/g, "/home/[本机路径已隐藏]")
+          .replace(/[A-Za-z]:\\Users\\[^\s"']+/g, "[本机路径已隐藏]");
+        if (text.length > limit) return text.slice(0, limit) + "\n[内容过长，已截断]";
+        return text;
+      }
+
+      function utf8Bytes(value) {
+        return utf8Encoder.encode(typeof value === "string" ? value : String(value || "")).length;
+      }
+
+      function byteText(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        const kib = Math.round(bytes / 102.4) / 10;
+        return (Number.isInteger(kib) ? kib.toFixed(0) : kib.toFixed(1)) + " KiB";
+      }
+
+      function renderByteLimit(input, counter, fieldLimit, bodyValue) {
+        const fieldBytes = utf8Bytes(input.value);
+        const bodyBytes = utf8Bytes(JSON.stringify(bodyValue(input.value)));
+        const overField = fieldBytes > fieldLimit;
+        const overBody = bodyBytes > requestBodyByteLimit;
+        const near = fieldBytes >= fieldLimit * byteWarningRatio || bodyBytes >= requestBodyByteLimit * byteWarningRatio;
+        const valid = !overField && !overBody;
+        input.setCustomValidity(overField
+          ? "内容超过 " + byteText(fieldLimit) + " 的 UTF-8 字节上限。"
+          : overBody ? "完整请求超过 " + byteText(requestBodyByteLimit) + " 的上限，请减少引号、换行或正文。" : "");
+        counter.classList.toggle("near", near && valid);
+        counter.classList.toggle("over", !valid);
+        counter.textContent = byteText(fieldBytes) + " / " + byteText(fieldLimit) + " UTF-8"
+          + (near || !valid ? " · 请求体 " + byteText(bodyBytes) + " / " + byteText(requestBodyByteLimit) : "")
+          + (!valid ? " · 已超限" : near ? " · 接近上限" : "");
+        return valid;
+      }
+
+      function updateThreadBytes() {
+        return renderByteLimit(ui["thread-input"], ui["thread-bytes"], messageByteLimit,
+          text => ({ requestId: sampleRequestID, text, attachments: selectedAttachments().map(item => item.id) }));
+      }
+
+      function updateResumeBytes() {
+        return renderByteLimit(ui["resume-text"], ui["resume-bytes"], promptByteLimit,
+          prompt => ({ requestId: sampleRequestID, prompt }));
+      }
+
+      function taskCreateBody(prompt) {
+        const agent = ui["task-agent"].value;
+        return {
+          requestId: sampleRequestID,
+          agent,
+          project: ui["task-project"].value,
+          accountAlias: agent === "kimi" ? "system" : ui["task-account"].value,
+          prompt
+        };
+      }
+
+      function updateTaskBytes() {
+        return renderByteLimit(ui["task-prompt"], ui["task-bytes"], promptByteLimit, taskCreateBody);
+      }
+
+      function aliasText(value, fallback) {
+        const text = cleanText(value, 80).trim();
+        if (!text || text.includes("/") || text.includes("\\")) return fallback;
+        return text;
+      }
+
+      function displayText(value, fallback, limit = 120) {
+        return cleanText(value, limit).trim() || fallback;
+      }
+
+      function actionFingerprint(value) {
+        const text = typeof value === "string" ? value : "";
+        return text.length > 25 ? text.slice(0, 14) + "…" + text.slice(-8) : text || "不可用";
+      }
+
+      function percentText(value) {
+        if (!Number.isFinite(value)) return "暂无";
+        const rounded = Math.round(value * 10) / 10;
+        return (Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)) + "%";
+      }
+
+      function shanghaiTime(value) {
+        if (!Number.isFinite(value)) return "暂无";
+        return new Intl.DateTimeFormat("zh-CN", {
+          timeZone: "Asia/Shanghai",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false
+        }).format(new Date(value)) + "（上海）";
+      }
+
+      function quotaEvidence(account, task) {
+        const evidence = {
+          accountAlias: task.accountAlias,
+          actionHash: task.actionHash,
+          plan: "",
+          fetchedAt: NaN,
+          fiveRemaining: NaN,
+          sevenRemaining: NaN,
+          fiveReset: NaN,
+          sevenReset: NaN,
+          ready: false,
+          reason: ""
+        };
+        if (!account) {
+          evidence.reason = "没有找到这个账号的额度快照，请先在 Next 刷新后重试。";
+          return evidence;
+        }
+        if (account.source !== "matched_alias") {
+          evidence.reason = "账号身份没有与 Hub alias 精确匹配，请检查 Next 配置后重试。";
+          return evidence;
+        }
+        evidence.plan = typeof account.plan === "string" ? account.plan.trim() : "";
+        if (!evidence.plan || evidence.plan.toLowerCase() === "free") {
+          evidence.reason = "账号套餐缺失或为 Free，不能批准账号池任务。";
+          return evidence;
+        }
+        const validPercent = value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
+        evidence.fetchedAt = typeof account.fetchedAt === "string" ? Date.parse(account.fetchedAt) : NaN;
+        evidence.fiveReset = typeof account.fiveHourResetsAt === "string" ? Date.parse(account.fiveHourResetsAt) : NaN;
+        evidence.sevenReset = typeof account.sevenDayResetsAt === "string" ? Date.parse(account.sevenDayResetsAt) : NaN;
+        if (validPercent(account.fiveHourUsedPercent)) evidence.fiveRemaining = 100 - account.fiveHourUsedPercent;
+        if (validPercent(account.sevenDayUsedPercent)) evidence.sevenRemaining = 100 - account.sevenDayUsedPercent;
+        if (![evidence.fetchedAt, evidence.fiveReset, evidence.sevenReset, evidence.fiveRemaining, evidence.sevenRemaining].every(Number.isFinite)) {
+          evidence.reason = "额度或重置时间不完整，请先在 Next 刷新后重试。";
+          return evidence;
+        }
+        if (evidence.fiveReset <= Date.now() || evidence.sevenReset <= Date.now()) {
+          evidence.reason = "额度重置时间无效，请先在 Next 刷新后重试。";
+          return evidence;
+        }
+        const age = Date.now() - evidence.fetchedAt;
+        if (age < -5000) {
+          evidence.reason = "额度快照时间明显在未来，请检查设备时间并在 Next 刷新后重试。";
+          return evidence;
+        }
+        if (age > 45000) {
+          evidence.reason = "额度快照已超过 45 秒，请先在 Next 刷新后重试。";
+          return evidence;
+        }
+        const insufficient = [];
+        if (evidence.fiveRemaining < 30) insufficient.push("5h 剩余需至少 30%");
+        if (evidence.sevenRemaining < 15) insufficient.push("7d 剩余需至少 15%");
+        if (insufficient.length) {
+          evidence.reason = "额度不足：" + insufficient.join("，") + "。";
+          return evidence;
+        }
+        evidence.ready = true;
+        evidence.reason = "额度快照有效，可以确认批准。";
+        return evidence;
+      }
+
+      function approvalQuotaValid(task) {
+        const evidence = state.approvalQuota;
+        if (!task || !evidence || !evidence.ready || evidence.accountAlias !== task.accountAlias
+          || evidence.actionHash !== task.actionHash) return false;
+        const age = Date.now() - evidence.fetchedAt;
+        return age >= -5000 && age <= 45000
+          && evidence.fiveRemaining >= 30 && evidence.sevenRemaining >= 15
+          && evidence.fiveReset > Date.now() && evidence.sevenReset > Date.now();
+      }
+
+      function renderApprovalCheck(task, evidence, status) {
+        const poolCodex = isPoolCodexTask(task);
+        ui["approval-recheck"].hidden = !poolCodex;
+        if (!poolCodex) {
+          ui["approval-copy"].textContent = [
+            "Agent：" + agentLabel(task.agent),
+            "账号：" + aliasText(task.accountAlias, "system"),
+            "项目：" + aliasText(task.project, "未归类项目"),
+            "操作校验码：" + actionFingerprint(task.actionHash)
+          ].join("\n");
+          ui["approval-status"].textContent = status || "此对话不走 Codex 账号池额度复核；确认后会真实运行 CLI。";
+          ui["approval-status"].className = "hint";
+          ui.approve.disabled = !canApprove(task);
+          return;
+        }
+        const preference = task.executionPreference === null || task.executionPreference === undefined
+          ? { model: "gpt-5.6-sol", reasoningEffort: "high", serviceTier: "default" }
+          : typeof task.executionPreference === "object" ? task.executionPreference : {};
+        const serviceTier = displayText(preference.serviceTier, "", 20);
+        const lines = [
+          "账号：" + aliasText(task.accountAlias, "未指定"),
+          "路由：Hub",
+          "模型：" + displayText(preference.model, "不可用", 40),
+          "推理强度：" + displayText(preference.reasoningEffort, "不可用", 20),
+          "速度：" + (serviceTier === "fast" ? "Fast" : serviceTier === "default" ? "Standard" : "不可用"),
+          "套餐：" + displayText(evidence && evidence.plan, "暂无", 40),
+          "5h 剩余：" + percentText(evidence && evidence.fiveRemaining)
+            + " · 重置 " + shanghaiTime(evidence && evidence.fiveReset),
+          "7d 剩余：" + percentText(evidence && evidence.sevenRemaining)
+            + " · 重置 " + shanghaiTime(evidence && evidence.sevenReset),
+          "项目：" + aliasText(task.project, "未归类项目"),
+          "操作校验码：" + actionFingerprint(task.actionHash)
+        ];
+        ui["approval-copy"].textContent = lines.join("\n");
+        ui["approval-status"].textContent = status || (evidence ? evidence.reason : "正在检查额度快照。");
+        ui["approval-status"].className = evidence && !evidence.ready ? "hint danger-text" : "hint";
+        ui.approve.disabled = !canApprove(task) || !approvalQuotaValid(task);
+      }
+
+      function syncOpenApproval() {
+        if (!state.approval || !ui["approval-dialog"].open) return;
+        const reviewed = state.approval;
+        const current = state.tasks.find(item => item.id === reviewed.id);
+        if (!current || !canApprove(current) || current.accountAlias !== reviewed.accountAlias
+          || current.actionHash !== reviewed.actionHash) {
+          state.approvalQuota = null;
+          renderApprovalCheck(reviewed, null, "任务、账号或操作校验码已变化，请返回后重新审查。");
+          return;
+        }
+        state.approval = current;
+        renderApprovalCheck(current, state.approvalQuota);
+      }
+
+      function when(value) {
+        const date = new Date(value);
+        if (!value || Number.isNaN(date.getTime())) return "时间不清楚";
+        return new Intl.DateTimeFormat("zh-CN", {
+          timeZone: "UTC",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false
+        }).format(date) + " UTC";
+      }
+
+      function relativeWhen(value) {
+        const time = new Date(value).getTime();
+        if (!value || Number.isNaN(time)) return "时间不清楚";
+        const seconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
+        if (seconds < 60) return "刚刚";
+        if (seconds < 3600) return Math.floor(seconds / 60) + " 分钟前";
+        if (seconds < 86400) return Math.floor(seconds / 3600) + " 小时前";
+        return Math.floor(seconds / 86400) + " 天前";
+      }
+
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function actionButton(text, className, work, disabled) {
+        const node = element("button", "button small " + (className || ""), text);
+        node.type = "button";
+        node.disabled = Boolean(disabled);
+        node.addEventListener("click", work);
+        return node;
+      }
+
+      function showFeedback(kind, text) {
+        const target = ui[kind];
+        target.textContent = text || "";
+        target.hidden = !text;
+        if (text) {
+          const other = kind === "notice" ? ui.error : ui.notice;
+          other.textContent = "";
+          other.hidden = true;
+        }
+      }
+
+      function clearFeedback() {
+        showFeedback("notice", "");
+        showFeedback("error", "");
+      }
+
+      function setConnection(text, live) {
+        ui["connection-status"].textContent = text;
+        ui["connection-status"].className = "badge" + (live ? " live" : /正在|连接事件流|重连/.test(text) ? " is-busy" : "");
+      }
+
+      function isPoolCodexTask(task) {
+        if (!task) return false;
+        const account = typeof task.accountAlias === "string" ? task.accountAlias.trim() : "";
+        return task.agent === "codex" && account && account.toLowerCase() !== "system";
+      }
+
+      function agentLabel(agent) {
+        if (agent === "codex") return "Codex";
+        if (agent === "claude") return "Claude";
+        if (agent === "kimi") return "Kimi";
+        return aliasText(agent, "未知 Agent");
+      }
+
+      function approvalExpiry(task) {
+        const value = task && task.approvalExpiresAt;
+        if (typeof value !== "string" || !value || value.startsWith("0001-01-01T")) return null;
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? null : date;
+      }
+
+      function isApprovalExpired(task) {
+        if (!task || task.state !== "awaiting_approval") return false;
+        if (task.approvalExpired === true) return true;
+        const expiry = approvalExpiry(task);
+        return expiry !== null && expiry.getTime() <= Date.now();
+      }
+
+      function isActiveTask(task) {
+        if (!task) return false;
+        if (task.state === "awaiting_approval") return !isApprovalExpired(task);
+        return !terminalTaskStates.has(task.state);
+      }
+
+      function canApprove(task) {
+        const expiry = approvalExpiry(task);
+        return task && task.state === "awaiting_approval" && !isApprovalExpired(task)
+          && expiry !== null && expiry.getTime() > Date.now()
+          && typeof task.actionHash === "string" && task.actionHash.length > 0;
+      }
+
+      function cliTaskGroups() {
+        const all = state.tasks.slice().sort((a, b) =>
+          new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)
+        );
+        return {
+          active: all.filter(isActiveTask),
+          past: all.filter(task => !isActiveTask(task))
+        };
+      }
+
+      function renderTaskForm() {
+        const previousAgent = ui["task-agent"].value;
+        const previousProject = ui["task-project"].value;
+        const previousAccount = ui["task-account"].value;
+        const agents = state.agents.filter(agent => ["codex", "claude", "kimi"].includes(agent));
+        ui["task-agent"].replaceChildren(...agents.map(agent => new Option(agentLabel(agent), agent)));
+        ui["task-project"].replaceChildren(...state.projects.map(project => new Option(project, project)));
+        if (agents.includes(previousAgent)) ui["task-agent"].value = previousAgent;
+        if (state.projects.includes(previousProject)) ui["task-project"].value = previousProject;
+
+        const agent = ui["task-agent"].value;
+        if (agent === "kimi") {
+          ui["task-account"].replaceChildren(new Option("当前用户 Kimi 登录态", "system"));
+          ui["task-account"].disabled = true;
+          ui["task-agent-hint"].textContent = "Kimi 固定使用 system 语义与当前用户登录态，不设置 CODEX_HOME；Codex 权限与模型胶囊在这里隐藏。";
+        } else {
+          const accountOptions = [new Option("按 Hub 账号策略", "")];
+          for (const account of state.taskAccounts) accountOptions.push(new Option(account, account));
+          ui["task-account"].replaceChildren(...accountOptions);
+          if (state.taskAccounts.includes(previousAccount)) ui["task-account"].value = previousAccount;
+          ui["task-account"].disabled = !state.connected || agents.length === 0;
+          ui["task-agent-hint"].textContent = agent === "codex"
+            ? "CLI 任务使用 Hub 配置的权限上限；上方 Desktop 权限与模型胶囊只属于 Codex Desktop 对话。"
+            : "Claude CLI 不使用 Codex Desktop 的权限与模型胶囊。";
+        }
+        const ready = state.connected && agents.length > 0 && state.projects.length > 0;
+        ui["task-agent"].disabled = !ready;
+        ui["task-project"].disabled = !ready;
+        ui["task-prompt"].disabled = !ready;
+        const valid = updateTaskBytes();
+        ui["task-create"].disabled = !ready || state.pending.has("create-task") || !ui["task-prompt"].value.trim() || !valid;
+      }
+
+      function isThreadWorking(thread) {
+        return thread && (thread.aggregateState === "working" || thread.latestTurnState === "inProgress");
+      }
+
+      function desktopGroups() {
+        const all = state.threads
+          .filter(thread => thread && thread.sourceKind === "desktop" && thread.isSubagent !== true)
+          .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+        const live = all.filter(thread => isThreadWorking(thread) || thread.aggregateState === "needs_input");
+        const selected = all.find(thread => thread.publicRef === state.selectedRef);
+        const actionable = all.filter(thread => thread.canMessage === true || thread.canInterrupt === true);
+        const current = live.length ? live.slice() : selected ? [selected] : actionable.length ? [actionable[0]] : all.slice(0, 1);
+        if (selected && !current.some(thread => thread.publicRef === selected.publicRef)) current.unshift(selected);
+        const currentRefs = new Set(current.map(thread => thread.publicRef));
+        return { all, current, past: all.filter(thread => !currentRefs.has(thread.publicRef)) };
+      }
+
+      function selectedThread() {
+        return state.threads.find(thread => thread.publicRef === state.selectedRef) || null;
+      }
+
+      function selectedAttachments() {
+        const items = state.attachments.get(state.selectedRef);
+        return Array.isArray(items) ? items : [];
+      }
+
+      function renderComposerTools(thread, canMessage, busy) {
+        const sandboxOptions = Array.isArray(state.sandboxOptions) ? state.sandboxOptions : [];
+        ui["sandbox-select"].replaceChildren(...sandboxOptions.map(item => {
+          const option = document.createElement("option");
+          option.value = typeof item.value === "string" ? item.value : "";
+          option.textContent = cleanText(item.label, 80) || option.value;
+          return option;
+        }));
+        const defaultModel = document.createElement("option");
+        defaultModel.value = "";
+        defaultModel.textContent = "跟随 CLI 配置";
+        const modelOptions = [defaultModel];
+        for (const item of Array.isArray(state.models) ? state.models : []) {
+          if (!item || typeof item.model !== "string") continue;
+          const option = document.createElement("option");
+          option.value = item.model;
+          option.textContent = cleanText(item.displayName, 80) || item.model;
+          modelOptions.push(option);
+        }
+        if (thread && thread.model && !modelOptions.some(option => option.value === thread.model)) {
+          const unavailable = document.createElement("option");
+          unavailable.value = thread.model;
+          unavailable.textContent = cleanText(thread.model, 80) + "（当前不可用）";
+          unavailable.disabled = true;
+          modelOptions.push(unavailable);
+        }
+        ui["model-select"].replaceChildren(...modelOptions);
+
+        const settingsBusy = thread && state.pending.has("settings:" + thread.publicRef);
+        const uploadBusy = thread && state.pending.has("attachment:" + thread.publicRef);
+        const enabled = Boolean(thread && canMessage && !busy);
+        ui["sandbox-select"].disabled = !enabled || settingsBusy;
+        ui["model-select"].disabled = !enabled || settingsBusy;
+        ui["add-attachment"].disabled = !enabled || uploadBusy;
+        if (thread) {
+          ui["sandbox-select"].value = thread.sandboxMode || (sandboxOptions[0] && sandboxOptions[0].value) || "";
+          ui["model-select"].value = thread.model || "";
+        }
+        ui["settings-status"].textContent = !thread
+          ? "权限与模型按对话保存。"
+          : settingsBusy ? "正在保存权限与模型…"
+            : thread.latestTurnState === "inProgress"
+              ? "权限与模型按对话保存；进行中修改只影响下一个新回合。"
+              : "权限与模型按对话保存，并从下一个新回合生效。";
+
+        const attachments = thread ? selectedAttachments() : [];
+        ui["attachment-list"].replaceChildren(...attachments.map(attachment => {
+          const chip = element("div", "attachment-chip");
+          chip.append(element("span", "", cleanText(attachment.name, 120) + " · " + byteText(Number(attachment.size) || 0)));
+          const remove = element("button", "", "×");
+          remove.type = "button";
+          remove.setAttribute("aria-label", "移除附件 " + cleanText(attachment.name, 80));
+          remove.disabled = busy;
+          remove.addEventListener("click", () => removeAttachment(attachment.id));
+          chip.append(remove);
+          return chip;
+        }));
+      }
+
+      /* desktop-content-logic:start */
+      function shouldRequestDesktopContent({
+        connected, observerMode, publicRef, selectedRef, contentLoading,
+        force, hasContent, contentRef, unavailableRef, retryUnavailable
+      }) {
+        if (!connected || observerMode === "unavailable" || !publicRef || publicRef !== selectedRef || contentLoading) return false;
+        if (unavailableRef === publicRef && !retryUnavailable) return false;
+        return Boolean(force) || !hasContent || contentRef !== publicRef;
+      }
+
+      function nextContentUnavailableRef(currentRef, event) {
+        if (event.type === "reset" || event.type === "retry"
+          || (event.type === "observer" && event.previousMode === "unavailable" && event.nextMode !== "unavailable")) {
+          return "";
+        }
+        if (event.type === "unavailable" && event.publicRef) return event.publicRef;
+        return currentRef;
+      }
+      /* desktop-content-logic:end */
+
+      function observerIsLive() {
+        return state.observer && state.observer.mode === "shared_live";
+      }
+
+      function observerCanReadContent() {
+        return state.observer && state.observer.mode !== "unavailable";
+      }
+
+      function threadButton(thread) {
+        const runtimeState = Object.prototype.hasOwnProperty.call(runtimeLabels, thread.aggregateState)
+          ? thread.aggregateState : "unknown";
+        const node = element("button", "thread-button status-" + runtimeState);
+        node.type = "button";
+        node.setAttribute("aria-current", String(thread.publicRef === state.selectedRef));
+        const title = displayText(thread.title, "未命名对话");
+        const status = runtimeLabels[thread.aggregateState] || "状态不清楚";
+        node.append(
+          element("strong", "", title),
+          element("span", "", status + " · " + relativeWhen(thread.updatedAt))
+        );
+        node.addEventListener("click", () => selectThread(thread.publicRef));
+        return node;
+      }
+
+      function renderDesktop() {
+        const groups = desktopGroups();
+        ui["desktop-list"].replaceChildren(...groups.current.map(threadButton));
+        ui["desktop-empty"].hidden = groups.current.length > 0;
+        ui["desktop-empty"].classList.toggle("loading", state.connected && !state.codexLoaded);
+        ui["desktop-empty"].classList.toggle("error-state", state.codexLoaded && state.observer.code === "request_failed");
+        ui["desktop-empty"].textContent = state.connected && !state.codexLoaded
+          ? "正在读取 Desktop 对话"
+          : state.connected ? "暂无 Desktop 对话" : "尚未连接";
+        ui["desktop-summary"].textContent = groups.all.length
+          ? groups.current.length + " 个当前对话"
+          : state.connected && !state.codexLoaded ? "正在读取"
+            : state.connected ? "没有发现 sourceKind=desktop 的对话。" : "连接后读取对话。";
+
+        const mode = state.observer && state.observer.mode;
+        ui["observer-status"].className = "badge" + (mode === "shared_live" ? " live" : mode === "unavailable" ? " state-error" : "");
+        ui["observer-status"].textContent = mode === "shared_live"
+          ? groups.all.some(thread => thread.canMessage === true || thread.canInterrupt === true)
+            ? "已连接 · 可操作已加载对话" : "已连接 · 仅查看记录"
+          : mode === "history_only" ? "仅历史" : "未连接 Desktop";
+
+        renderThreadDetail();
+      }
+
+      function resetContent() {
+        state.contentRequest += 1;
+        state.content = null;
+        state.contentRef = "";
+        state.contentLoading = false;
+        state.contentError = "";
+        state.contentUnavailableRef = nextContentUnavailableRef(state.contentUnavailableRef, { type: "reset" });
+        ui["thread-input"].value = "";
+        updateThreadBytes();
+      }
+
+      function selectThread(publicRef) {
+        if (!state.threads.some(thread => thread.publicRef === publicRef)) return;
+        state.selectedByUser = true;
+        ui["desktop-panel"].open = true;
+        const fromPast = desktopGroups().past.some(thread => thread.publicRef === publicRef);
+        if (state.selectedRef !== publicRef) {
+          state.selectedRef = publicRef;
+          resetContent();
+        }
+        renderDesktop();
+        renderPast();
+        loadContent(publicRef);
+        if (fromPast && matchMedia("(max-width: 767px)").matches) {
+          requestAnimationFrame(() => ui["thread-title"].scrollIntoView({ block: "start" }));
+        }
+      }
+
+      async function loadContent(publicRef, force, retryUnavailable) {
+        if (!shouldRequestDesktopContent({
+          connected: state.connected,
+          observerMode: state.observer && state.observer.mode,
+          publicRef,
+          selectedRef: state.selectedRef,
+          contentLoading: state.contentLoading,
+          force,
+          hasContent: Boolean(state.content),
+          contentRef: state.contentRef,
+          unavailableRef: state.contentUnavailableRef,
+          retryUnavailable
+        })) return;
+        if (retryUnavailable) {
+          state.contentUnavailableRef = nextContentUnavailableRef(state.contentUnavailableRef, { type: "retry" });
+        }
+        const requestNumber = ++state.contentRequest;
+        state.contentLoading = true;
+        state.contentError = "";
+        renderThreadDetail();
+        try {
+          const data = await request("/api/codex/threads/" + encodeURIComponent(publicRef));
+          if (requestNumber !== state.contentRequest || publicRef !== state.selectedRef) return;
+          if (!data || !Array.isArray(data.turns)) throw new Error("对话内容格式不正确。");
+          state.content = {
+            turns: data.turns.filter(turn => turn && Array.isArray(turn.items)),
+            hasMore: data.hasMore === true,
+            truncated: data.truncated === true
+          };
+          state.contentRef = publicRef;
+        } catch (error) {
+          if (requestNumber === state.contentRequest && publicRef === state.selectedRef) {
+            if (error && error.code === "codex_content_unavailable") {
+              state.contentUnavailableRef = nextContentUnavailableRef(state.contentUnavailableRef, {
+                type: "unavailable", publicRef
+              });
+              state.content = null;
+              state.contentRef = "";
+            }
+            state.contentError = error.message || "读取对话失败。";
+          }
+        } finally {
+          if (requestNumber === state.contentRequest && publicRef === state.selectedRef) {
+            state.contentLoading = false;
+            renderThreadDetail();
+          }
+        }
+      }
+
+      function renderContent() {
+        ui["thread-content"].replaceChildren();
+        ui["thread-content"].setAttribute("aria-busy", String(state.contentLoading));
+        if (!observerCanReadContent()) {
+          ui["thread-content"].append(element("p", "empty", "这是上次观察到的线程摘要。Desktop 当前未连接，正文没有缓存；重连后会重新读取。"));
+          return;
+        }
+        if (state.contentUnavailableRef === state.selectedRef) {
+          const retry = actionButton("重试", "", () => loadContent(state.selectedRef, true, true), false);
+          ui["thread-content"].append(
+            element("p", "empty", "这是上次观察到的线程摘要。当前无法读取该线程正文，正文没有缓存；请重试或重连后重新读取。"),
+            retry
+          );
+          return;
+        }
+        if (state.contentLoading && !state.content) {
+          ui["thread-content"].append(element("p", "empty loading", "正在读取最近内容"));
+          return;
+        }
+        if (state.contentError) {
+          const error = element("div", "feedback error", state.contentError);
+          const retry = actionButton("重试", "", () => loadContent(state.selectedRef, true, true), false);
+          ui["thread-content"].append(error, retry);
+          return;
+        }
+        if (!state.content || state.contentRef !== state.selectedRef) {
+          ui["thread-content"].append(element("p", "empty loading", "正在读取最近内容"));
+          return;
+        }
+        const turns = state.content.turns.slice().reverse();
+        if (!turns.length) {
+          ui["thread-content"].append(element("p", "empty", "最近没有可显示的内容"));
+          return;
+        }
+        const list = element("div", "turn-list");
+        for (const turn of turns) {
+          const turnState = Object.prototype.hasOwnProperty.call(turnLabels, turn.status) ? turn.status : "unknown";
+          const card = element("article", "turn status-" + turnState);
+          const head = element("div", "turn-head");
+          head.append(
+            element("strong", "", turnLabels[turn.status] || "一轮对话"),
+            element("span", "", when(turn.completedAt || turn.startedAt))
+          );
+          card.append(head);
+          const items = element("div", "content-items");
+          for (const item of turn.items) {
+            if (!item || typeof item.text !== "string" || !item.text) continue;
+            const kind = Object.prototype.hasOwnProperty.call(contentLabels, item.kind) ? item.kind : "assistant";
+            const content = element("div", "content-item " + kind);
+            content.append(element("strong", "", contentLabels[kind]));
+            appendMessageContent(content, cleanText(item.text), kind);
+            items.append(content);
+          }
+          if (items.childElementCount) {
+            card.append(items);
+            list.append(card);
+          }
+        }
+        if (!list.childElementCount) {
+          ui["thread-content"].append(element("p", "empty", state.content.truncated
+            ? "部分内容暂时无法展开，可在 Codex 查看完整记录。" : "最近没有可显示的内容"));
+          return;
+        }
+        ui["thread-content"].append(list);
+        if (state.content.hasMore || state.content.truncated) {
+          const notes = [];
+          if (state.content.hasMore) notes.push("还有更早内容未显示");
+          if (state.content.truncated) notes.push("部分内容已省略，可在 Codex 查看完整记录");
+          ui["thread-content"].append(element("p", "hint", notes.join("；") + "。"));
+        }
+      }
+
+      function appendMessageContent(container, text, kind) {
+        if (kind === "command") {
+          const code = element("pre", "code-block", text);
+          code.dataset.language = "terminal";
+          container.classList.add("has-code");
+          container.append(code);
+          return;
+        }
+        const fence = /```([^\n`]*)\n([\s\S]*?)```/g;
+        let cursor = 0;
+        let matched = false;
+        let part;
+        while ((part = fence.exec(text)) !== null) {
+          matched = true;
+          if (part.index > cursor) container.append(element("pre", "message-text", text.slice(cursor, part.index)));
+          const code = element("pre", "code-block", part[2].replace(/\n$/, ""));
+          code.dataset.language = cleanText(part[1], 24).trim() || "code";
+          container.append(code);
+          cursor = fence.lastIndex;
+        }
+        if (cursor < text.length) container.append(element("pre", "message-text", text.slice(cursor)));
+        if (!matched && !container.querySelector(".message-text")) container.append(element("pre", "message-text", text));
+        if (matched) container.classList.add("has-code");
+      }
+
+      function renderThreadDetail() {
+        const thread = selectedThread();
+        const messageWithinLimit = updateThreadBytes();
+        if (!thread || thread.sourceKind !== "desktop") {
+          ui["thread-title"].textContent = "选择一个对话";
+          ui["thread-meta"].textContent = "选择后显示最近内容。";
+          ui["thread-input"].value = "";
+          ui["thread-input"].disabled = true;
+          ui["send-message"].disabled = true;
+          ui["open-thread"].disabled = true;
+          ui["interrupt"].hidden = true;
+          ui["thread-status"].textContent = "只有实时共享连接可从网页发送。";
+          ui["thread-content"].replaceChildren(element("p", "empty", "尚未选择对话"));
+          renderComposerTools(null, false, false);
+          return;
+        }
+
+        const activeTurn = thread.latestTurnState === "inProgress";
+        const canMessage = state.connected && observerIsLive() && thread.canMessage === true;
+        const pendingMessage = state.pending.has("message:" + thread.publicRef);
+        const pendingInterrupt = state.pending.has("interrupt:" + thread.publicRef);
+        const canInterrupt = pendingInterrupt
+          || (state.connected && observerIsLive() && activeTurn && thread.canInterrupt === true);
+        const project = aliasText(thread.projectAlias, "未归类");
+
+        ui["thread-title"].textContent = displayText(thread.title, "未命名对话");
+        ui["thread-meta"].textContent = project + " · " + (runtimeLabels[thread.aggregateState] || "状态不清楚")
+          + " · 更新 " + when(thread.updatedAt);
+        ui["thread-input"].disabled = !canMessage || pendingMessage;
+        ui["send-message"].textContent = pendingMessage ? "发送中" : activeTurn ? "追加指令" : "发送";
+        ui["send-message"].disabled = !canMessage || pendingMessage
+          || (!ui["thread-input"].value.trim() && selectedAttachments().length === 0) || !messageWithinLimit;
+        ui["open-thread"].disabled = !state.connected || state.pending.has("open:" + thread.publicRef);
+        ui["open-thread"].textContent = state.pending.has("open:" + thread.publicRef) ? "打开中" : "在 Codex 打开";
+        ui["interrupt"].hidden = !canInterrupt;
+        ui["interrupt"].disabled = pendingInterrupt;
+        ui["interrupt"].textContent = pendingInterrupt ? "停止中" : "停止当前回复";
+        ui["thread-status"].textContent = !observerIsLive()
+          ? "当前只可查看历史，发送和停止已禁用。"
+          : thread.runtimeState === "not_loaded"
+            ? "此对话未接入共享后台，可查看记录或在 Codex 打开。"
+            : thread.canMessage !== true
+            ? "此对话当前不支持从网页发送。"
+            : activeTurn ? "Codex 正在工作，可追加指令。" : "Codex 空闲，可发送新消息。";
+
+        renderComposerTools(thread, canMessage, pendingMessage);
+        renderContent();
+      }
+
+      async function loadTaskConversation(taskId, force) {
+        const current = state.taskConversations.get(taskId) || { open: true, messages: [] };
+        if (current.loading || (!force && current.loaded)) return;
+        current.loading = true;
+        current.error = "";
+        state.taskConversations.set(taskId, current);
+        renderTasks();
+        renderPast();
+        try {
+          const data = await request("/api/tasks/" + encodeURIComponent(taskId) + "/messages");
+          if (!data || !Array.isArray(data.messages)) throw new Error("对话消息格式不正确。");
+          current.messages = data.messages.filter(message => message && typeof message.text === "string"
+            && (message.role === "user" || message.role === "assistant"));
+          current.loaded = true;
+          const task = state.tasks.find(item => item.id === taskId);
+          if (task && terminalTaskStates.has(task.state) && task.state !== "cancelled") {
+            state.taskLiveMessages.delete(taskId);
+          }
+        } catch (error) {
+          current.error = error.message || "读取本次会话失败。";
+        } finally {
+          current.loading = false;
+          if (state.taskConversations.get(taskId) === current) {
+            renderTasks();
+            renderPast();
+          }
+        }
+      }
+
+      function toggleTaskConversation(task) {
+        const current = state.taskConversations.get(task.id) || { open: false, messages: [] };
+        current.open = !current.open;
+        state.taskConversations.set(task.id, current);
+        renderTasks();
+        renderPast();
+        if (current.open) loadTaskConversation(task.id, false);
+      }
+
+      function renderTaskConversation(task) {
+        const detail = state.taskConversations.get(task.id);
+        if (!detail || !detail.open) return null;
+        const panel = element("div", "task-conversation");
+        const live = state.taskLiveMessages.get(task.id);
+        const viewMessages = taskConversationMessages(detail.messages, live);
+        const active = ["starting", "running", "cancel_requested"].includes(task.state);
+        if (detail.loading && !detail.loaded) {
+          panel.append(element("p", "empty loading", "正在读取本次会话"));
+        } else if (detail.error) {
+          panel.append(
+            element("p", "feedback error", detail.error),
+            actionButton("重试", "", () => loadTaskConversation(task.id, true), false)
+          );
+        } else if (!viewMessages.length) {
+          panel.append(element("p", "empty", "这个任务在当前运行期间还没有可显示的消息。服务重启后，内容不会保留。"));
+        } else {
+          const messages = element("div", "content-items");
+          for (const message of viewMessages) {
+            const liveClass = message.livePhase === "interrupted" ? " live-interrupted"
+              : message.livePhase === "streaming" ? " live-stream" : "";
+            const content = element("article", "content-item " + message.role + liveClass);
+            const heading = element("div", "task-message-head");
+            heading.append(element("strong", "", message.role === "user" ? "你" : "Kimi"));
+            if (message.livePhase) {
+              const interrupted = message.livePhase === "interrupted";
+              heading.append(element("span", "badge task-stream-status state-" + (interrupted ? "cancelled" : "running"),
+                interrupted ? "已中断" : "正在生成"));
+            }
+            content.append(heading);
+            const safeLimit = Math.max(120000, message.text.length * 2 + 1);
+            appendMessageContent(content, cleanText(message.text, safeLimit), message.role);
+            content.append(element("div", "task-message-time", when(message.createdAt)));
+            messages.append(content);
+          }
+          panel.append(messages);
+          if (detail.loading) panel.append(element("p", "helper", "正在同步最新回复…"));
+        }
+
+        if (active) {
+          const indicator = element("p", "task-live-indicator");
+          const stopping = task.state === "cancel_requested";
+          indicator.append(
+            element("span", "badge state-" + task.state, stopping ? "正在停止" : "回复中"),
+            document.createTextNode(stopping ? "已提交停止请求，等待进程退出。" : "新分块会实时追加到上方同一条回复。")
+          );
+          panel.append(indicator);
+        }
+
+        if (task.canResume === true) {
+          const form = element("form", "task-conversation-composer");
+          const label = element("label", "", "继续发送给 Kimi");
+          const textarea = document.createElement("textarea");
+          textarea.name = "prompt";
+          textarea.autocomplete = "off";
+          textarea.placeholder = "输入下一条消息…";
+          textarea.value = state.taskDrafts.get(task.id) || "";
+          const counter = element("p", "helper byte-counter");
+          const submit = element("button", "button primary", "发送并批准");
+          submit.type = "submit";
+          const update = () => {
+            const bytes = utf8Bytes(textarea.value.trim());
+            const valid = bytes <= promptByteLimit && utf8Bytes(JSON.stringify({ requestId: sampleRequestID, prompt: textarea.value.trim() })) <= requestBodyByteLimit;
+            textarea.setCustomValidity(valid ? "" : "消息超过 64 KiB UTF-8 或请求体安全上限。");
+            counter.textContent = byteText(bytes) + " / 64 KiB UTF-8";
+            counter.className = "helper byte-counter" + (bytes > promptByteLimit ? " over" : bytes > promptByteLimit * byteWarningRatio ? " near" : "");
+            submit.disabled = state.pending.has(task.id) || !textarea.value.trim() || !valid;
+          };
+          textarea.addEventListener("input", () => {
+            state.taskDrafts.set(task.id, textarea.value);
+            update();
+          });
+          form.addEventListener("submit", event => resumeKimiConversation(event, task));
+          const action = element("div", "actions");
+          action.append(submit);
+          form.append(label, textarea, counter, element("p", "helper", "发送会创建 resume 任务并立即批准，真实运行 Kimi CLI。"), action);
+          panel.append(form);
+          update();
+        } else if (active) {
+          panel.append(element("p", "helper", "Kimi 正在回复；结束后可在这里直接续聊。"));
+        }
+        return panel;
+      }
+
+      function taskCard(task) {
+        const card = element("article", "task");
+        card.dataset.state = typeof task.state === "string" ? task.state : "unknown";
+        const head = element("div", "task-head");
+        const copy = element("div");
+        copy.append(
+          element("h3", "", agentLabel(task.agent) + " · " + aliasText(task.project, "未归类项目")),
+          element("p", "meta", "账号 " + aliasText(task.accountAlias, "未指定") + " · " + relativeWhen(task.updatedAt || task.createdAt))
+        );
+        const expired = isApprovalExpired(task);
+        const badgeState = expired ? "cancelled" : Object.prototype.hasOwnProperty.call(taskLabels, task.state) ? task.state : "unknown";
+        head.append(copy, element("span", "badge state-" + badgeState, expired ? "审批已过期" : taskLabels[task.state] || "状态不清楚"));
+        card.append(head);
+
+        const output = state.taskOutput.get(task.id);
+        const detail = state.taskConversations.get(task.id);
+        const conversationOpen = task.agent === "kimi" && detail && detail.open;
+        if (Array.isArray(output) && output.length && !conversationOpen) {
+          card.append(element("pre", "result task-output", cleanText(output.join("\n"), 32000)));
+        } else if (task.resultNote) {
+          card.append(element("p", "result", cleanText(task.resultNote, 4000)));
+        }
+        if (task.reasonCode && ["failed", "cancelled", "uncertain", "blocked_configuration"].includes(task.state)) {
+          card.append(element("p", "hint", "原因：" + cleanText(task.reasonCode, 120)));
+        }
+        if (task.state === "awaiting_approval") {
+          const expiry = approvalExpiry(task);
+          if (expired) card.append(element("p", "hint", "这个审批已经失效，不能再批准。"));
+          else if (!expiry) card.append(element("p", "hint", "审批时间不完整，已禁用批准。"));
+          else {
+            const minutes = Math.max(1, Math.ceil((expiry.getTime() - Date.now()) / 60000));
+            card.append(element("p", "hint", "审批剩余约 " + minutes + " 分钟"));
+          }
+        }
+
+        const busy = state.pending.has(task.id);
+        const actions = element("div", "actions");
+        if (task.agent === "kimi") {
+          actions.append(actionButton(detail && detail.open ? "收起会话" : "查看本次会话", "", () => toggleTaskConversation(task), busy));
+        }
+        if (canApprove(task)) actions.append(actionButton("审查并批准", "primary", () => openApproval(task), busy));
+        if (task.canResume === true && task.agent !== "kimi") actions.append(actionButton("继续会话", "", () => openResume(task), busy));
+        if (task.state === "uncertain") {
+          actions.append(actionButton("确认进程已停止", "danger", () => resolveTask(task), busy));
+        }
+        const cancelControl = taskCancelControl(task.state, busy, expired);
+        if (cancelControl.visible) {
+          actions.append(actionButton(cancelControl.label, "danger", () => cancelTask(task), !cancelControl.enabled));
+        }
+        if (actions.childElementCount) card.append(actions);
+        const conversation = task.agent === "kimi" ? renderTaskConversation(task) : null;
+        if (conversation) card.append(conversation);
+        return card;
+      }
+
+      function renderTasks() {
+        const groups = cliTaskGroups();
+        ui["cli-list"].setAttribute("aria-busy", String(state.connected && !state.overviewLoaded));
+        ui["cli-list"].replaceChildren(...groups.active.map(taskCard));
+        ui["cli-empty"].hidden = groups.active.length > 0;
+        ui["cli-empty"].classList.toggle("loading", state.connected && !state.overviewLoaded);
+        ui["cli-empty"].classList.remove("error-state");
+        ui["cli-empty"].textContent = state.connected ? "暂无进行中的 CLI Agent 对话" : "尚未连接";
+        const approvals = groups.active.filter(task => task.state === "awaiting_approval").length;
+        const running = groups.active.filter(task => ["starting", "running", "cancel_requested"].includes(task.state)).length;
+        const uncertain = groups.active.filter(task => task.state === "uncertain").length;
+        ui["cli-summary"].textContent = groups.active.length
+          ? running + " 个进行中 · " + approvals + " 个待审批" + (uncertain ? " · " + uncertain + " 个状态不确定" : "")
+          : state.connected ? "可新建 Codex、Claude 或 Kimi CLI 对话。" : "连接后读取任务。";
+        ui["attention-status"].textContent = "待审批 " + approvals;
+        ui["attention-status"].classList.toggle("attention", approvals > 0);
+      }
+
+      function quotaWindow(label, usedPercent, resetsAt) {
+        const valid = Number.isFinite(usedPercent) && usedPercent >= 0 && usedPercent <= 100;
+        const remaining = valid ? 100 - usedPercent : NaN;
+        const block = element("div", "quota-window");
+        const line = element("div", "quota-line");
+        line.title = valid ? "已用 " + percentText(usedPercent) : "已用数据不可用";
+        line.append(element("span", "", label + "剩余"), element("strong", "", percentText(remaining)));
+        const track = element("div", "quota-track");
+        const fill = element("div", "quota-fill" + (valid && remaining < 15 ? " low" : ""));
+        fill.style.width = valid ? Math.max(0, Math.min(100, remaining)) + "%" : "0";
+        track.append(fill);
+        const reset = typeof resetsAt === "string" ? Date.parse(resetsAt) : NaN;
+        block.append(line, track, element("div", "quota-reset", "重置 " + shanghaiTime(reset)));
+        return block;
+      }
+
+      function quotaCard(account) {
+        const alias = aliasText(account.alias, "未知账号");
+        const code = dispatchCodes[alias];
+        const card = element("article", "quota-card");
+        const head = element("div", "quota-card-head");
+        head.append(
+          element("strong", "", (code ? code + " · " : "") + alias),
+          element("span", "", displayText(account.plan, "套餐未知", 24).toUpperCase())
+        );
+        card.append(
+          head,
+          quotaWindow("5 小时", account.fiveHourUsedPercent, account.fiveHourResetsAt),
+          quotaWindow("7 天", account.sevenDayUsedPercent, account.sevenDayResetsAt)
+        );
+        if (account.fresh !== true) card.append(element("p", "hint danger-text", "快照已过期，请在 Next 刷新。"));
+        return card;
+      }
+
+      function renderAccounts() {
+        const accounts = state.accounts
+          .filter(account => account && account.source === "matched_alias")
+          .sort((left, right) => {
+            const leftCode = dispatchCodes[left.alias] || "Z";
+            const rightCode = dispatchCodes[right.alias] || "Z";
+            return leftCode.localeCompare(rightCode) || String(left.alias).localeCompare(String(right.alias));
+          });
+        ui["quota-list"].setAttribute("aria-busy", String(state.connected && !state.managerLoaded));
+        ui["quota-list"].replaceChildren(...accounts.map(quotaCard));
+        ui["quota-empty"].hidden = accounts.length > 0;
+        ui["quota-empty"].classList.toggle("loading", state.connected && !state.managerLoaded);
+        ui["quota-empty"].classList.toggle("error-state", Boolean(state.managerError));
+        ui["quota-empty"].textContent = state.managerError || (state.connected && !state.managerLoaded
+          ? "正在读取账号额度" : state.connected ? "暂无可识别的账号额度" : "尚未连接");
+        ui["quota-updated"].textContent = state.managerUpdatedAt
+          ? "更新 " + relativeWhen(state.managerUpdatedAt)
+          : state.managerError ? "读取失败" : "等待读取";
+        ui["quota-updated"].className = "badge" + (state.managerError
+          ? " state-error" : state.managerLoaded ? " state-ready" : state.connected ? " is-busy" : "");
+        ui["quota-summary"].textContent = accounts.length
+          ? accounts.length + " 个账号 · 每 15 秒读取 Next 快照；这里只查看，不发送暖号请求。"
+          : "每 15 秒读取 Next 的最新快照；这里只查看，不发送暖号请求。";
+      }
+
+      function shortRunID(value) {
+        const text = displayText(value, "", 160);
+        return text.length > 10 ? "…" + text.slice(-8) : text;
+      }
+
+      function kimiTaskCard(task) {
+        const card = element("article", "kimi-task");
+        const head = element("div", "task-head");
+        head.append(
+          element("h3", "", displayText(task.title, "未命名任务", 240)),
+          element("span", "badge state-" + (task.enabled === true ? "succeeded" : "cancelled"), task.enabled === true ? "已启用" : "已停用")
+        );
+        card.append(head);
+        const trigger = task.trigger && typeof task.trigger === "object" ? task.trigger : {};
+        const triggerParts = [];
+        if (trigger.kind) triggerParts.push(displayText(trigger.kind, "", 80));
+        if (trigger.cron) triggerParts.push("cron " + displayText(trigger.cron, "", 160));
+        if (trigger.timezone) triggerParts.push("时区 " + displayText(trigger.timezone, "", 100));
+        card.append(element("p", "meta", triggerParts.length ? triggerParts.join(" · ") : "触发方式未提供"));
+        const details = [];
+        if (task.executionKind) details.push("执行 " + displayText(task.executionKind, "", 80));
+        if (Number.isInteger(task.runCount) && task.runCount >= 0) details.push(task.runCount + " 条记录");
+        else details.push("记录数不可用");
+        card.append(element("p", "meta", details.join(" · ")));
+        let latest = "最近运行不可用";
+        if (typeof task.latestRunStartedAt === "string") {
+          latest = "最近启动 " + when(task.latestRunStartedAt);
+          const runID = shortRunID(task.latestRunId);
+          if (runID) latest += " · " + runID;
+        } else if (typeof task.latestRecordModifiedAt === "string") {
+          latest = "最近记录目录更新 " + when(task.latestRecordModifiedAt) + "（文件修改时间）";
+        } else if (task.runCount === 0) {
+          latest = "暂无运行记录";
+        }
+        card.append(element("p", "helper", latest));
+        return card;
+      }
+
+      function renderKimi() {
+        const tasks = state.kimiTasks.filter(task => task && typeof task.title === "string");
+        ui["kimi-list"].setAttribute("aria-busy", String(state.connected && !state.kimiLoaded));
+        ui["kimi-list"].replaceChildren(...tasks.map(kimiTaskCard));
+        ui["kimi-empty"].hidden = tasks.length > 0;
+        ui["kimi-empty"].classList.toggle("loading", state.connected && !state.kimiLoaded);
+        ui["kimi-empty"].classList.toggle("error-state", Boolean(state.kimiError));
+        ui["kimi-empty"].textContent = state.kimiError || state.kimiNotice || (state.connected && !state.kimiLoaded
+          ? "正在读取 Kimi 任务" : state.connected ? "暂无 Kimi 桌面端任务" : "尚未连接");
+        ui["kimi-count"].textContent = tasks.length + " 项";
+        ui["kimi-count"].className = "badge" + (state.kimiError
+          ? " state-error" : state.kimiLoaded ? " state-ready" : state.connected ? " is-busy" : "");
+        ui["kimi-summary"].textContent = state.kimiError || state.kimiNotice
+          || "只读展示本机 Kimi 自动化；时间统一为 UTC，不提供任何操作。";
+        ui["kimi-summary"].classList.toggle("danger-text", Boolean(state.kimiError));
+      }
+
+      function renderPast() {
+        const desktop = desktopGroups().past;
+        const tasks = cliTaskGroups().past;
+        ui["past-count"].textContent = String(desktop.length + tasks.length);
+        if (!ui.past.open) {
+          ui["past-desktop"].replaceChildren();
+          ui["past-cli"].replaceChildren();
+          return;
+        }
+        const desktopNodes = desktop.slice(0, state.pastDesktopLimit).map(threadButton);
+        if (desktop.length > state.pastDesktopLimit) {
+          desktopNodes.push(actionButton("再显示 " + Math.min(40, desktop.length - state.pastDesktopLimit) + " 个对话", "", () => {
+            state.pastDesktopLimit += 40;
+            renderPast();
+          }, false));
+        }
+        ui["past-desktop"].replaceChildren(...desktopNodes);
+        ui["past-desktop-empty"].hidden = desktop.length > 0;
+        const taskNodes = tasks.slice(0, state.pastTaskLimit).map(taskCard);
+        if (tasks.length > state.pastTaskLimit) {
+          taskNodes.push(actionButton("再显示 " + Math.min(40, tasks.length - state.pastTaskLimit) + " 个任务", "", () => {
+            state.pastTaskLimit += 40;
+            renderPast();
+          }, false));
+        }
+        ui["past-cli"].replaceChildren(...taskNodes);
+        ui["past-cli-empty"].hidden = tasks.length > 0;
+      }
+
+      function renderAll() {
+        renderTaskForm();
+        renderDesktop();
+        renderTasks();
+        renderAccounts();
+        renderKimi();
+        renderPast();
+      }
+
+      function taskFrom(data) {
+        const task = data && data.task ? data.task : data;
+        return task && typeof task.id === "string" ? task : null;
+      }
+
+      function syncTaskLivePhase(task) {
+        if (!task || typeof task.id !== "string") return;
+        const live = state.taskLiveMessages.get(task.id);
+        if (!live) return;
+        if (task.state === "cancelled") {
+          state.taskLiveMessages.set(task.id, { ...live, phase: "interrupted" });
+        }
+      }
+
+      function upsertTask(task) {
+        const index = state.tasks.findIndex(item => item.id === task.id);
+        if (index < 0) state.tasks.push(task);
+        else if (!Number.isInteger(state.tasks[index].version) || !Number.isInteger(task.version)
+          || task.version >= state.tasks[index].version) state.tasks[index] = task;
+        syncTaskLivePhase(task);
+        syncOpenApproval();
+        renderTasks();
+        renderPast();
+      }
+
+      function applyOverview(data, bootstrap) {
+        if (!data || !Array.isArray(data.agents) || !Array.isArray(data.accounts)
+          || !Array.isArray(data.projects) || !Array.isArray(data.tasks)) throw new Error("任务概览格式不正确。");
+        state.agents = data.agents.filter(agent => typeof agent === "string" && agent);
+        state.projects = data.projects.filter(project => typeof project === "string" && project);
+        state.taskAccounts = data.accounts.filter(account => typeof account === "string" && account);
+        state.tasks = data.tasks.filter(task => task && typeof task.id === "string");
+        state.tasks.forEach(syncTaskLivePhase);
+        state.overviewLoaded = true;
+        if (bootstrap && Number.isSafeInteger(data.seq) && data.seq >= 0) state.seq = data.seq;
+        syncOpenApproval();
+        renderTaskForm();
+        renderTasks();
+        renderPast();
+      }
+
+      function applyManagerOverview(data) {
+        if (!data || !Array.isArray(data.accounts)) throw new Error("账号额度格式不正确。");
+        state.accounts = data.accounts;
+        state.managerLoaded = true;
+        state.managerUpdatedAt = typeof data.updatedAt === "string" ? data.updatedAt : "";
+        state.managerError = "";
+        renderAccounts();
+      }
+
+      function applyKimiOverview(data) {
+        if (!data || !Array.isArray(data.tasks)) throw new Error("Kimi 任务格式不正确。");
+        state.kimiTasks = data.tasks;
+        state.kimiLoaded = true;
+        state.kimiNotice = typeof data.notice === "string" ? cleanText(data.notice, 300) : "";
+        state.kimiError = "";
+        renderKimi();
+      }
+
+      function applyCodexOverview(data) {
+        if (!data || !data.observer || !Array.isArray(data.threads)) throw new Error("Desktop 概览格式不正确。");
+        const previousObserverMode = state.observer && state.observer.mode;
+        state.observer = data.observer;
+        state.contentUnavailableRef = nextContentUnavailableRef(state.contentUnavailableRef, {
+          type: "observer", previousMode: previousObserverMode, nextMode: state.observer.mode
+        });
+        state.codexLoaded = true;
+        state.threads = data.threads.filter(thread => thread && typeof thread.publicRef === "string");
+        state.sandboxOptions = Array.isArray(data.sandboxOptions)
+          ? data.sandboxOptions.filter(item => item && (item.value === "read-only" || item.value === "workspace-write"))
+          : [];
+        state.models = Array.isArray(data.models)
+          ? data.models.filter(item => item && typeof item.model === "string")
+          : [];
+        for (const key of Array.from(state.pending)) {
+          if (!key.startsWith("interrupt:")) continue;
+          const publicRef = key.slice("interrupt:".length);
+          const thread = state.threads.find(item => item.publicRef === publicRef);
+          if (!thread || thread.latestTurnState !== "inProgress" || thread.canInterrupt !== true) {
+            state.pending.delete(key);
+          }
+        }
+        const groups = desktopGroups();
+        const previous = state.selectedRef;
+        const preferred = groups.all.find(thread => (thread.canMessage === true || thread.canInterrupt === true)
+          && (thread.latestTurnState === "completed" || thread.latestTurnState === "failed"))
+          || groups.all.find(thread => thread.canMessage === true || thread.canInterrupt === true) || groups.current[0] || groups.all[0];
+        if (!groups.all.some(thread => thread.publicRef === state.selectedRef)
+          || (!state.selectedByUser && state.contentError.includes("codex_content_unavailable")
+            && preferred && preferred.publicRef !== state.selectedRef)) {
+          state.selectedRef = preferred ? preferred.publicRef : "";
+          state.selectedByUser = false;
+        }
+        if (state.selectedRef !== previous) resetContent();
+        renderDesktop();
+        renderPast();
+      }
+
+      async function refreshOverview() {
+        if (!state.connected) return;
+        try {
+          applyOverview(await request("/api/overview"), false);
+        } catch (error) {
+          showFeedback("error", error.message || "刷新任务失败。");
+        }
+      }
+
+      async function refreshCodex(forceContent) {
+        if (!state.connected) return;
+        try {
+          applyCodexOverview(await request("/api/codex/overview"));
+          if (state.selectedRef) await loadContent(state.selectedRef, Boolean(forceContent));
+        } catch (error) {
+          state.codexLoaded = true;
+          state.observer = { mode: "unavailable", code: "request_failed" };
+          renderDesktop();
+          showFeedback("error", error.message || "读取 Desktop 对话失败。");
+        }
+      }
+
+      async function refreshManager() {
+        if (!state.connected) return;
+        try {
+          applyManagerOverview(await request("/api/manager/overview"));
+        } catch (error) {
+          state.managerLoaded = true;
+          state.managerError = error.message || "读取账号额度失败。";
+          renderAccounts();
+        }
+      }
+
+      async function refreshKimi() {
+        if (!state.connected) return;
+        try {
+          applyKimiOverview(await request("/api/kimi/tasks"));
+        } catch (error) {
+          state.kimiLoaded = true;
+          state.kimiError = error.message || "读取 Kimi 任务失败。";
+          renderKimi();
+        }
+      }
+
+      function refreshOverviewSoon() {
+        clearTimeout(state.overviewTimer);
+        state.overviewTimer = setTimeout(refreshOverview, 150);
+      }
+
+      function refreshCodexSoon() {
+        clearTimeout(state.codexTimer);
+        state.codexTimer = setTimeout(() => refreshCodex(true), 150);
+      }
+
+      async function sendMessage(event) {
+        event.preventDefault();
+        const thread = selectedThread();
+        const text = ui["thread-input"].value.trim();
+        const attachments = selectedAttachments();
+        if (!thread || thread.sourceKind !== "desktop" || !observerIsLive() || thread.canMessage !== true
+          || (!text && attachments.length === 0)) {
+          renderThreadDetail();
+          return;
+        }
+        const requestId = idempotencyKey();
+        const body = { requestId, text, attachments: attachments.map(item => item.id) };
+        if (utf8Bytes(text) > messageByteLimit || utf8Bytes(JSON.stringify(body)) > requestBodyByteLimit) {
+          updateThreadBytes();
+          ui["thread-input"].reportValidity();
+          showFeedback("error", "消息超过 32 KiB UTF-8 或 72 KiB 请求体上限。草稿已保留。");
+          return;
+        }
+        const key = "message:" + thread.publicRef;
+        if (state.pending.has(key)) return;
+        state.pending.add(key);
+        renderThreadDetail();
+        clearFeedback();
+        try {
+          await request("/api/codex/threads/" + encodeURIComponent(thread.publicRef) + "/messages", {
+            method: "POST",
+            body
+          });
+          if (state.selectedRef === thread.publicRef) ui["thread-input"].value = "";
+          state.attachments.delete(thread.publicRef);
+          showFeedback("notice", thread.latestTurnState === "inProgress" ? "追加指令已发送。" : "消息已发送。");
+          await refreshCodex(true);
+        } catch (error) {
+          showFeedback("error", error.code === "codex_control_uncertain"
+            ? "发送结果不确定，请先刷新确认，不要重复发送。草稿已保留。"
+            : error.message || "发送失败，页面不会自动重试。");
+        } finally {
+          state.pending.delete(key);
+          renderThreadDetail();
+        }
+      }
+
+      function removeAttachment(id) {
+        const thread = selectedThread();
+        if (!thread || state.pending.has("message:" + thread.publicRef)) return;
+        const remaining = selectedAttachments().filter(item => item.id !== id);
+        if (remaining.length) state.attachments.set(thread.publicRef, remaining);
+        else state.attachments.delete(thread.publicRef);
+        renderThreadDetail();
+      }
+
+      async function uploadAttachments() {
+        const thread = selectedThread();
+        const files = Array.from(ui["attachment-input"].files || []);
+        ui["attachment-input"].value = "";
+        if (!thread || !files.length || !observerIsLive() || thread.canMessage !== true) return;
+        if (selectedAttachments().length + files.length > attachmentCountLimit) {
+          showFeedback("error", "每条消息最多选择 " + attachmentCountLimit + " 个附件。");
+          return;
+        }
+        let total = 0;
+        const imagePattern = /\.(png|jpe?g|gif|webp)$/i;
+        const allowedPattern = /\.(png|jpe?g|gif|webp|pdf|txt|md)$/i;
+        for (const file of files) {
+          const limit = imagePattern.test(file.name) ? imageAttachmentByteLimit : attachmentByteLimit;
+          if (!allowedPattern.test(file.name) || file.size > limit) {
+            showFeedback("error", imagePattern.test(file.name)
+              ? "图片需为 PNG/JPEG/GIF/WebP，且不超过 10 MiB。"
+              : "文件需为 PDF/TXT/MD，且单个不超过 20 MiB。");
+            return;
+          }
+          total += file.size;
+        }
+        if (total > attachmentRequestByteLimit) {
+          showFeedback("error", "一次上传的请求体不能超过 25 MiB，请分批添加。");
+          return;
+        }
+        const key = "attachment:" + thread.publicRef;
+        if (state.pending.has(key)) return;
+        const formData = new FormData();
+        for (const file of files) formData.append("files", file, file.name);
+        state.pending.add(key);
+        renderThreadDetail();
+        clearFeedback();
+        try {
+          const data = await request("/api/codex/threads/" + encodeURIComponent(thread.publicRef) + "/attachments", {
+            method: "POST",
+            formData
+          });
+          if (!data || !Array.isArray(data.attachments)) throw new Error("附件响应格式不正确。");
+          const uploaded = data.attachments.filter(item => item && typeof item.id === "string"
+            && typeof item.name === "string" && Number.isFinite(Number(item.size)));
+          if (uploaded.length !== files.length) throw new Error("附件上传结果不完整。");
+          const existing = state.attachments.get(thread.publicRef);
+          state.attachments.set(thread.publicRef, (Array.isArray(existing) ? existing : []).concat(uploaded));
+          showFeedback("notice", uploaded.length + " 个附件已加入消息。发送后图片会作为原生图片输入，其余文件会传入受控路径。");
+        } catch (error) {
+          showFeedback("error", error.message || "附件上传失败。");
+        } finally {
+          state.pending.delete(key);
+          renderThreadDetail();
+        }
+      }
+
+      async function saveThreadSettings() {
+        const thread = selectedThread();
+        if (!thread || !observerIsLive() || thread.canMessage !== true) return;
+        const sandboxMode = ui["sandbox-select"].value;
+        const model = ui["model-select"].value;
+        const key = "settings:" + thread.publicRef;
+        if (state.pending.has(key)) return;
+        state.pending.add(key);
+        renderThreadDetail();
+        clearFeedback();
+        try {
+          const settings = await request("/api/codex/threads/" + encodeURIComponent(thread.publicRef) + "/settings", {
+            method: "POST",
+            body: { sandboxMode, model }
+          });
+          if (!settings || typeof settings.sandboxMode !== "string" || typeof settings.model !== "string") {
+            throw new Error("会话设置响应格式不正确。");
+          }
+          const current = state.threads.find(item => item.publicRef === thread.publicRef);
+          if (current) {
+            current.sandboxMode = settings.sandboxMode;
+            current.model = settings.model;
+          }
+          showFeedback("notice", settings.appServerUpdated === true
+            ? "会话设置已保存，将从下一个新回合生效。"
+            : "会话设置已保存，但实时 app-server 未确认更新；请重新连接后再次选择，避免误判已生效。");
+        } catch (error) {
+          showFeedback("error", error.message || "保存会话设置失败。");
+        } finally {
+          state.pending.delete(key);
+          renderThreadDetail();
+        }
+      }
+
+      async function interruptThread() {
+        const thread = selectedThread();
+        if (!thread || !observerIsLive() || thread.latestTurnState !== "inProgress" || thread.canInterrupt !== true) return;
+        if (!confirm("确定停止这个对话当前正在进行的回复？")) return;
+        const key = "interrupt:" + thread.publicRef;
+        if (state.pending.has(key)) return;
+        state.pending.add(key);
+        renderThreadDetail();
+        clearFeedback();
+        let accepted = false;
+        try {
+          await request("/api/codex/threads/" + encodeURIComponent(thread.publicRef) + "/interrupt", {
+            method: "POST",
+            body: {}
+          });
+          accepted = true;
+          showFeedback("notice", "停止请求已提交，正在等待 Codex 确认。");
+          await refreshCodex(true);
+        } catch (error) {
+          showFeedback("error", error.code === "codex_control_uncertain"
+            ? "停止结果不确定，请先刷新确认，不要重复停止。"
+            : error.message || "停止失败，页面不会自动重试。");
+        } finally {
+          if (!accepted) state.pending.delete(key);
+          renderThreadDetail();
+        }
+      }
+
+      async function openThread() {
+        const thread = selectedThread();
+        if (!thread || thread.sourceKind !== "desktop" || !state.connected) return;
+        const key = "open:" + thread.publicRef;
+        if (state.pending.has(key)) return;
+        state.pending.add(key);
+        renderThreadDetail();
+        clearFeedback();
+        try {
+          await request("/api/codex/threads/" + encodeURIComponent(thread.publicRef) + "/open", {
+            method: "POST"
+          });
+          showFeedback("notice", "已请求在 Codex Desktop 打开这个对话。");
+        } catch (error) {
+          showFeedback("error", error.message || "打开失败，页面不会自动重试。");
+        } finally {
+          state.pending.delete(key);
+          renderThreadDetail();
+        }
+      }
+
+      async function createTask(event) {
+        event.preventDefault();
+        const prompt = ui["task-prompt"].value.trim();
+        const body = taskCreateBody(prompt);
+        if (!state.connected || !state.agents.includes(body.agent) || !state.projects.includes(body.project) || !prompt) return;
+        if (body.agent === "kimi") body.accountAlias = "system";
+        const valid = updateTaskBytes();
+        if (!valid) {
+          ui["task-prompt"].reportValidity();
+          return;
+        }
+        body.requestId = idempotencyKey();
+        const key = "create-task";
+        if (state.pending.has(key)) return;
+        state.pending.add(key);
+        ui["task-create"].textContent = "正在创建";
+        renderTaskForm();
+        clearFeedback();
+        try {
+          const created = taskFrom(await request("/api/tasks", { method: "POST", body }));
+          if (!created) throw new Error("创建响应格式不正确。");
+          ui["task-prompt"].value = "";
+          upsertTask(created);
+          if (created.agent === "kimi") {
+            state.taskConversations.set(created.id, { open: true, loading: false, loaded: false, messages: [] });
+            loadTaskConversation(created.id, false);
+          }
+          showFeedback("notice", agentLabel(created.agent) + " 对话已创建，请审查并批准。 ");
+          if (canApprove(created)) openApproval(created);
+        } catch (error) {
+          showFeedback("error", error.code === "account_busy"
+            ? "该账号已有任务进行中；草稿已保留，请等待账号恢复未运行后再派单。"
+            : error.message || "创建失败，草稿已保留。");
+        } finally {
+          state.pending.delete(key);
+          ui["task-create"].textContent = "创建待审批对话";
+          renderTaskForm();
+        }
+      }
+
+      function openApproval(task) {
+        const current = state.tasks.find(item => item.id === task.id) || task;
+        if (!canApprove(current)) {
+          showFeedback("error", "任务已不在可审批状态，正在刷新。");
+          refreshOverviewSoon();
+          return;
+        }
+        state.approval = current;
+        state.approvalQuota = null;
+        ui.approve.textContent = "确认批准";
+        renderApprovalCheck(current, null, isPoolCodexTask(current) ? "正在检查额度快照。" : "核对 Agent、项目与操作校验码后确认批准。");
+        ui["approval-dialog"].showModal();
+        if (isPoolCodexTask(current)) checkApprovalQuota();
+      }
+
+      async function checkApprovalQuota() {
+        const original = state.approval;
+        if (!original || !isPoolCodexTask(original) || !ui["approval-dialog"].open) return;
+        const check = ++state.approvalCheck;
+        state.approvalQuota = null;
+        ui["approval-recheck"].disabled = true;
+        ui["approval-recheck"].textContent = "检查中";
+        ui.approve.disabled = true;
+        renderApprovalCheck(original, null, "正在检查额度快照。");
+        try {
+          const data = await request("/api/manager/overview");
+          if (check !== state.approvalCheck || !state.approval || state.approval.id !== original.id
+            || state.approval.actionHash !== original.actionHash || state.approval.accountAlias !== original.accountAlias) return;
+          const current = state.tasks.find(item => item.id === original.id);
+          if (!current || !canApprove(current) || current.actionHash !== original.actionHash
+            || current.accountAlias !== original.accountAlias) {
+            state.approvalQuota = null;
+            renderApprovalCheck(original, null, "任务或账号已变化，请返回后重新审查。");
+            return;
+          }
+          if (!data || !Array.isArray(data.accounts)) throw new Error("额度快照格式不正确。");
+          const matches = data.accounts.filter(item => item && item.alias === current.accountAlias);
+          if (matches.length !== 1) {
+            state.approvalQuota = null;
+            renderApprovalCheck(current, null, matches.length
+              ? "目标账号出现多个同名快照，请检查 Next 配置后重试。"
+              : "没有找到这个账号的额度快照，请先在 Next 刷新后重试。");
+            return;
+          }
+          const account = matches[0];
+          state.approval = current;
+          state.approvalQuota = quotaEvidence(account, current);
+          renderApprovalCheck(current, state.approvalQuota);
+          if (state.approvalQuota.ready) {
+            const delay = Math.max(0, Math.min(
+              45000 - (Date.now() - state.approvalQuota.fetchedAt),
+              state.approvalQuota.fiveReset - Date.now(),
+              state.approvalQuota.sevenReset - Date.now()
+            ) + 20);
+            setTimeout(() => {
+              if (check === state.approvalCheck && ui["approval-dialog"].open && !approvalQuotaValid(state.approval)) {
+                ui.approve.disabled = true;
+                renderApprovalCheck(state.approval, state.approvalQuota, "额度快照已超过 45 秒，请先在 Next 刷新后重新检查。");
+              }
+            }, delay);
+          }
+        } catch (error) {
+          if (check === state.approvalCheck && state.approval && state.approval.id === original.id) {
+            state.approvalQuota = null;
+            renderApprovalCheck(original, null, "无法读取合格额度快照，请先在 Next 刷新后重试。");
+          }
+        } finally {
+          if (check === state.approvalCheck && ui["approval-dialog"].open) {
+            ui["approval-recheck"].disabled = false;
+            ui["approval-recheck"].textContent = "重新检查";
+          }
+        }
+      }
+
+      function closeApproval() {
+        state.approvalCheck += 1;
+        state.approval = null;
+        state.approvalQuota = null;
+        if (ui["approval-dialog"].open) ui["approval-dialog"].close();
+      }
+
+      async function approveTask() {
+        if (!state.approval) return;
+        const reviewed = state.approval;
+        const task = state.tasks.find(item => item.id === reviewed.id);
+        if (!task || !canApprove(task) || task.actionHash !== reviewed.actionHash
+          || task.accountAlias !== reviewed.accountAlias) {
+          closeApproval();
+          showFeedback("error", "任务、账号或操作校验码已变化，请重新审查。");
+          refreshOverviewSoon();
+          return;
+        }
+        if (isPoolCodexTask(task) && !approvalQuotaValid(task)) {
+          ui.approve.disabled = true;
+          renderApprovalCheck(task, state.approvalQuota, "额度快照已失效，请先在 Next 刷新后重新检查。");
+          return;
+        }
+        const requestId = idempotencyKey();
+        ui.approve.disabled = true;
+        ui.approve.textContent = "正在批准";
+        state.pending.add(task.id);
+        renderTasks();
+        renderPast();
+        clearFeedback();
+        try {
+          const updated = taskFrom(await request("/api/tasks/" + encodeURIComponent(task.id) + "/approve", {
+            method: "POST",
+            body: { requestId, actionHash: task.actionHash }
+          }));
+          if (updated) {
+            upsertTask(updated);
+            closeApproval();
+            if (!["starting", "running"].includes(updated.state)) {
+              showFeedback("error", "任务未进入执行状态"
+                + (updated.reasonCode ? "：" + cleanText(updated.reasonCode, 120) : "。"));
+              return;
+            }
+            if (updated.agent === "kimi") {
+              const detail = state.taskConversations.get(updated.id) || { messages: [] };
+              detail.open = true;
+              state.taskConversations.set(updated.id, detail);
+              loadTaskConversation(updated.id, false);
+            }
+            showFeedback("notice", "任务已批准，状态会继续实时更新。");
+          } else {
+            closeApproval();
+            showFeedback("notice", "批准请求已接收，正在确认任务状态。");
+            refreshOverviewSoon();
+          }
+        } catch (error) {
+          showFeedback("error", error.code === "account_busy"
+            ? "该账号已被另一任务占用；当前任务仍待批准，请等待后重试。"
+            : error.message || "批准失败，页面不会自动重试。");
+          ui.approve.textContent = "确认批准";
+          if (isPoolCodexTask(task) && (error.code === "account_quota_reserve" || error.code === "account_dispatch_disabled")) {
+            state.approvalQuota = null;
+            renderApprovalCheck(task, null, "服务端额度或账号复核未通过，请先在 Next 刷新后重新检查。");
+          } else {
+            ui.approve.disabled = !canApprove(task) || (isPoolCodexTask(task) && !approvalQuotaValid(task));
+          }
+        } finally {
+          state.pending.delete(task.id);
+          renderTasks();
+          renderPast();
+        }
+      }
+
+      function openResume(task) {
+        const current = state.tasks.find(item => item.id === task.id) || task;
+        if (current.canResume !== true) {
+          showFeedback("error", "这个任务当前不能继续。");
+          refreshOverviewSoon();
+          return;
+        }
+        state.resume = current;
+        ui["resume-copy"].textContent = "项目：" + aliasText(current.project, "未归类项目")
+          + (current.agent === "kimi"
+            ? "\nKimi 将继续使用 system 语义与当前用户登录态。"
+            : "\n账号会按服务端规则处理。");
+        ui["resume-text"].value = "";
+        ui["resume-text"].setCustomValidity("");
+        updateResumeBytes();
+        ui["resume-submit"].disabled = false;
+        ui["resume-submit"].textContent = "创建待审批任务";
+        ui["resume-dialog"].showModal();
+        ui["resume-text"].focus();
+      }
+
+      function closeResume() {
+        state.resume = null;
+        if (ui["resume-dialog"].open) ui["resume-dialog"].close();
+      }
+
+      async function resumeTask(event) {
+        event.preventDefault();
+        if (!state.resume) return;
+        const task = state.tasks.find(item => item.id === state.resume.id) || state.resume;
+        const prompt = ui["resume-text"].value.trim();
+        if (task.canResume !== true || !prompt) return;
+        const requestId = idempotencyKey();
+        const body = { requestId, prompt };
+        if (utf8Bytes(prompt) > promptByteLimit || utf8Bytes(JSON.stringify(body)) > requestBodyByteLimit) {
+          updateResumeBytes();
+          ui["resume-text"].reportValidity();
+          return;
+        }
+        ui["resume-text"].setCustomValidity("");
+        ui["resume-submit"].disabled = true;
+        ui["resume-submit"].textContent = "正在创建";
+        state.pending.add(task.id);
+        renderTasks();
+        renderPast();
+        clearFeedback();
+        try {
+          const created = taskFrom(await request("/api/tasks/" + encodeURIComponent(task.id) + "/resume", {
+            method: "POST",
+            body
+          }));
+          closeResume();
+          if (created) {
+            upsertTask(created);
+            showFeedback("notice", "续跑任务已创建，请再次审查并批准。");
+            if (canApprove(created)) openApproval(created);
+          } else {
+            showFeedback("notice", "续跑任务已创建，请在待处理列表中审查。");
+            refreshOverviewSoon();
+          }
+        } catch (error) {
+          showFeedback("error", error.message || "继续会话失败，页面不会自动重试。");
+          ui["resume-submit"].disabled = false;
+          ui["resume-submit"].textContent = "创建待审批任务";
+        } finally {
+          state.pending.delete(task.id);
+          renderTasks();
+          renderPast();
+        }
+      }
+
+      async function resumeKimiConversation(event, originalTask) {
+        event.preventDefault();
+        const task = state.tasks.find(item => item.id === originalTask.id) || originalTask;
+        const textarea = event.currentTarget.elements.prompt;
+        const prompt = textarea && typeof textarea.value === "string" ? textarea.value.trim() : "";
+        const body = { requestId: idempotencyKey(), prompt };
+        if (task.agent !== "kimi" || task.canResume !== true || !prompt) return;
+        if (utf8Bytes(prompt) > promptByteLimit || utf8Bytes(JSON.stringify(body)) > requestBodyByteLimit) {
+          textarea.reportValidity();
+          return;
+        }
+        if (state.pending.has(task.id)) return;
+        let created = null;
+        state.pending.add(task.id);
+        renderTasks();
+        renderPast();
+        clearFeedback();
+        try {
+          created = taskFrom(await request("/api/tasks/" + encodeURIComponent(task.id) + "/resume", {
+            method: "POST",
+            body
+          }));
+          if (!created || !canApprove(created)) throw new Error("续聊任务未返回可批准状态。");
+          upsertTask(created);
+          const previous = state.taskConversations.get(task.id);
+          if (previous) previous.open = false;
+          state.taskConversations.set(created.id, { open: true, loading: false, loaded: false, messages: [] });
+          state.taskDrafts.delete(task.id);
+          state.pending.add(created.id);
+          const approved = taskFrom(await request("/api/tasks/" + encodeURIComponent(created.id) + "/approve", {
+            method: "POST",
+            body: { requestId: idempotencyKey(), actionHash: created.actionHash }
+          }));
+          if (!approved || !["starting", "running"].includes(approved.state)) {
+            throw new Error("续聊任务已创建，但没有进入执行状态。");
+          }
+          upsertTask(approved);
+          showFeedback("notice", "Kimi 续聊已创建并批准，回复会在当前运行期间实时更新。");
+          await loadTaskConversation(created.id, true);
+        } catch (error) {
+          showFeedback("error", created
+            ? "续聊任务已创建，但自动批准未完成；请在任务卡片中审查。"
+            : error.message || "Kimi 续聊失败，草稿已保留。");
+          if (created) refreshOverviewSoon();
+        } finally {
+          state.pending.delete(task.id);
+          if (created) state.pending.delete(created.id);
+          renderTasks();
+          renderPast();
+        }
+      }
+
+      async function cancelTask(task) {
+        const current = state.tasks.find(item => item.id === task.id) || task;
+        const control = taskCancelControl(current.state, state.pending.has(current.id), isApprovalExpired(current));
+        if (!control.visible || !control.enabled) return;
+        const stoppingProcess = current.state === "starting" || current.state === "running";
+        if (!confirm(stoppingProcess ? "确定停止这个 CLI 对话？正在运行的进程会收到停止请求。" : "确定取消这个待审批任务？")) return;
+        const requestId = idempotencyKey();
+        state.pending.add(current.id);
+        renderTasks();
+        renderPast();
+        clearFeedback();
+        try {
+          const updated = taskFrom(await request("/api/tasks/" + encodeURIComponent(current.id) + "/cancel", {
+            method: "POST",
+            body: { requestId, expectedVersion: current.version }
+          }));
+          if (updated) upsertTask(updated);
+          else refreshOverviewSoon();
+          showFeedback("notice", stoppingProcess ? "停止请求已提交。" : "取消请求已提交。");
+        } catch (error) {
+          refreshOverviewSoon();
+          showFeedback("error", error.message || (stoppingProcess ? "停止失败，正在刷新任务版本。" : "取消失败，正在刷新任务版本。"));
+        } finally {
+          state.pending.delete(current.id);
+          renderTasks();
+          renderPast();
+        }
+      }
+
+      async function resolveTask(task) {
+        if (!confirm("只有确认本机执行进程已经停止，才能释放项目锁。你已确认进程停止吗？")) return;
+        const requestId = idempotencyKey();
+        state.pending.add(task.id);
+        renderTasks();
+        renderPast();
+        clearFeedback();
+        try {
+          const updated = taskFrom(await request("/api/tasks/" + encodeURIComponent(task.id) + "/resolve", {
+            method: "POST",
+            body: { requestId, expectedVersion: task.version, confirmedStopped: true }
+          }));
+          if (updated) upsertTask(updated);
+          else refreshOverviewSoon();
+          showFeedback("notice", "停止确认已提交。");
+        } catch (error) {
+          showFeedback("error", error.message || "确认失败，页面不会自动重试。");
+        } finally {
+          state.pending.delete(task.id);
+          renderTasks();
+          renderPast();
+        }
+      }
+
+      function processEvent(event) {
+        if (!event || typeof event.type !== "string") return;
+        if (event.type === "agent.output") {
+          if (typeof event.taskId !== "string" || typeof event.text !== "string") return;
+          const lines = state.taskOutput.get(event.taskId) || [];
+          const prefix = event.stream === "stderr" ? "[stderr] " : "";
+          lines.push(prefix + cleanText(event.text, 16000));
+          while (lines.length > 80 || lines.join("\n").length > 32000) lines.shift();
+          state.taskOutput.set(event.taskId, lines);
+          const task = state.tasks.find(item => item.id === event.taskId);
+          if (task && task.agent === "kimi" && event.outputKind === "assistant") {
+            const offset = Number.isSafeInteger(event.messageOffset) ? event.messageOffset : undefined;
+            const live = appendLiveAssistant(state.taskLiveMessages.get(event.taskId), cleanText(event.text, 270000), event.occurredAt, offset);
+            state.taskLiveMessages.set(event.taskId, live);
+          }
+          renderTasks();
+          renderPast();
+          return;
+        }
+        if (event.type === "codex.updated") {
+          refreshCodexSoon();
+          return;
+        }
+        const seq = Number(event.seq);
+        if (!Number.isSafeInteger(seq) || seq <= state.seq) return;
+        state.seq = seq;
+        if (event.task && typeof event.task.id === "string") {
+          upsertTask(event.task);
+          const detail = state.taskConversations.get(event.task.id);
+          if (event.task.agent === "kimi" && terminalTaskStates.has(event.task.state) && detail && detail.open) {
+            loadTaskConversation(event.task.id, true);
+          }
+        }
+        else if (typeof event.taskId === "string") refreshOverviewSoon();
+      }
+
+      function parseEventLine(line) {
+        if (!line.trim()) return;
+        if (line.length > 1024 * 1024) {
+          showFeedback("error", "收到过大的事件数据，已跳过。");
+          return;
+        }
+        try { processEvent(JSON.parse(line)); }
+        catch { showFeedback("error", "收到无法解析的事件数据，已跳过。"); }
+      }
+
+      function stopStream() {
+        state.streamEpoch += 1;
+        clearTimeout(state.retryTimer);
+        if (state.streamController) state.streamController.abort();
+        state.streamController = null;
+      }
+
+      function retryStream(epoch) {
+        if (!state.connected || epoch !== state.streamEpoch) return;
+        state.retryTimer = setTimeout(() => runStream(epoch), state.retryDelay);
+        state.retryDelay = Math.min(state.retryDelay * 2, 10000);
+      }
+
+      async function runStream(epoch) {
+        if (!state.connected || epoch !== state.streamEpoch) return;
+        state.streamController = new AbortController();
+        try {
+          const headers = { Accept: "application/x-ndjson" };
+          const response = await fetch("/api/events?after=" + encodeURIComponent(state.seq), {
+            headers,
+            cache: "no-store",
+            credentials: "omit",
+            redirect: "error",
+            signal: state.streamController.signal
+          });
+          if (response.status === 401 || response.status === 403) {
+            disconnect();
+            showFeedback("error", "当前内网连接被服务端拒绝，请检查 Hub 配置。");
+            return;
+          }
+          if (!response.ok || !response.body) throw new Error("事件流不可用（HTTP " + response.status + "）。");
+          state.retryDelay = 1000;
+          setConnection("已连接", true);
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (state.connected && epoch === state.streamEpoch) {
+            const part = await reader.read();
+            if (part.done) break;
+            buffer += decoder.decode(part.value, { stream: true });
+            if (buffer.length > 1024 * 1024 && !buffer.includes("\n")) {
+              buffer = "";
+              showFeedback("error", "事件流出现过大的数据行，已丢弃。");
+              continue;
+            }
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            lines.forEach(parseEventLine);
+          }
+          parseEventLine(buffer + decoder.decode());
+          if (state.connected && epoch === state.streamEpoch) throw new Error("事件流连接已结束。");
+        } catch (error) {
+          if (error.name === "AbortError" || !state.connected || epoch !== state.streamEpoch) return;
+          setConnection("事件流重连中", false);
+          retryStream(epoch);
+        }
+      }
+
+      function startStream() {
+        stopStream();
+        state.retryDelay = 1000;
+        const epoch = state.streamEpoch;
+        setConnection("连接事件流", false);
+        runStream(epoch);
+      }
+
+      function resetView() {
+        state.seq = 0;
+        state.agents = [];
+        state.projects = [];
+        state.taskAccounts = [];
+        state.tasks = [];
+        state.overviewLoaded = false;
+        state.accounts = [];
+        state.managerLoaded = false;
+        state.managerUpdatedAt = "";
+        state.managerError = "";
+        state.kimiTasks = [];
+        state.kimiLoaded = false;
+        state.kimiNotice = "";
+        state.kimiError = "";
+        state.observer = { mode: "unavailable", code: "not_connected" };
+        state.codexLoaded = false;
+        state.threads = [];
+        state.sandboxOptions = [];
+        state.models = [];
+        state.selectedRef = "";
+        state.selectedByUser = false;
+        state.pending.clear();
+        state.attachments.clear();
+        state.taskOutput.clear();
+        state.taskLiveMessages.clear();
+        state.taskConversations.clear();
+        state.taskDrafts.clear();
+        state.approval = null;
+        state.resume = null;
+        state.pastDesktopLimit = 40;
+        state.pastTaskLimit = 40;
+        resetContent();
+        renderAll();
+      }
+
+      async function connect() {
+        clearFeedback();
+        ui.connect.disabled = true;
+        ui.connect.textContent = "连接中";
+        setConnection("正在连接", false);
+        try {
+          const overview = await request("/api/overview");
+          state.connected = true;
+          ui["connect-panel"].hidden = true;
+          ui.workspace.hidden = false;
+          ui.disconnect.hidden = false;
+          ui.refresh.hidden = false;
+          applyOverview(overview, true);
+          renderAll();
+          await Promise.all([refreshCodex(true), refreshManager(), refreshKimi()]);
+          startStream();
+          clearInterval(state.codexPoll);
+          state.codexPoll = setInterval(() => refreshCodex(true), 10000);
+          clearInterval(state.managerPoll);
+          state.managerPoll = setInterval(refreshManager, 15000);
+          showFeedback("notice", "连接成功。");
+        } catch (error) {
+          state.connected = false;
+          stopStream();
+          resetView();
+          ui["connect-panel"].hidden = false;
+          ui.workspace.hidden = true;
+          ui.disconnect.hidden = true;
+          ui.refresh.hidden = true;
+          setConnection("连接失败", false);
+          showFeedback("error", error.message || "连接失败。");
+        } finally {
+          ui.connect.disabled = false;
+          ui.connect.textContent = "重新连接";
+        }
+      }
+
+      function disconnect() {
+        state.connected = false;
+        stopStream();
+        clearTimeout(state.overviewTimer);
+        clearTimeout(state.codexTimer);
+        clearInterval(state.codexPoll);
+        clearInterval(state.managerPoll);
+        closeApproval();
+        closeResume();
+        resetView();
+        ui["connect-panel"].hidden = false;
+        ui.workspace.hidden = true;
+        ui.disconnect.hidden = true;
+        ui.refresh.hidden = true;
+        setConnection("未连接", false);
+        clearFeedback();
+      }
+
+      async function refreshAll() {
+        if (!state.connected || ui.refresh.disabled) return;
+        ui.refresh.disabled = true;
+        ui.refresh.textContent = "刷新中";
+        clearFeedback();
+        await Promise.all([refreshOverview(), refreshCodex(true), refreshManager(), refreshKimi()]);
+        ui.refresh.disabled = false;
+        ui.refresh.textContent = "刷新";
+      }
+
+      ui["connect-form"].addEventListener("submit", event => {
+        event.preventDefault();
+        connect();
+      });
+      ui.disconnect.addEventListener("click", disconnect);
+      ui.refresh.addEventListener("click", refreshAll);
+      ui["task-form"].addEventListener("submit", createTask);
+      ui["task-agent"].addEventListener("change", renderTaskForm);
+      ui["task-project"].addEventListener("change", renderTaskForm);
+      ui["task-account"].addEventListener("change", renderTaskForm);
+      ui["task-prompt"].addEventListener("input", renderTaskForm);
+      ui["thread-form"].addEventListener("submit", sendMessage);
+      ui["thread-input"].addEventListener("input", () => {
+        const thread = selectedThread();
+        const withinLimit = updateThreadBytes();
+        ui["send-message"].disabled = !thread || ui["thread-input"].disabled
+          || state.pending.has("message:" + thread.publicRef)
+          || (!ui["thread-input"].value.trim() && selectedAttachments().length === 0) || !withinLimit;
+      });
+      ui["add-attachment"].addEventListener("click", () => ui["attachment-input"].click());
+      ui["attachment-input"].addEventListener("change", uploadAttachments);
+      ui["sandbox-select"].addEventListener("change", saveThreadSettings);
+      ui["model-select"].addEventListener("change", saveThreadSettings);
+      ui["open-thread"].addEventListener("click", openThread);
+      ui.past.addEventListener("toggle", renderPast);
+      ui.interrupt.addEventListener("click", interruptThread);
+      ui.reject.addEventListener("click", closeApproval);
+      ui["approval-recheck"].addEventListener("click", checkApprovalQuota);
+      ui.approve.addEventListener("click", approveTask);
+      ui["approval-dialog"].addEventListener("close", () => {
+        state.approvalCheck += 1;
+        state.approval = null;
+        state.approvalQuota = null;
+      });
+      ui["resume-form"].addEventListener("submit", resumeTask);
+      ui["resume-text"].addEventListener("input", updateResumeBytes);
+      ui["resume-cancel"].addEventListener("click", closeResume);
+      ui["resume-dialog"].addEventListener("close", () => { state.resume = null; });
+
+      resetView();
+      state.relativeTimer = setInterval(() => {
+        renderDesktop();
+        renderTasks();
+        renderAccounts();
+        renderPast();
+      }, 30000);
+      try { localStorage.removeItem("agent-remote-control-token"); }
+      catch {}
+      connect();
+    })();
+  </script>
+</body>
+</html>

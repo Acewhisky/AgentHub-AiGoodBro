@@ -1,3 +1,4 @@
+import CoreFoundation
 import CryptoKit
 import Darwin
 import Foundation
@@ -266,12 +267,13 @@ final class CodexUsageReader {
     private static var localAnalyticsCache: LocalAnalyticsCacheEntry?
     private static let localAnalyticsLock = NSLock()
 
-    func load(context: RuntimeLoadContext, quotaOnly: Bool = false) -> UsageSnapshot {
+    func load(context: RuntimeLoadContext, quotaOnly: Bool = false, requestTimeout: TimeInterval? = nil) -> UsageSnapshot {
         var messages: [String] = []
         let appServer = readQuotaSnapshot(
             context: context,
             quotaOnly: quotaOnly,
-            messages: &messages
+            messages: &messages,
+            requestTimeout: requestTimeout
         )
         return finishingLoad(
             appServer: appServer,
@@ -286,13 +288,15 @@ final class CodexUsageReader {
         context: RuntimeLoadContext,
         quotaOnly: Bool,
         messages: inout [String],
-        refreshingMembershipFor profile: CodexProfile? = nil
+        refreshingMembershipFor profile: CodexProfile? = nil,
+        requestTimeout: TimeInterval? = nil
     ) -> AppServerSnapshot {
         return readAppServer(
             context: context,
             messages: &messages,
             quotaOnly: quotaOnly,
-            refreshingMembershipFor: profile
+            refreshingMembershipFor: profile,
+            requestTimeout: requestTimeout
         )
     }
 
@@ -342,8 +346,17 @@ final class CodexUsageReader {
             mergedShares.append(AgentTokenShare(name: entry.name, tokens: entry.tokens, manual: true))
         }
         mergedShares.sort { $0.tokens > $1.tokens }
-        let mergedLifetime = mergedShares.reduce(Int64(0)) { $0 + $1.tokens }
-        let mergedToday = (local?.allAgentsTodayTokens ?? 0) + (zcodeUsage?.todayTokens ?? 0)
+        guard let mergedLifetime = summedTokenCounts(mergedShares.map(\.tokens)),
+            let mergedToday = summedTokenCounts([local?.allAgentsTodayTokens ?? 0, zcodeUsage?.todayTokens ?? 0])
+        else {
+            local?.allAgentsLifetimeTokens = nil
+            local?.allAgentsTodayTokens = nil
+            local?.allAgentsShares = []
+            messages.append(WidgetLanguage.storedOrAutomatic().text(
+                "跨 CLI 统计包含超出范围的数量，合计暂不可用。", "Cross-CLI counts exceed the supported range; totals are unavailable."
+            ))
+            return snapshot(local: local)
+        }
         if mergedLifetime > 0 || mergedToday > 0 {
             if local != nil {
                 local!.allAgentsLifetimeTokens = mergedLifetime
@@ -411,11 +424,437 @@ final class CodexUsageReader {
         var cloudLifetimeTokens: Int64?
     }
 
+    /// Reads a specifically identifiable, supported reset card. This is intentionally
+    /// separate from ordinary balance credits and never falls back to an unspecified card.
+    func readResetCreditReview(
+        context: RuntimeLoadContext,
+        profile: CodexProfile,
+        expectedAccountID: String,
+        accountRemark: String,
+        now: Date = Date()
+    ) -> Result<CodexResetCreditReview, CodexResetCreditFailure> {
+        switch runResetCreditRPC(
+            context: context,
+            profile: profile,
+            expectedAccountID: expectedAccountID,
+            selectedCard: nil,
+            idempotencyKey: nil,
+            reviewObservedAt: nil,
+            clock: { now }
+        ) {
+        case .success(let response):
+            guard let card = response.card else { return .failure(.creditAvailabilityUnavailable) }
+            return .success(
+                CodexResetCreditReview(
+                    profileID: profile.id,
+                    accountID: expectedAccountID,
+                    accountRemark: accountRemark,
+                    card: card,
+                    observedAt: now
+                ))
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
+    /// The same app-server conversation first re-reads identity and the exact card,
+    /// then—and only then—sends the single consume RPC.
+    func consumeResetCredit(
+        context: RuntimeLoadContext,
+        profile: CodexProfile,
+        review: CodexResetCreditReview,
+        idempotencyKey: String,
+        clock: @escaping () -> Date = Date.init
+    ) -> Result<CodexResetCreditConsumeOutcome, CodexResetCreditFailure> {
+        guard !idempotencyKey.isEmpty else { return .failure(.requestNotSent) }
+        switch runResetCreditRPC(
+            context: context,
+            profile: profile,
+            expectedAccountID: review.accountID,
+            selectedCard: review.card,
+            idempotencyKey: idempotencyKey,
+            reviewObservedAt: review.observedAt,
+            clock: clock
+        ) {
+        case .success(let response):
+            guard let outcome = response.outcome else { return .failure(.outcomeUnknown) }
+            return .success(outcome)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
+    private struct ResetCreditRPCResponse {
+        let card: CodexResetCreditCard?
+        let outcome: CodexResetCreditConsumeOutcome?
+    }
+
+    private func runResetCreditRPC(
+        context: RuntimeLoadContext,
+        profile: CodexProfile,
+        expectedAccountID: String,
+        selectedCard: CodexResetCreditCard?,
+        idempotencyKey: String?,
+        reviewObservedAt: Date?,
+        clock: @escaping () -> Date
+    ) -> Result<ResetCreditRPCResponse, CodexResetCreditFailure> {
+        guard resetValidField(expectedAccountID, maximumBytes: 256),
+            profile.lastSnapshot?.accountID == expectedAccountID,
+            profile.lastSnapshot?.quotaReadSucceeded != false
+        else { return .failure(.identityUnavailable) }
+
+        let resolvedHome = context.codexHomeDirectory.resolvingSymlinksInPath().standardizedFileURL
+        let systemHome = context.homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL
+        let managedRoot = context.homeDirectory
+            .appendingPathComponent(".codex-account-manager-next/profiles", isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL
+        let profileHome = profile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+        let validHome =
+            profileHome == resolvedHome
+            && (profile.isSystemProfile
+                ? resolvedHome == systemHome
+                : resolvedHome.deletingLastPathComponent() == managedRoot)
+        guard validHome else { return .failure(.invalidProfile) }
+
+        let homePath = resolvedHome.path
+        let gate: NSRecursiveLock =
+            resolvedHome == systemHome
+            ? CodexCredentialAccessGate.lock
+            : CodexCredentialAccessGate.homeLock(forHomePath: homePath)
+        gate.lock()
+        defer { gate.unlock() }
+
+        guard let codexPath = resolveCodexExecutablePath() else { return .failure(.unsupportedCLI) }
+        guard
+            let versionData = try? BoundedLocalProcess.run(
+                executable: URL(fileURLWithPath: codexPath),
+                arguments: ["--version"],
+                maximumOutputBytes: 4 * 1_024,
+                timeout: 2
+            ), CodexResetCreditVersion.supports(String(data: versionData, encoding: .utf8))
+        else { return .failure(.unsupportedCLI) }
+
+        if selectedCard != nil {
+            guard
+                let processData = try? BoundedLocalProcess.run(
+                    executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
+                    arguments: ["-x", "codex"],
+                    maximumOutputBytes: 16 * 1_024,
+                    timeout: 2,
+                    allowedExitCodes: [0, 1]
+                )
+            else { return .failure(.ambiguousProcessState) }
+            guard processData.isEmpty else { return .failure(.ambiguousProcessState) }
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: codexPath)
+        process.arguments = [
+            "app-server", "--disable", "apps", "--disable", "plugins",
+            "--disable", "remote_plugin", "--disable", "recommended_plugins",
+            "--disable", "skill_search",
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["CODEX_HOME"] = homePath
+        process.environment = environment
+        let input = Pipe()
+        let output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return .failure(.requestNotSent) }
+
+        enum RPCStage {
+            case awaitingInitialize
+            case awaitingRateLimits
+            case awaitingConsume
+            case terminal
+        }
+
+        let stateLock = NSLock()
+        let completed = DispatchSemaphore(value: 0)
+        var stage = RPCStage.awaitingInitialize
+        var acceptsWrites = true
+        var terminalResult: Result<ResetCreditRPCResponse, CodexResetCreditFailure>?
+        var consumeMayHaveBeenSent = false
+        var buffer = Data()
+        let inputHandle = input.fileHandleForWriting
+        let outputHandle = output.fileHandleForReading
+
+        func finishLocked(_ result: Result<ResetCreditRPCResponse, CodexResetCreditFailure>) {
+            guard terminalResult == nil else { return }
+            acceptsWrites = false
+            stage = .terminal
+            terminalResult = result
+            completed.signal()
+        }
+
+        func finishForShutdown() {
+            stateLock.lock()
+            finishLocked(.failure(consumeMayHaveBeenSent ? .outcomeUnknown : .requestNotSent))
+            stateLock.unlock()
+        }
+
+        /// Called only with stateLock held. The state lock is the sole ordering
+        /// boundary for stage transitions, terminal completion and stdin writes.
+        func writeMessageLocked(_ message: [String: Any]) -> Bool {
+            guard let data = try? JSONSerialization.data(withJSONObject: message) else { return false }
+            guard acceptsWrites, terminalResult == nil, stage != .terminal else { return false }
+            do {
+                try inputHandle.write(contentsOf: data)
+                try inputHandle.write(contentsOf: Data("\n".utf8))
+                return true
+            } catch {
+                acceptsWrites = false
+                return false
+            }
+        }
+
+        func verifiedCard(
+            from result: [String: Any],
+            verificationDate: Date
+        ) -> Result<CodexResetCreditCard, CodexResetCreditFailure> {
+            guard let accountID = result["accountId"] as? String,
+                resetValidField(accountID, maximumBytes: 256)
+            else { return .failure(.identityUnavailable) }
+            guard accountID == expectedAccountID else { return .failure(.identityChanged) }
+            guard let summary = result["rateLimitResetCredits"] as? [String: Any],
+                let availableCount = resetExactInt64(summary["availableCount"]),
+                (0...1_000_000).contains(availableCount)
+            else { return .failure(.creditAvailabilityUnavailable) }
+            guard let rows = summary["credits"] as? [[String: Any]], rows.count <= 1_024 else {
+                return .failure(.creditAvailabilityUnavailable)
+            }
+            var seenIDs = Set<String>()
+            var cards: [CodexResetCreditCard] = []
+            for row in rows {
+                guard let id = row["id"] as? String,
+                    resetValidField(id, maximumBytes: 512),
+                    seenIDs.insert(id).inserted,
+                    let resetType = row["resetType"] as? String,
+                    let status = row["status"] as? String,
+                    let expiry = resetExpiry(in: row)
+                else { return .failure(.creditAvailabilityUnavailable) }
+                guard resetType == "codexRateLimits", status == "available" else { continue }
+                guard expiry == nil || expiry! > verificationDate else { continue }
+                cards.append(CodexResetCreditCard(creditID: id, expiresAt: expiry))
+            }
+            cards.sort {
+                switch ($0.expiresAt, $1.expiresAt) {
+                case (let lhs?, let rhs?): return lhs == rhs ? $0.creditID < $1.creditID : lhs < rhs
+                case (.some, .none): return true
+                case (.none, .some): return false
+                case (.none, .none): return $0.creditID < $1.creditID
+                }
+            }
+            guard availableCount > 0 else { return .failure(.noAvailableCredit) }
+            guard let selectedCard else {
+                guard let first = cards.first else { return .failure(.creditAvailabilityUnavailable) }
+                return .success(first)
+            }
+            guard let exact = cards.first(where: { $0.creditID == selectedCard.creditID }),
+                exact.expiresAt == selectedCard.expiresAt
+            else { return .failure(.creditChanged) }
+            return .success(exact)
+        }
+
+        func parseLine(_ line: Data) {
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                let rawID = resetExactInt64(object["id"]),
+                let id = Int(exactly: rawID)
+            else { return }
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            guard terminalResult == nil else { return }
+            let expectedID: Int
+            switch stage {
+            case .awaitingInitialize: expectedID = 1
+            case .awaitingRateLimits: expectedID = 2
+            case .awaitingConsume: expectedID = 3
+            case .terminal: return
+            }
+            guard id == expectedID else { return }
+            if object["error"] != nil {
+                finishLocked(.failure(consumeMayHaveBeenSent ? .outcomeUnknown : .requestNotSent))
+                return
+            }
+            if id == 1 {
+                guard writeMessageLocked(["method": "initialized"]),
+                    writeMessageLocked(["id": 2, "method": "account/rateLimits/read"])
+                else {
+                    finishLocked(.failure(.requestNotSent))
+                    return
+                }
+                stage = .awaitingRateLimits
+            } else if id == 2 {
+                guard let result = object["result"] as? [String: Any] else {
+                    finishLocked(.failure(.requestNotSent))
+                    return
+                }
+                let verificationDate = clock()
+                switch verifiedCard(from: result, verificationDate: verificationDate) {
+                case .failure(let failure):
+                    finishLocked(.failure(failure))
+                case .success(let card):
+                    guard let idempotencyKey, let selectedCard else {
+                        finishLocked(.success(ResetCreditRPCResponse(card: card, outcome: nil)))
+                        return
+                    }
+                    guard card.creditID == selectedCard.creditID,
+                        resetValidField(idempotencyKey, maximumBytes: 128),
+                        UUID(uuidString: idempotencyKey) != nil
+                    else {
+                        finishLocked(.failure(.creditChanged))
+                        return
+                    }
+                    let sendDate = clock()
+                    guard card.expiresAt == nil || card.expiresAt! > sendDate else {
+                        finishLocked(.failure(.creditChanged))
+                        return
+                    }
+                    if let reviewObservedAt {
+                        let age = sendDate.timeIntervalSince(reviewObservedAt)
+                        guard age >= 0, age <= 2 * 60 else {
+                            finishLocked(.failure(.expiredChallenge))
+                            return
+                        }
+                    }
+                    stage = .awaitingConsume
+                    // A throwing/partial pipe write is indistinguishable from a
+                    // delivered request, so classify it as uncertain before I/O.
+                    consumeMayHaveBeenSent = true
+                    guard
+                        writeMessageLocked([
+                            "id": 3,
+                            "method": "account/rateLimitResetCredit/consume",
+                            "params": ["idempotencyKey": idempotencyKey, "creditId": card.creditID],
+                        ])
+                    else {
+                        finishLocked(.failure(.outcomeUnknown))
+                        return
+                    }
+                }
+            } else if id == 3 {
+                guard let result = object["result"] as? [String: Any],
+                    let rawOutcome = result["outcome"] as? String,
+                    let outcome = CodexResetCreditConsumeOutcome(rawValue: rawOutcome)
+                else {
+                    finishLocked(.failure(.outcomeUnknown))
+                    return
+                }
+                finishLocked(.success(ResetCreditRPCResponse(card: selectedCard, outcome: outcome)))
+            }
+        }
+
+        guard let descriptor = try? POSIXPipeReader.duplicateDescriptor(for: outputHandle) else {
+            stateLock.lock()
+            finishLocked(.failure(.requestNotSent))
+            try? inputHandle.close()
+            stateLock.unlock()
+            terminate(process)
+            return .failure(.requestNotSent)
+        }
+        let readFlags = fcntl(descriptor, F_GETFL)
+        guard readFlags >= 0, fcntl(descriptor, F_SETFL, readFlags | O_NONBLOCK) == 0 else {
+            Darwin.close(descriptor)
+            finishForShutdown()
+            try? inputHandle.close()
+            terminate(process)
+            return .failure(.requestNotSent)
+        }
+        let readDeadline = DispatchTime.now().uptimeNanoseconds + 15_000_000_000
+        let readerGroup = DispatchGroup()
+        readerGroup.enter()
+        DispatchQueue.global(qos: .utility).async {
+            defer {
+                Darwin.close(descriptor)
+                readerGroup.leave()
+            }
+            var totalOutputBytes = 0
+            while DispatchTime.now().uptimeNanoseconds < readDeadline {
+                stateLock.lock()
+                let isTerminal = terminalResult != nil
+                stateLock.unlock()
+                if isTerminal { break }
+                var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+                let readiness = Darwin.poll(&pollDescriptor, 1, 100)
+                if readiness == 0 { continue }
+                if readiness < 0 {
+                    if errno == EINTR { continue }
+                    break
+                }
+                let data: Data
+                do {
+                    guard
+                        let next = try POSIXPipeReader.readChunk(
+                            from: descriptor, maximumBytes: 64 * 1_024
+                        )
+                    else { break }
+                    data = next
+                } catch POSIXPipeReaderError.readFailed(let code) where code == EAGAIN || code == EWOULDBLOCK {
+                    continue
+                } catch {
+                    break
+                }
+                totalOutputBytes += data.count
+                guard totalOutputBytes <= 1 * 1_024 * 1_024 else {
+                    finishForShutdown()
+                    break
+                }
+                buffer.append(data)
+                if buffer.count > 1 * 1_024 * 1_024 {
+                    finishForShutdown()
+                    break
+                }
+                while let newline = buffer.firstIndex(of: 10) {
+                    let line = buffer.subdata(in: buffer.startIndex..<newline)
+                    buffer.removeSubrange(buffer.startIndex...newline)
+                    if !line.isEmpty { parseLine(line) }
+                }
+            }
+            finishForShutdown()
+        }
+
+        stateLock.lock()
+        let initialized = writeMessageLocked([
+            "id": 1,
+            "method": "initialize",
+            "params": [
+                "clientInfo": [
+                    "name": "codex-account-manager-next",
+                    "title": "Codex Account Manager Next",
+                    "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.1",
+                ],
+                "capabilities": ["experimentalApi": true, "optOutNotificationMethods": []],
+            ],
+        ])
+        if !initialized { finishLocked(.failure(.requestNotSent)) }
+        stateLock.unlock()
+
+        if initialized, completed.wait(timeout: .now() + 15) == .timedOut {
+            finishForShutdown()
+        }
+        stateLock.lock()
+        acceptsWrites = false
+        try? inputHandle.close()
+        stateLock.unlock()
+        terminate(process)
+        try? outputHandle.close()
+        _ = readerGroup.wait(timeout: .now() + 1)
+        stateLock.lock()
+        let result = terminalResult
+        let uncertain = consumeMayHaveBeenSent
+        stateLock.unlock()
+        return result ?? .failure(uncertain ? .outcomeUnknown : .requestNotSent)
+    }
+
     private func readAppServer(
         context: RuntimeLoadContext,
         messages: inout [String],
         quotaOnly: Bool,
-        refreshingMembershipFor profile: CodexProfile? = nil
+        refreshingMembershipFor profile: CodexProfile? = nil,
+        requestTimeout: TimeInterval? = nil
     ) -> AppServerSnapshot {
         // 系统默认 home 是官方 Codex 正在使用的登录，保持原有全局门禁不变；
         // 其他账号 home 只涉及自身凭据，按 home 互斥即可允许跨账号并行读取。
@@ -644,7 +1083,8 @@ final class CodexUsageReader {
             ],
         ])
 
-        if responseGroup.wait(timeout: .now() + (quotaOnly ? 30 : 12)) == .timedOut {
+        let responseTimeout = requestTimeout.map { min(30, max(1, $0)) } ?? (quotaOnly ? 30 : 12)
+        if responseGroup.wait(timeout: .now() + responseTimeout) == .timedOut {
             lock.lock()
             appServerMessages.append(WidgetLanguage.storedOrAutomatic().text("app-server 响应超时", "app-server response timed out."))
             lock.unlock()
@@ -743,25 +1183,51 @@ final class CodexUsageReader {
         var resetCredits: Int?
         var resetCreditDetails: [ResetCreditDetail]?
         if let reset = result["rateLimitResetCredits"] as? [String: Any] {
-            resetCredits = CodexResetCreditNormalizer.normalizeAvailableCount(
-                intValue(reset["availableCount"])
-            )
-            if let rawDetails = reset["credits"] as? [[String: Any]] {
-                resetCreditDetails =
-                    rawDetails
-                    .compactMap(parseResetCreditDetail)
-                    .sorted { lhs, rhs in
-                        switch (lhs.expiresAt, rhs.expiresAt) {
-                        case (let left?, let right?):
-                            return left == right ? lhs.id < rhs.id : left < right
-                        case (.some, .none):
-                            return true
-                        case (.none, .some):
-                            return false
-                        case (.none, .none):
-                            return lhs.id < rhs.id
+            if let count64 = resetExactInt64(reset["availableCount"]),
+                (0...1_000_000).contains(count64),
+                let count = Int(exactly: count64)
+            {
+                var detailsAreValid = true
+                var parsedDetails: [ResetCreditDetail]?
+                if let raw = reset["credits"], !(raw is NSNull) {
+                    if let rows = raw as? [[String: Any]], rows.count <= 1_024 {
+                        var seenIDs = Set<String>()
+                        var available: [ResetCreditDetail] = []
+                        for row in rows {
+                            guard let id = row["id"] as? String,
+                                resetValidField(id, maximumBytes: 512),
+                                seenIDs.insert(id).inserted,
+                                let status = row["status"] as? String,
+                                let resetType = row["resetType"] as? String,
+                                let expiry = resetExpiry(in: row)
+                            else {
+                                detailsAreValid = false
+                                break
+                            }
+                            if status == "available", resetType == "codexRateLimits" {
+                                available.append(ResetCreditDetail(id: id, expiresAt: expiry))
+                            }
                         }
+                        parsedDetails = available.sorted { lhs, rhs in
+                            switch (lhs.expiresAt, rhs.expiresAt) {
+                            case (let left?, let right?):
+                                return left == right ? lhs.id < rhs.id : left < right
+                            case (.some, .none):
+                                return true
+                            case (.none, .some):
+                                return false
+                            case (.none, .none):
+                                return lhs.id < rhs.id
+                            }
+                        }
+                    } else {
+                        detailsAreValid = false
                     }
+                }
+                if detailsAreValid {
+                    resetCredits = CodexResetCreditNormalizer.normalizeAvailableCount(count)
+                    resetCreditDetails = parsedDetails
+                }
             }
         }
 
@@ -782,16 +1248,6 @@ final class CodexUsageReader {
                 resetCreditDetails: resetCreditDetails
             )
         }
-    }
-
-    private func parseResetCreditDetail(_ object: [String: Any]) -> ResetCreditDetail? {
-        guard let id = object["id"] as? String,
-            object["status"] as? String == "available"
-        else { return nil }
-
-        let expiresAt = doubleValue(object["expiresAt"])
-            .map(Date.init(timeIntervalSince1970:))
-        return ResetCreditDetail(id: id, expiresAt: expiresAt)
     }
 
     private func parseRateWindow(_ value: Any?) -> RateWindow? {
@@ -1787,11 +2243,13 @@ final class CodexUsageReader {
     }
 
     private func skillStaticInfo(for path: String) -> SkillStaticInfo {
-        let url = URL(fileURLWithPath: path)
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-            let fileSize = values.fileSize,
-            fileSize <= 4 * 1_024 * 1_024,
-            let data = try? Data(contentsOf: url)
+        // Skill discovery legitimately permits symlinks. Resolve that source to
+        // its target first, then apply the same bounded regular-file reader.
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard let data = try? DispatchParticipationSync.readBoundedRegularFile(
+            url,
+            maximumBytes: 4 * 1_024 * 1_024
+        )
         else {
             return SkillStaticInfo(tokenEstimate: nil, byteCount: nil)
         }
@@ -2582,9 +3040,10 @@ final class CodexUsageReader {
 
     private func readPersistentLocalAnalyticsCache() -> LocalAnalyticsCacheEntry? {
         guard let url = localAnalyticsCacheURL(),
-            let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-            Int64(values.fileSize ?? 0) <= Self.maximumPersistentCacheBytes,
-            let data = try? Data(contentsOf: url)
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(
+                url,
+                maximumBytes: Int(Self.maximumPersistentCacheBytes)
+            )
         else { return nil }
         return try? JSONDecoder().decode(LocalAnalyticsCacheEntry.self, from: data)
     }
@@ -2595,9 +3054,10 @@ final class CodexUsageReader {
         }
 
         guard let url = sessionUsageCacheURL(),
-            let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-            Int64(values.fileSize ?? 0) <= Self.maximumPersistentCacheBytes,
-            let data = try? Data(contentsOf: url),
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(
+                url,
+                maximumBytes: Int(Self.maximumPersistentCacheBytes)
+            ),
             let diskCache = try? JSONDecoder().decode(SessionUsageDiskCache.self, from: data),
             diskCache.version == sessionUsageCacheVersion
         else {
@@ -2615,6 +3075,7 @@ final class CodexUsageReader {
         do {
             let encoder = JSONEncoder()
             let data = try encoder.encode(entry)
+            guard Int64(data.count) <= Self.maximumPersistentCacheBytes else { return }
             try PrivateLocalFileStore.write(data, to: url, fileManager: fileManager)
         } catch {
             debugLog("failed to write local analytics cache")
@@ -2638,6 +3099,7 @@ final class CodexUsageReader {
         do {
             let encoder = JSONEncoder()
             let data = try encoder.encode(SessionUsageDiskCache(version: sessionUsageCacheVersion, entries: mergedEntries))
+            guard Int64(data.count) <= Self.maximumPersistentCacheBytes else { return }
             try PrivateLocalFileStore.write(data, to: url, fileManager: fileManager)
             Self.persistentSessionUsageCacheIsDirty = false
             Self.lastPersistentSessionUsageCacheWriteAt = now
@@ -3325,28 +3787,77 @@ private func shortWorkspaceName(_ path: String) -> String {
     return path
 }
 
+private func summedTokenCounts(_ values: [Int64]) -> Int64? {
+    var total: Int64 = 0
+    for value in values {
+        guard value >= 0 else { return nil }
+        let next = total.addingReportingOverflow(value)
+        guard !next.overflow else { return nil }
+        total = next.partialValue
+    }
+    return total
+}
+
 private func intValue(_ value: Any?) -> Int? {
-    if let int = value as? Int { return int }
-    if let int64 = value as? Int64 { return Int(int64) }
-    if let double = value as? Double { return Int(double) }
     if let string = value as? String { return Int(string) }
-    return nil
+    guard let number = value as? NSNumber,
+        CFGetTypeID(number) != CFBooleanGetTypeID()
+    else { return nil }
+    if CFNumberIsFloatType(number) { return Int(exactly: number.doubleValue) }
+    return Int(number.stringValue)
+}
+
+/// Strict parsing for reset-credit protocol integers. JSON booleans are
+/// NSNumbers too, and floating-point conversion must never reach a trapping cast.
+private func resetExactInt64(_ value: Any?) -> Int64? {
+    guard let number = value as? NSNumber,
+        CFGetTypeID(number) != CFBooleanGetTypeID()
+    else { return nil }
+    if CFNumberIsFloatType(number) {
+        let value = number.doubleValue
+        guard value.isFinite else { return nil }
+        return Int64(exactly: value)
+    }
+    return Int64(number.stringValue)
+}
+
+private func resetValidField(_ value: String, maximumBytes: Int) -> Bool {
+    !value.isEmpty
+        && value.utf8.count <= maximumBytes
+        && !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+}
+
+/// The outer optional reports parse validity; the inner optional preserves the
+/// official absent/null meaning of a card with no expiry.
+private func resetExpiry(in object: [String: Any]) -> Date?? {
+    guard let raw = object["expiresAt"] else { return .some(nil) }
+    if raw is NSNull { return .some(nil) }
+    guard let seconds = resetExactInt64(raw) else { return nil }
+    let date = Date(timeIntervalSince1970: TimeInterval(seconds))
+    guard date >= Date.distantPast, date <= Date.distantFuture else { return nil }
+    return .some(date)
 }
 
 private func int64Value(_ value: Any?) -> Int64? {
-    if let int = value as? Int { return Int64(int) }
-    if let int64 = value as? Int64 { return int64 }
-    if let double = value as? Double { return Int64(double) }
     if let string = value as? String { return Int64(string) }
-    return nil
+    guard let number = value as? NSNumber,
+        CFGetTypeID(number) != CFBooleanGetTypeID()
+    else { return nil }
+    if CFNumberIsFloatType(number) { return Int64(exactly: number.doubleValue) }
+    return Int64(number.stringValue)
 }
 
 private func doubleValue(_ value: Any?) -> Double? {
-    if let double = value as? Double { return double }
-    if let int = value as? Int { return Double(int) }
-    if let int64 = value as? Int64 { return Double(int64) }
-    if let string = value as? String { return Double(string) }
-    return nil
+    let result: Double?
+    if let string = value as? String {
+        result = Double(string)
+    } else if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+        result = number.doubleValue
+    } else {
+        result = nil
+    }
+    guard let result, result.isFinite else { return nil }
+    return result
 }
 
 private func stringValue(_ value: Any?) -> String? {
@@ -3360,6 +3871,7 @@ private func dateFromEpoch(_ value: Any?) -> Date? {
     if seconds > 10_000_000_000 {
         seconds /= 1000
     }
+    guard seconds <= Date.distantFuture.timeIntervalSince1970 else { return nil }
     return Date(timeIntervalSince1970: seconds)
 }
 

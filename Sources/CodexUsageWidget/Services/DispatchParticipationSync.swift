@@ -31,17 +31,36 @@ struct DispatchParticipationPaths {
     static func live(
         snapshot: URL,
         bundleURL: URL = Bundle.main.bundleURL,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        launchAgentURL: URL? = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/com.agenthub.arc-hub.plist")
     ) throws -> Self {
         let hubConfig: URL
         if let override = environment[hubConfigEnvironmentKey], !override.isEmpty {
             guard override.hasPrefix("/") else { throw DispatchParticipationError.hubLocation }
             hubConfig = URL(fileURLWithPath: override)
+        } else if FileManager.default.fileExists(atPath: snapshot.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("CodexAccountManagerNextHub/config.json").path) {
+            hubConfig = snapshot.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("CodexAccountManagerNextHub/config.json")
         } else {
             let buildDirectory = bundleURL.deletingLastPathComponent()
-            guard buildDirectory.lastPathComponent == "build" else { throw DispatchParticipationError.hubLocation }
-            hubConfig = buildDirectory.deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent(hubCheckoutName, isDirectory: true).appendingPathComponent(hubConfigFileName)
+            if buildDirectory.lastPathComponent == "build" {
+                hubConfig = buildDirectory.deletingLastPathComponent().deletingLastPathComponent()
+                    .appendingPathComponent(hubCheckoutName, isDirectory: true).appendingPathComponent(hubConfigFileName)
+            } else {
+                // Installed copies cannot infer the checkout from their bundle path.
+                // Discover only the user's existing named service; never evaluate its shell command.
+                guard let launchAgentURL else { throw DispatchParticipationError.hubLocation }
+                var info = stat()
+                guard lstat(launchAgentURL.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+                    info.st_uid == geteuid(), info.st_mode & 0o022 == 0,
+                    let data = try DispatchParticipationSync.readBoundedRegularFile(launchAgentURL, maximumBytes: 64 * 1_024),
+                    let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                    plist["Label"] as? String == "com.agenthub.arc-hub",
+                    let directory = plist["WorkingDirectory"] as? String, directory.hasPrefix("/")
+                else { throw DispatchParticipationError.hubLocation }
+                hubConfig = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent(hubConfigFileName)
+            }
         }
         return Self(snapshot: snapshot, hubConfig: hubConfig, codes: snapshot.deletingLastPathComponent().appendingPathComponent(codesFileName))
     }

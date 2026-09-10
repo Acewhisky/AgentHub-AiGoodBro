@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "snapshotMaxAgeSeconds": 45,
+  "minimumRemainingPercent": {
+    "fiveHour": 30,
+    "sevenDay": 15
+  },
+  "centralAliases": [
+    "system"
+  ],
+  "accounts": [
+    {
+      "code": "A",
+      "alias": "example-account",
+      "profileId": "exampleprofile",
+      "priority": 1,
+      "active": false
+    }
+  ],
+  "hubProjects": {}
+}

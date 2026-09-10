@@ -32,6 +32,16 @@ enum PalettePreviewRenderer {
                             to: directory.appendingPathComponent("settings-\(page.rawValue)-\(language.rawValue)-\(appearance)@2x.png")
                         )
                     }
+                    try WorkspacePreviewRenderer.renderView(
+                        AccountAutomationCenterView(store: store)
+                            .environment(\.widgetLanguage, language)
+                            .environment(\.locale, language.locale)
+                            .environment(\.colorScheme, scheme)
+                            .preferredColorScheme(scheme)
+                            .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true)),
+                        size: NSSize(width: 600, height: 680), scheme: scheme,
+                        to: directory.appendingPathComponent("automation-center-\(language.rawValue)-\(appearance)@2x.png")
+                    )
                 }
             }
             return true

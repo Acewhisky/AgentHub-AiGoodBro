@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh_CN</string>
 	<key>CFBundleDisplayName</key>
-	<string>Codex Account Manager Next</string>
+	<string>AiGoodBro</string>
 	<key>CFBundleExecutable</key>
 	<string>CodexAccountManagerNext</string>
 	<key>CFBundleIconFile</key>
@@ -15,15 +15,15 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>CodexAccountManagerNext</string>
+	<string>AiGoodBro</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>9.5.15</string>
+	<string>9.5.19</string>
 	<key>CFBundleVersion</key>
-	<string>29</string>
+	<string>33</string>
 	<key>CodexAccountManagerNextReleaseName</key>
-	<string>0909v4</string>
+	<string>0911v1</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
@@ -31,6 +31,6 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>用于在终端中以各账号环境打开 Codex CLI。</string>
+	<string>用于在终端中以各账号环境打开 CLI。</string>
 </dict>
 </plist>

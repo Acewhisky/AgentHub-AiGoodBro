@@ -155,6 +155,44 @@ enum AccountWorkspaceLayout: String, CaseIterable {
     }
 }
 
+enum WorkspaceDisplayMode: String, CaseIterable, Equatable {
+    case professional
+    case simple
+
+    static let storageKey = "CodexManagerNext.workspaceDisplayMode"
+
+    static func storedOrDefault(defaults: UserDefaults) -> Self {
+        defaults.string(forKey: storageKey).flatMap(Self.init(rawValue:)) ?? .professional
+    }
+
+    func title(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .professional: language.text("专业", "Professional")
+        case .simple: language.text("极简", "Simple")
+        }
+    }
+}
+
+enum SimpleWorkspacePreset: String, CaseIterable, Equatable {
+    case overview
+    case accountCards
+    case custom
+
+    static let storageKey = "CodexManagerNext.simpleWorkspacePreset"
+
+    static func storedOrDefault(defaults: UserDefaults) -> Self {
+        defaults.string(forKey: storageKey).flatMap(Self.init(rawValue:)) ?? .overview
+    }
+
+    func title(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .overview: language.text("总览", "Overview")
+        case .accountCards: language.text("账号卡片", "Account cards")
+        case .custom: language.text("自定义", "Custom")
+        }
+    }
+}
+
 struct PaletteFallbackNotice: Equatable {
     let unavailableID: String
 }
@@ -166,6 +204,10 @@ final class AppSettings: ObservableObject {
     private static let automaticUpdateChecksEnabledKey = "CodexManagerNext.update.autoCheckEnabled"
     private static let skippedUpdateVersionKey = "CodexManagerNext.update.skippedVersion"
     private static let paletteIDKey = "CodexManagerNext.paletteID"
+    private static let simpleCustomShowPlatformOverviewKey = "CodexManagerNext.simpleCustomShowPlatformOverview"
+    private static let simpleCustomShowMonitoredQuotaKey = "CodexManagerNext.simpleCustomShowMonitoredQuota"
+    private static let simpleCustomShowCodexAccountsKey = "CodexManagerNext.simpleCustomShowCodexAccounts"
+    private static let simpleCustomShowUsageAutomationKey = "CodexManagerNext.simpleCustomShowUsageAutomation"
 
     private let defaults: UserDefaults
     let paletteCatalog: PaletteCatalog
@@ -203,6 +245,44 @@ final class AppSettings: ObservableObject {
 
     @Published var accountWorkspaceLayout: AccountWorkspaceLayout {
         didSet { defaults.set(accountWorkspaceLayout.rawValue, forKey: AccountWorkspaceLayout.storageKey) }
+    }
+
+    @Published var workspaceDisplayMode: WorkspaceDisplayMode {
+        didSet { defaults.set(workspaceDisplayMode.rawValue, forKey: WorkspaceDisplayMode.storageKey) }
+    }
+
+    @Published var simpleWorkspacePreset: SimpleWorkspacePreset {
+        didSet { defaults.set(simpleWorkspacePreset.rawValue, forKey: SimpleWorkspacePreset.storageKey) }
+    }
+
+    @Published var simpleCustomShowPlatformOverview: Bool {
+        didSet { defaults.set(simpleCustomShowPlatformOverview, forKey: Self.simpleCustomShowPlatformOverviewKey) }
+    }
+
+    @Published var simpleCustomShowMonitoredQuota: Bool {
+        didSet { defaults.set(simpleCustomShowMonitoredQuota, forKey: Self.simpleCustomShowMonitoredQuotaKey) }
+    }
+
+    @Published var simpleCustomShowCodexAccounts: Bool {
+        didSet { defaults.set(simpleCustomShowCodexAccounts, forKey: Self.simpleCustomShowCodexAccountsKey) }
+    }
+
+    @Published var simpleCustomShowUsageAutomation: Bool {
+        didSet { defaults.set(simpleCustomShowUsageAutomation, forKey: Self.simpleCustomShowUsageAutomationKey) }
+    }
+
+    var hasSimpleCustomModules: Bool {
+        simpleCustomShowPlatformOverview
+            || simpleCustomShowMonitoredQuota
+            || simpleCustomShowCodexAccounts
+            || simpleCustomShowUsageAutomation
+    }
+
+    func restoreSimpleCustomModules() {
+        simpleCustomShowPlatformOverview = true
+        simpleCustomShowMonitoredQuota = true
+        simpleCustomShowCodexAccounts = true
+        simpleCustomShowUsageAutomation = true
     }
 
     @Published private(set) var paletteID: String
@@ -271,6 +351,16 @@ final class AppSettings: ObservableObject {
         usageTrendWindow = UsageTrendWindow.storedOrDefault(defaults: defaults)
         accountMenuTransparency = AccountMenuTransparency.storedOrDefault(defaults: defaults)
         accountWorkspaceLayout = AccountWorkspaceLayout.storedOrDefault(defaults: defaults)
+        workspaceDisplayMode = WorkspaceDisplayMode.storedOrDefault(defaults: defaults)
+        simpleWorkspacePreset = SimpleWorkspacePreset.storedOrDefault(defaults: defaults)
+        simpleCustomShowPlatformOverview = Self.storedFlag(
+            defaults: defaults, key: Self.simpleCustomShowPlatformOverviewKey, defaultValue: true)
+        simpleCustomShowMonitoredQuota = Self.storedFlag(
+            defaults: defaults, key: Self.simpleCustomShowMonitoredQuotaKey, defaultValue: true)
+        simpleCustomShowCodexAccounts = Self.storedFlag(
+            defaults: defaults, key: Self.simpleCustomShowCodexAccountsKey, defaultValue: true)
+        simpleCustomShowUsageAutomation = Self.storedFlag(
+            defaults: defaults, key: Self.simpleCustomShowUsageAutomationKey, defaultValue: true)
         keepMainWindowOnTop = defaults.bool(forKey: Self.keepMainWindowOnTopKey)
         if defaults.object(forKey: Self.keepRunningWhenMainWindowClosedKey) == nil {
             keepRunningWhenMainWindowClosed = true
@@ -326,6 +416,10 @@ final class AppSettings: ObservableObject {
         }
         visibleRuntimeScopes = visibleRuntimeScopes.filter { $0 != scope }
         return true
+    }
+
+    private static func storedFlag(defaults: UserDefaults, key: String, defaultValue: Bool) -> Bool {
+        defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
     }
 
     private static func storedVisibleRuntimeScopes(defaults: UserDefaults) -> [RuntimeScope] {

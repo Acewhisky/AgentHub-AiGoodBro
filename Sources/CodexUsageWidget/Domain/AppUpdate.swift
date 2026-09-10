@@ -301,6 +301,7 @@ enum AppUpdateSelfTest {
         expect(beta01 < beta02, "beta01 should be lower than beta02")
         expect(beta02 < stable, "stable should be higher than beta")
         expect(stable < nextPatch, "next patch should be higher than current stable")
+        expect(AppUpdateStore.selfTest(), "late automatic callbacks must respect disabled state and newer checks")
         expect(AppArchitecture(assetName: "CodexAccountManagerNext-1.0.0-mac-arm64.dmg") == .arm64, "arm64 asset detection")
         expect(AppArchitecture(assetName: "CodexAccountManagerNext-1.0.0-mac-x86_64.dmg") == .x8664, "x86_64 asset detection")
 

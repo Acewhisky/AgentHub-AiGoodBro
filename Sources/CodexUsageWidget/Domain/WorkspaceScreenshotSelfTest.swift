@@ -35,13 +35,15 @@ enum WorkspaceScreenshotSelfTest {
         let englishReset = WidgetLanguage.en.dateTime(reset)
         let englishStatus = "Last warm-up succeeded Sep 7, 09:00 · Next 5h warm-up \(englishReset) · Next 7d warm-up \(englishReset)"
         expect(
-            WarmUpStatusText.summary(englishStatus, fiveHourReset: reset, sevenDayReset: reset, language: .en) == nil,
-            "English duplicate reset schedules and successful history must be omitted")
+            WarmUpStatusText.summary(englishStatus, fiveHourReset: reset, sevenDayReset: reset, language: .en) == "Last warm-up succeeded Sep 7, 09:00",
+            "English warm-up result and timestamp remain visible while duplicate schedules are omitted")
         expect(
             WorkspaceScreenshotExporter.ExportError.invalidSize.message(.en).range(of: "\\p{Han}", options: .regularExpression) == nil,
             "English screenshot errors must stay English")
         let duplicate = "最近暖号成功 9月7日 09:00 · 下次暖号 5 小时 \(resetText) · 下次暖号 7 天 \(resetText)"
-        expect(WarmUpStatusText.summary(duplicate, fiveHourReset: reset, sevenDayReset: reset) == nil, "repeated reset times and successful history belong in details only")
+        expect(
+            WarmUpStatusText.summary(duplicate, fiveHourReset: reset, sevenDayReset: reset) == "最近暖号成功 9月7日 09:00",
+            "warm-up result and timestamp remain visible next to the account")
         let unique = "5 小时已暂停 · 7 天额度不足 · 下次暖号 7 天 \(resetText)"
         expect(WarmUpStatusText.summary(unique, fiveHourReset: nil, sevenDayReset: reset) == "5 小时已暂停 · 7 天额度不足", "deduplication must keep the reason for a pause")
         let differentSchedule = "下次暖号 7 天 \(resetText)"
@@ -59,7 +61,7 @@ enum WorkspaceScreenshotSelfTest {
         defaults.set("future-layout", forKey: AccountWorkspaceLayout.storageKey)
         expect(AccountWorkspaceLayout.storedOrDefault(defaults: defaults) == .rows, "unknown stored layouts must fall back to the original")
         defaults.removeObject(forKey: AccountWorkspaceLayout.storageKey)
-        expect(AccountCardGridLayout.columnCount(width: 784, itemCount: 9) == 2, "the minimum window must fit two cards")
+        expect(AccountCardGridLayout.columnCount(width: 784, itemCount: 9) == 3, "the compact minimum window must fit three cards")
         expect(AccountCardGridLayout.columnCount(width: 944, itemCount: 9) == 3, "the default window must fit three cards")
         expect(AccountCardGridLayout.columnCount(width: 1_244, itemCount: 9) == 4, "a wide window must fit four cards")
         expect(AccountCardGridLayout.columnCount(width: .infinity, itemCount: 9) == 1, "nonfinite probes must be safe")

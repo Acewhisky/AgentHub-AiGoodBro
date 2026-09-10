@@ -1,7 +1,16 @@
 import Foundation
 
-final class GitHubReleaseUpdateChecker {
-    private let releasesURL: URL
+protocol AppUpdateChecking {
+    func check(
+        currentVersion: String,
+        includePrereleases: Bool,
+        force: Bool,
+        completion: @escaping (AppUpdateResult) -> Void
+    )
+}
+
+final class GitHubReleaseUpdateChecker: AppUpdateChecking {
+    private let releasesURLs: [URL]
     private let cacheURL: URL
     private let session: URLSession
     private let now: () -> Date
@@ -10,13 +19,20 @@ final class GitHubReleaseUpdateChecker {
 
     init(
         owner: String = "BLACKIELF",
-        repo: String = "codex-account-manager-next",
+        repo: String = "AgentHub-AiGoodBro",
+        legacyRepo: String? = "codex-account-manager-next",
         cacheDirectory: URL = RuntimeLoadContext.live().cacheDirectory,
         session: URLSession = .shared,
         minimumAutomaticCheckInterval: TimeInterval = 24 * 60 * 60,
         now: @escaping () -> Date = Date.init
     ) {
-        releasesURL = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases")!
+        var repositoryNames = [repo]
+        if let legacyRepo, legacyRepo.caseInsensitiveCompare(repo) != .orderedSame {
+            repositoryNames.append(legacyRepo)
+        }
+        releasesURLs = repositoryNames.map {
+            URL(string: "https://api.github.com/repos/\(owner)/\($0)/releases")!
+        }
         cacheURL = cacheDirectory.appendingPathComponent("update-check.json", isDirectory: false)
         self.session = session
         self.minimumAutomaticCheckInterval = minimumAutomaticCheckInterval
@@ -50,7 +66,25 @@ final class GitHubReleaseUpdateChecker {
             return
         }
 
-        var request = URLRequest(url: releasesURL)
+        requestReleases(
+            at: 0,
+            currentVersion: currentVersion,
+            includePrereleases: includePrereleases,
+            checkedAt: checkedAt,
+            cached: cached,
+            completion: completion
+        )
+    }
+
+    private func requestReleases(
+        at urlIndex: Int,
+        currentVersion: String,
+        includePrereleases: Bool,
+        checkedAt: Date,
+        cached: AppUpdateCache?,
+        completion: @escaping (AppUpdateResult) -> Void
+    ) {
+        var request = URLRequest(url: releasesURLs[urlIndex])
         request.timeoutInterval = 10
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("CodexAccountManagerNext/\(currentVersion)", forHTTPHeaderField: "User-Agent")
@@ -80,6 +114,18 @@ final class GitHubReleaseUpdateChecker {
                         message: "Invalid GitHub response",
                         cached: cached
                     ))
+                return
+            }
+
+            if httpResponse.statusCode == 404, urlIndex + 1 < self.releasesURLs.count {
+                self.requestReleases(
+                    at: urlIndex + 1,
+                    currentVersion: currentVersion,
+                    includePrereleases: includePrereleases,
+                    checkedAt: checkedAt,
+                    cached: cached,
+                    completion: completion
+                )
                 return
             }
 

@@ -17,15 +17,20 @@ struct CodexAccountManagerView: View {
     @State private var isAddingCustomTokenSource = false
     @State private var customSourceNameDraft = ""
     @State private var customSourceTokensDraft = ""
-    @State private var isAgentBreakdownExpanded = false
+    @State private var isAgentBreakdownExpanded = true
     @State private var isAutomationCenterPresented = false
     @State private var isSetupGuidePresented = false
     @State private var openAutomationAfterGuide = false
-    @State private var isAccountDetailsExpanded = false
-    @State private var isUsageDetailsExpanded = false
+    @State private var isAccountDetailsExpanded = true
+    @State private var isUsageDetailsExpanded = true
     @State private var isSavingScreenshot = false
     @State private var screenshotFeedback: String?
     @StateObject private var hubTaskStatusModel = HubAccountTaskStatusModel()
+    @StateObject private var localCLIAccounts = LocalCLIAccountStore()
+    @State private var selectedLocalCLI: LocalCLIKind?
+    @State private var showingHome = true
+    @State private var isHomeCodexExpanded = true
+    @State private var homeLocalCLIExpanded: [LocalCLIKind: Bool] = [:]
 
     static let defaultWidth: CGFloat = 980
     static let minWidth: CGFloat = 820
@@ -63,6 +68,8 @@ struct CodexAccountManagerView: View {
         .onReceive(screenshotRequests) { saveLongScreenshot(for: $0) }
         .onAppear {
             if !store.isPreview {
+                localCLIAccounts.discover()
+                refreshMissingLocalCLIQuotas()
                 hubTaskStatusModel.startPolling()
                 if settings.setupProgress.shouldPresentAutomatically { isSetupGuidePresented = true }
             }
@@ -72,7 +79,10 @@ struct CodexAccountManagerView: View {
             profileReorder = nil
         }
         .onChange(of: presentedProfiles.map(\.id)) { _ in profileReorder = nil }
-        .onChange(of: settings.accountWorkspaceLayout) { _ in profileReorder = nil }
+        .onChange(of: displayedAccountLayout) { _ in profileReorder = nil }
+        .onChange(of: usesHomeAccountCards) { compact in
+            if compact { profileReorder = nil }
+        }
         .sheet(isPresented: $isAutomationCenterPresented) {
             AccountAutomationCenterView(store: store)
                 .environment(\.widgetLanguage, language)
@@ -117,12 +127,527 @@ struct CodexAccountManagerView: View {
 
     private var workspaceContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if presentation.isSingleAccount { workspaceBranding }
-            AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
-            workspace
+            cliSelector
+            if showingHome {
+                homeOverview
+            } else if let selectedLocalCLI {
+                LocalCLIWorkspaceView(model: localCLIAccounts, kind: selectedLocalCLI, language: language)
+            } else {
+                codexWorkspaceContent
+            }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
+    }
+
+    private var homeOverview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            homeHeader
+            AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
+            if settings.workspaceDisplayMode == .professional {
+                professionalHomeSections
+            } else {
+                simpleHomeContent
+            }
+        }
+    }
+
+    private var homeHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            homeHeaderRow
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    homeWorkspaceTitle
+                    Spacer(minLength: 8)
+                    homeBrandMark
+                }
+                HStack(spacing: 8) {
+                    homeDisplayModePicker
+                    homeGettingStartedButton
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var homeHeaderRow: some View {
+        HStack(alignment: .center, spacing: 10) {
+            homeWorkspaceTitle
+            homeDisplayModePicker
+            homeGettingStartedButton
+            Spacer(minLength: 8)
+            homeBrandMark
+        }
+    }
+
+    private var homeWorkspaceTitle: some View {
+        Text("AgentHub")
+            .font(.title3.weight(.semibold))
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private var homeBrandMark: some View {
+        Text("AiGoodBro")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.tertiary)
+            .accessibilityLabel("AiGoodBro")
+    }
+
+    private var homeDisplayModePicker: some View {
+        Picker(language.text("工作台显示", "Workspace display"), selection: $settings.workspaceDisplayMode) {
+            ForEach(WorkspaceDisplayMode.allCases, id: \.self) { mode in
+                Text(mode.title(language)).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .frame(maxWidth: 220)
+        .accessibilityLabel(language.text("工作台显示", "Workspace display"))
+        .help(
+            language.text(
+                "专业版保留当前完整主页；极简版减少信息并可选预设。",
+                "Professional keeps the current Home. Simple reduces information and offers presets."
+            )
+        )
+    }
+
+    private var homeGettingStartedButton: some View {
+        Button(language.text("使用引导", "Getting started")) {
+            isSetupGuidePresented = true
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityLabel(language.text("使用引导", "Getting started"))
+    }
+
+    private var professionalHomeSections: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            homePlatformSection(isExpanded: $isHomeCodexExpanded) {
+                homePlatformHeader(
+                    name: "Codex",
+                    accountCount: presentation.accountCount
+                ) {
+                    Image(systemName: "terminal")
+                }
+            } content: {
+                codexWorkspaceContent
+            }
+            ForEach(installedLocalCLIKinds) { kind in
+                homePlatformSection(isExpanded: homeLocalCLIExpandedBinding(for: kind)) {
+                    homePlatformHeader(
+                        name: kind.displayName,
+                        accountCount: localCLIAccounts.profiles(for: kind).count
+                    ) {
+                        LocalCLIIcon(kind: kind)
+                    }
+                } content: {
+                    LocalCLIWorkspaceView(model: localCLIAccounts, kind: kind, language: language)
+                }
+            }
+        }
+    }
+
+    private var simpleHomeContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker(language.text("极简版内容", "Simple view"), selection: $settings.simpleWorkspacePreset) {
+                ForEach(SimpleWorkspacePreset.allCases, id: \.self) { preset in
+                    Text(preset.title(language)).tag(preset)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(maxWidth: 420)
+            .accessibilityLabel(language.text("极简版内容", "Simple view"))
+            Text(language.text("各平台页仍保留完整操作。", "Provider tabs keep full controls."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            switch settings.simpleWorkspacePreset {
+            case .overview:
+                homeOverviewRows
+            case .accountCards:
+                homeAccountCards
+            case .custom:
+                homeCustomModules
+            }
+        }
+    }
+
+    private var homeOverviewRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HomeOverviewProviderRow(
+                name: "Codex",
+                accountCountText: language.text("\(presentation.accountCount) 个账号", "\(presentation.accountCount) accounts"),
+                quotaText: codexOverviewQuotaText,
+                statusText: codexOverviewStatusText,
+                language: language
+            ) {
+                openCodexTab()
+            } icon: {
+                Image(systemName: "terminal")
+            }
+            ForEach(installedLocalCLIKinds) { kind in
+                homeLocalOverviewRow(kind)
+            }
+        }
+    }
+
+    private var homeAccountCards: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                        .frame(width: 16, height: 16)
+                        .accessibilityHidden(true)
+                    Text("Codex")
+                        .font(.subheadline.weight(.medium))
+                    Spacer(minLength: 8)
+                    Text(language.text("\(presentation.accountCount) 个账号", "\(presentation.accountCount) accounts"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Button(language.text("管理账号", "Manage accounts")) {
+                        openCodexTab()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityLabel(language.text("管理账号", "Manage accounts"))
+                    .accessibilityHint(language.text("打开 Codex 页以编辑账号", "Opens the Codex page to manage accounts"))
+                }
+                .accessibilityElement(children: .contain)
+                codexProfileRows
+            }
+            ForEach(installedLocalCLIKinds) { kind in
+                LocalCLIWorkspaceView(model: localCLIAccounts, kind: kind, language: language)
+            }
+        }
+    }
+
+    private var homeCustomModules: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: $settings.simpleCustomShowPlatformOverview) {
+                    Text(language.text("平台总览", "Platform overview"))
+                }
+                Toggle(isOn: $settings.simpleCustomShowMonitoredQuota) {
+                    Text(language.text("当前监控额度", "Monitored account limits"))
+                }
+                Toggle(isOn: $settings.simpleCustomShowCodexAccounts) {
+                    Text(language.text("Codex 账号", "Codex accounts"))
+                }
+                Toggle(isOn: $settings.simpleCustomShowUsageAutomation) {
+                    Text(language.text("用量与自动化", "Usage and automation"))
+                }
+            }
+            .toggleStyle(.checkbox)
+            .controlSize(.small)
+            .font(.subheadline)
+            if settings.hasSimpleCustomModules {
+                if settings.simpleCustomShowPlatformOverview {
+                    homeOverviewRows
+                }
+                if settings.simpleCustomShowMonitoredQuota {
+                    quotaOverview
+                }
+                if settings.simpleCustomShowCodexAccounts {
+                    profilesPanel
+                }
+                if settings.simpleCustomShowUsageAutomation {
+                    tokenTotalPanel
+                    agentBreakdownPanel
+                    automationPanel
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(language.text("未选择要显示的模块。", "No modules selected."))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Button(language.text("恢复默认模块", "Restore default modules")) {
+                        settings.restoreSimpleCustomModules()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityHint(language.text("重新显示平台总览、当前监控额度、Codex 账号以及用量与自动化。", "Shows platform overview, monitored account limits, Codex accounts, and usage and automation again."))
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .sectionBackground()
+                .accessibilityElement(children: .contain)
+            }
+        }
+    }
+
+    private var installedLocalCLIKinds: [LocalCLIKind] {
+        LocalCLIKind.allCases.filter { localCLIAccounts.installed[$0] != nil }
+    }
+
+    private var usesHomeAccountCards: Bool {
+        showingHome
+            && settings.workspaceDisplayMode == .simple
+            && settings.simpleWorkspacePreset == .accountCards
+    }
+
+    private var displayedAccountLayout: AccountWorkspaceLayout {
+        usesHomeAccountCards ? .cards : settings.accountWorkspaceLayout
+    }
+
+    private var isEditingDisplayedProfiles: Bool {
+        isEditingProfiles && !usesHomeAccountCards
+    }
+
+    private var codexOverviewQuotaText: String {
+        let quota = overviewQuota
+        let fiveHour = QuotaAvailabilityPresentation.percentText(quota.fiveHour?.remainingPercent)
+        let sevenDay = QuotaAvailabilityPresentation.percentText(quota.sevenDay?.remainingPercent)
+        return language.text("5 小时 \(fiveHour) · 7 天 \(sevenDay)", "5h \(fiveHour) · 7d \(sevenDay)")
+    }
+
+    private var codexOverviewStatusText: String {
+        var parts: [String] = []
+        if presentation.accountCount > 1 {
+            parts.append(language.text("当前监控", "Monitored account"))
+        }
+        parts.append(
+            overviewQuota.readSucceeded
+                ? language.text("官方额度已连接", "Usage limits connected")
+                : language.text("等待官方额度", "Waiting for usage limits")
+        )
+        let unverified = codexOverviewUnverifiedCount
+        let failed = codexOverviewFailedCount
+        if unverified > 0 {
+            parts.append(language.text("\(unverified) 个待核验", "\(unverified) need verification"))
+        }
+        if failed > 0 {
+            parts.append(language.text("\(failed) 个读取失败", "\(failed) quota read failed"))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var codexOverviewUnverifiedCount: Int {
+        presentedProfiles.filter { profile in
+            linkedManagedProfile(for: profile) == nil
+                && profile.lastSnapshot == nil
+                && profile.lastQuotaReadFailureAt == nil
+        }.count
+    }
+
+    private var codexOverviewFailedCount: Int {
+        presentedProfiles.filter { profile in
+            linkedManagedProfile(for: profile) == nil && profile.lastQuotaReadFailureAt != nil
+        }.count
+    }
+
+    private func homeLocalOverviewRow(_ kind: LocalCLIKind) -> some View {
+        let summary = localProviderOverview(kind)
+        return HomeOverviewProviderRow(
+            name: kind.displayName,
+            accountCountText: language.text(
+                "\(localCLIAccounts.profiles(for: kind).count) 个账号",
+                "\(localCLIAccounts.profiles(for: kind).count) accounts"),
+            quotaText: summary.quota,
+            statusText: summary.status,
+            language: language
+        ) {
+            openLocalCLITab(kind)
+        } icon: {
+            LocalCLIIcon(kind: kind)
+        }
+    }
+
+    private func localProviderOverview(_ kind: LocalCLIKind) -> (quota: String, status: String) {
+        let profiles = localCLIAccounts.profiles(for: kind)
+        if profiles.isEmpty {
+            return ("—", language.text("未关联账号", "No linked accounts"))
+        }
+        if profiles.count > 1 {
+            var stale = 0
+            var needsLogin = 0
+            var unavailable = 0
+            for profile in profiles {
+                if localCLIAccounts.stale.contains(profile.id) { stale += 1 }
+                switch localCLIAccounts.quotas[profile.id]?.state {
+                case .needsLogin: needsLogin += 1
+                case .unavailable: unavailable += 1
+                default: break
+                }
+            }
+            var parts: [String] = []
+            if stale > 0 {
+                parts.append(language.text("\(stale) 个刷新失败", "\(stale) refresh failed"))
+            }
+            if needsLogin > 0 {
+                parts.append(language.text("\(needsLogin) 个待登录", "\(needsLogin) need sign-in"))
+            }
+            if unavailable > 0 {
+                parts.append(language.text("\(unavailable) 个暂未读到", "\(unavailable) limits not read"))
+            }
+            parts.append(language.text("额度按账号显示", "Limits shown per account"))
+            return ("—", parts.joined(separator: " · "))
+        }
+        let profile = profiles[0]
+        if localCLIAccounts.refreshing.contains(profile.id), localCLIAccounts.quotas[profile.id] == nil {
+            return ("—", language.text("读取中…", "Reading…"))
+        }
+        guard let result = localCLIAccounts.quotas[profile.id] else {
+            return ("—", language.text("额度未读到", "Limits not read"))
+        }
+        let staleNote = localCLIAccounts.stale.contains(profile.id)
+            ? language.text("刷新失败 · 上次快照", "Refresh failed · Previous snapshot")
+            : nil
+        if !result.windows.isEmpty {
+            let quota = result.windows.prefix(2).map { window in
+                "\(window.label) \(QuotaAvailabilityPresentation.percentText(100 - window.usedPercent))"
+            }.joined(separator: " · ")
+            return (quota, staleNote ?? "")
+        }
+        let status: String
+        switch result.state {
+        case .available:
+            status = staleNote ?? language.text("暂无用量百分比", "No usage percentage")
+        case .needsLogin:
+            status = language.text("待登录", "Sign-in needed")
+        case .unsupported:
+            status = language.text("额度接口未接通", "Quota interface unavailable")
+        case .rateLimited:
+            status = language.text("暂时限流", "Rate limited")
+        case .unavailable:
+            status = language.text("暂未读到额度", "Limits not read")
+        }
+        return ("—", status)
+    }
+
+    private func openCodexTab() {
+        showingHome = false
+        selectedLocalCLI = nil
+    }
+
+    private func openLocalCLITab(_ kind: LocalCLIKind) {
+        showingHome = false
+        selectedLocalCLI = kind
+        if !store.isPreview {
+            for profile in localCLIAccounts.profiles(for: kind) where localCLIAccounts.quotas[profile.id] == nil {
+                localCLIAccounts.refresh(profile)
+            }
+        }
+    }
+
+    private func homeLocalCLIExpandedBinding(for kind: LocalCLIKind) -> Binding<Bool> {
+        Binding(
+            get: { homeLocalCLIExpanded[kind] ?? true },
+            set: { homeLocalCLIExpanded[kind] = $0 }
+        )
+    }
+
+    private func homePlatformSection<Label: View, Content: View>(
+        isExpanded: Binding<Bool>,
+        @ViewBuilder label: () -> Label,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        DisclosureGroup(isExpanded: isExpanded) {
+            content()
+                .padding(.top, 8)
+        } label: {
+            label()
+        }
+        .font(.subheadline.weight(.medium))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .sectionBackground()
+    }
+
+    private func homePlatformHeader<Icon: View>(
+        name: String,
+        accountCount: Int,
+        @ViewBuilder icon: () -> Icon
+    ) -> some View {
+        HStack(spacing: 8) {
+            icon()
+                .frame(width: 16, height: 16)
+                .accessibilityHidden(true)
+            Text(name)
+            Spacer(minLength: 8)
+            Text(language.text("\(accountCount) 个账号", "\(accountCount) accounts"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var codexWorkspaceContent: some View {
+        if presentation.isSingleAccount { workspaceBranding }
+        if !showingHome {
+            AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
+        }
+        workspace
+    }
+
+    private var cliSelector: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Button {
+                    showingHome = true
+                    selectedLocalCLI = nil
+                    refreshMissingLocalCLIQuotas()
+                } label: {
+                    Label(language.text("主页", "Home"), systemImage: "house").font(.callout.weight(.medium))
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(showingHome ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(language.text("主页", "Home"))
+                Button {
+                    openCodexTab()
+                } label: {
+                    Label("Codex", systemImage: "terminal").font(.callout.weight(.medium))
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(!showingHome && selectedLocalCLI == nil ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
+                }.buttonStyle(.plain)
+                ForEach(installedLocalCLIKinds) { kind in
+                    Button {
+                        openLocalCLITab(kind)
+                    } label: {
+                        HStack(spacing: 7) {
+                            LocalCLIIcon(kind: kind).frame(width: 16, height: 16)
+                            Text(kind.displayName).font(.callout.weight(.medium))
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(!showingHome && selectedLocalCLI == kind ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
+                    }.buttonStyle(.plain)
+                }
+                Button {
+                    guard !store.isPreview else { return }
+                    localCLIAccounts.discover()
+                    if showingHome { refreshMissingLocalCLIQuotas() }
+                } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless).padding(.horizontal, 6)
+                    .help(language.text("重新检测本机 CLI", "Scan installed CLIs"))
+                    .accessibilityLabel(language.text("重新检测本机 CLI", "Scan installed CLIs"))
+                if !showingHome {
+                    Button(language.text("使用引导", "Getting started")) {
+                        isSetupGuidePresented = true
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityLabel(language.text("使用引导", "Getting started"))
+                }
+            }
+        }
+        .frame(height: 40)
+    }
+
+    private func refreshMissingLocalCLIQuotas() {
+        guard !store.isPreview else { return }
+        for kind in LocalCLIKind.allCases where localCLIAccounts.installed[kind] != nil {
+            for profile in localCLIAccounts.profiles(for: kind) where localCLIAccounts.quotas[profile.id] == nil {
+                localCLIAccounts.refresh(profile)
+            }
+        }
     }
 
     /// Share the exact content tree with the screen, without its viewport or polling hooks.
@@ -173,11 +698,13 @@ struct CodexAccountManagerView: View {
 
     private var workspaceBranding: some View {
         HStack {
-            Text("NEXT")
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .tracking(2)
-                .foregroundStyle(.secondary)
-                .padding(.trailing, 12)
+            if !showingHome {
+                Text("AgentHub")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .tracking(1)
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 12)
+            }
             Spacer()
 
             Label(
@@ -187,8 +714,6 @@ struct CodexAccountManagerView: View {
             )
             .font(.caption.weight(.medium))
             .foregroundStyle(.secondary)
-            Button(language.text("使用引导", "Getting started")) { isSetupGuidePresented = true }
-                .buttonStyle(.bordered)
         }
         .padding(.horizontal, 2)
     }
@@ -262,7 +787,7 @@ struct CodexAccountManagerView: View {
     private var focusedExecutionPanel: some View {
         if let profile = presentation.focusedProfile, !profile.isSystemProfile {
             let status = hubTaskStatusModel.status(
-                forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
+                forAccountAlias: store.accountTaskAlias(for: profile),
                 accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
             )
             VStack(alignment: .leading, spacing: 14) {
@@ -343,11 +868,18 @@ struct CodexAccountManagerView: View {
                     .accessibilityLabel(language.text("关闭截图提示", "Dismiss screenshot status"))
                 }
                 if let message = store.accountManagerMessage {
-                    Label(message, systemImage: "info.circle")
-                        .font(.caption.weight(.medium))
-                        .lineLimit(3)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel(message)
+                    HStack(spacing: 8) {
+                        if store.isLaunchingCodex { ProgressView().controlSize(.small) }
+                        Text(message)
+                            .font(.caption.weight(.medium))
+                            .lineLimit(3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityLabel(message)
+                        if store.canCancelDesktopSwitch {
+                            Button(language.text("取消切换", "Cancel switch")) { store.cancelDesktopSwitchPreparation() }
+                                .buttonStyle(.bordered)
+                        }
+                    }
                 }
                 if store.isAwaitingCodexHistoryConfirmation {
                     Button(language.text("历史完整，完成切换", "History verified — finish switch")) {
@@ -372,7 +904,7 @@ struct CodexAccountManagerView: View {
     private var workspaceHeader: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(presentation.isSingleAccount ? language.text("你的工作台", "Your workspace") : language.text("账号工作台", "Account workspace"))
+                Text("AgentHub")
                     .font(.system(size: presentation.isSingleAccount ? 24 : 20, weight: .semibold))
                 if presentation.isSingleAccount {
                     Text(language.text("看清额度，专注下一次任务。", "Know your limits. Focus on the next task."))
@@ -410,7 +942,7 @@ struct CodexAccountManagerView: View {
                         .lineLimit(1)
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(overviewQuota.readSucceeded ? Color.green : Color.secondary)
+                            .fill(overviewQuota.readSucceeded ? FixedVisualPalette.statusSuccess : Color.secondary)
                             .frame(width: 6, height: 6)
                         Text(overviewQuota.readSucceeded ? language.text("官方额度已连接", "Usage limits connected") : language.text("等待官方额度", "Waiting for usage limits"))
                         if let profile = presentation.quotaProfile {
@@ -678,13 +1210,13 @@ struct CodexAccountManagerView: View {
     }
 
     private var profilesLayout: AnyLayout {
-        settings.accountWorkspaceLayout == .cards
+        displayedAccountLayout == .cards
             ? AnyLayout(AccountCardGridLayout())
             : AnyLayout(VStackLayout(spacing: 8))
     }
 
     private var canReorderProfiles: Bool {
-        isEditingProfiles && !store.isLaunchingCodex && !store.isRefreshing && !store.isLoggingIn && !isSavingScreenshot
+        isEditingDisplayedProfiles && !store.isLaunchingCodex && !store.isRefreshing && !store.isLoggingIn && !isSavingScreenshot
     }
 
     private func beginProfileReorder(_ id: String) -> Bool {
@@ -742,7 +1274,7 @@ struct CodexAccountManagerView: View {
     private var selectedMonitorHubTaskStatus: HubAccountTaskStatus {
         hubTaskStatusModel.status(
             forAccountAlias: store.selectedMonitorProfile.flatMap {
-                DispatchCodeCatalog.alias(for: $0.id, allowsLocalRead: !store.isPreview)
+                store.accountTaskAlias(for: $0)
             },
             accountKey: store.selectedMonitorProfile?.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
         )
@@ -762,12 +1294,6 @@ struct CodexAccountManagerView: View {
                 }
                 .help(language.text("查看工作状态，空闲后再派单；刷新不触发暖号", "Check task status before starting work. Refresh only reads usage; it does not warm up an account."))
                 Spacer()
-                Button {
-                    isSetupGuidePresented = true
-                } label: {
-                    Label(language.text("使用引导", "Getting started"), systemImage: "questionmark.circle")
-                }
-                .buttonStyle(.bordered)
                 Text(language.text("\(presentation.accountCount) 个账号", "\(presentation.accountCount) accounts"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -842,103 +1368,7 @@ struct CodexAccountManagerView: View {
                 )
             }
 
-            TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                profilesLayout {
-                    ForEach(Array(orderedProfiles.enumerated()), id: \.element.id) { index, profile in
-                        let linkedProfile = linkedManagedProfile(for: profile)
-                        ProfileRow(
-                            profile: profile,
-                            allProfiles: store.profiles,
-                            executionPreference: profile.effectiveExecutionPreference,
-                            dispatchCode: DispatchCodeCatalog.code(for: profile.id, allowsLocalRead: !store.isPreview),
-                            cliTaskStatus: hubTaskStatusModel.status(
-                                forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
-                                accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
-                            ),
-                            isMonitoring: profile.id == store.selectedMonitorProfileID,
-                            isLaunchProfile: profile.id == store.selectedLaunchProfileID,
-                            isDuplicateAccount: isDuplicateAccount(profile),
-                            isCurrentCodexAccount: isCurrentCodexAccount(profile),
-                            linkedAccountName: linkedProfile.map { AccountDisplay.profileName($0) },
-                            participatesInAutomaticSwitch: store.automaticSwitchParticipation(for: profile),
-                            prioritizesDispatch: store.dispatchPriority(for: profile),
-                            isEditing: isEditingProfiles,
-                            layout: settings.accountWorkspaceLayout,
-                            isLoggingIn: store.isLoggingIn,
-                            isLaunching: store.isLaunchingCodex,
-                            isRefreshingStatistics: store.isRefreshing,
-                            isRefreshingProfile: store.refreshingProfileIDs.contains(profile.id),
-                            isWarmingProfile: store.warmingProfileID == profile.id,
-                            canMoveUp: index > 0,
-                            canMoveDown: index < presentedProfiles.count - 1,
-                            quotaReadSucceeded: linkedProfile == nil
-                                && profile.lastSnapshot != nil
-                                && profile.lastQuotaReadFailureAt == nil,
-                            fiveHourRemainingPercent: fiveHourRemaining(for: profile),
-                            fiveHourResetsAt: fiveHourReset(for: profile),
-                            remainingPercent: sevenDayRemaining(for: profile),
-                            resetsAt: sevenDayReset(for: profile),
-                            currentDate: timeline.date,
-                            warmUpStatus: linkedProfile == nil ? store.warmUpStatus(for: profile, language: language) : nil,
-                            availableResetCredits: store.availableResetCredits(for: profile),
-                            resetCreditExpiries: store.resetCreditExpiries(for: profile),
-                            localResetHistoryCount: store.localResetHistoryCount(for: profile),
-                            chromeProfiles: store.availableChromeProfiles,
-                            onMonitor: { store.selectMonitorProfile(profile.id) },
-                            onRefresh: { store.refreshProfile(profile.id) },
-                            onWarmUp: { store.warmUpProfile(profile.id) },
-                            onRelogin: {
-                                if linkedProfile != nil {
-                                    store.loginProfileIndependently(profile.id)
-                                } else {
-                                    store.loginProfile(profile.id)
-                                }
-                            },
-                            onLaunch: { store.launchCodex(with: profile.id) },
-                            onOpenTerminal: { store.openTerminal(for: profile.id, workingDirectory: $0) },
-                            onCopyTerminalCommand: { store.copyTerminalCommand(for: profile.id) },
-                            onSetAutomaticSwitchParticipation: {
-                                store.setAutomaticSwitchParticipation($0, for: profile.id)
-                            },
-                            onSetDispatchPriority: {
-                                store.setDispatchPriority($0, for: profile.id)
-                            },
-                            onSetProTierMultiplier: { store.setProTierMultiplier($0, for: profile.id) },
-                            onSetExecutionPreference: { preference, applyToAll in
-                                store.setExecutionPreference(preference, for: profile.id, applyToAll: applyToAll)
-                            },
-                            onRename: { store.setProfileRemark($0, for: profile.id) },
-                            onSetChromeProfile: { store.setChromeProfile($0, for: profile.id) },
-                            onMoveUp: {
-                                movePresentedProfile(profile.id, offset: -1)
-                            },
-                            onMoveDown: {
-                                movePresentedProfile(profile.id, offset: 1)
-                            },
-                            onBeginReorder: { beginProfileReorder(profile.id) },
-                            onMoveReorder: previewProfileReorder,
-                            onDropReorder: finishProfileReorder,
-                            onEndReorder: {
-                                withAnimation(ProfileReorderMotion.animation(reduceMotion: reduceMotion)) { profileReorder = nil }
-                            },
-                            onDelete: { store.deleteProfile(profile.id) },
-                            onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) }
-                        )
-                        .opacity(profileReorder?.sourceID == profile.id ? 0.55 : 1)
-                        .background {
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: ProfileFramePreferenceKey.self,
-                                    value: isEditingProfiles ? [profile.id: geometry.frame(in: .global)] : [:]
-                                )
-                            }
-                        }
-                    }
-                }
-                .onPreferenceChange(ProfileFramePreferenceKey.self) { frames in
-                    if profileFrames != frames { profileFrames = frames }
-                }
-            }
+            codexProfileRows
 
             HStack {
                 Text(language.text("账号凭据独立保存；切换 Codex 时沿用当前电脑的项目与对话。", "Account sign-ins stay isolated. Desktop switching retains this Mac's projects and conversations."))
@@ -965,6 +1395,113 @@ struct CodexAccountManagerView: View {
         .padding(.vertical, 4)
     }
 
+    private var codexProfileRows: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { timeline in
+            profilesLayout {
+                ForEach(Array(orderedProfiles.enumerated()), id: \.element.id) { index, profile in
+                    let linkedProfile = linkedManagedProfile(for: profile)
+                    ProfileRow(
+                        profile: profile,
+                        allProfiles: store.profiles,
+                        executionPreference: profile.effectiveExecutionPreference,
+                        dispatchCode: DispatchCodeCatalog.code(for: profile.id, allowsLocalRead: !store.isPreview),
+                        cliTaskStatus: hubTaskStatusModel.status(
+                            forAccountAlias: store.accountTaskAlias(for: profile),
+                            accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+                        ),
+                        isMonitoring: profile.id == store.selectedMonitorProfileID,
+                        isLaunchProfile: profile.id == store.selectedLaunchProfileID,
+                        isDuplicateAccount: isDuplicateAccount(profile),
+                        isCurrentCodexAccount: isCurrentCodexAccount(profile),
+                        linkedAccountName: linkedProfile.map { AccountDisplay.profileName($0) },
+                        participatesInAutomaticSwitch: store.automaticSwitchParticipation(for: profile),
+                        prioritizesDispatch: store.dispatchPriority(for: profile),
+                        isEditing: isEditingDisplayedProfiles,
+                        layout: displayedAccountLayout,
+                        isLoggingIn: store.isLoggingIn,
+                        isLaunching: store.isLaunchingCodex,
+                        isSwitchTarget: store.desktopSwitchTargetID == profile.id,
+                        isRefreshingStatistics: store.isRefreshing,
+                        isRefreshingProfile: store.refreshingProfileIDs.contains(profile.id),
+                        isWarmingProfile: store.warmingProfileID == profile.id,
+                        canMoveUp: index > 0,
+                        canMoveDown: index < presentedProfiles.count - 1,
+                        quotaReadSucceeded: linkedProfile == nil
+                            && profile.lastSnapshot != nil
+                            && profile.lastQuotaReadFailureAt == nil,
+                        fiveHourRemainingPercent: fiveHourRemaining(for: profile),
+                        fiveHourResetsAt: fiveHourReset(for: profile),
+                        remainingPercent: sevenDayRemaining(for: profile),
+                        resetsAt: sevenDayReset(for: profile),
+                        currentDate: timeline.date,
+                        warmUpStatus: linkedProfile == nil ? store.warmUpStatus(for: profile, language: language) : nil,
+                        creditBalance: store.creditBalancePresentation(for: profile),
+                        allowsResetCreditAction: !store.isPreview && linkedProfile == nil,
+                        hubAccountAlias: store.accountTaskAlias(for: profile),
+                        availableResetCredits: store.availableResetCredits(for: profile),
+                        resetCreditExpiries: store.resetCreditExpiries(for: profile),
+                        localResetHistoryCount: store.localResetHistoryCount(for: profile),
+                        chromeProfiles: store.availableChromeProfiles,
+                        onMonitor: { store.selectMonitorProfile(profile.id) },
+                        onRefresh: { store.refreshProfile(profile.id) },
+                        onWarmUp: { store.warmUpProfile(profile.id) },
+                        onRelogin: {
+                            if linkedProfile != nil {
+                                store.loginProfileIndependently(profile.id)
+                            } else {
+                                store.loginProfile(profile.id)
+                            }
+                        },
+                        onLaunch: { store.launchCodex(with: profile.id) },
+                        onOpenTerminal: { store.openTerminal(for: profile.id, workingDirectory: $0) },
+                        onCopyTerminalCommand: { store.copyTerminalCommand(for: profile.id) },
+                        onSetAutomaticSwitchParticipation: {
+                            store.setAutomaticSwitchParticipation($0, for: profile.id)
+                        },
+                        onSetDispatchPriority: {
+                            store.setDispatchPriority($0, for: profile.id)
+                        },
+                        onSetDispatchParticipationWindow: {
+                            store.setDispatchParticipationWindow($0, for: profile.id)
+                        },
+                        onSetProTierMultiplier: { store.setProTierMultiplier($0, for: profile.id) },
+                        onSetExecutionPreference: { preference, applyToAll in
+                            store.setExecutionPreference(preference, for: profile.id, applyToAll: applyToAll)
+                        },
+                        onRename: { store.setProfileRemark($0, for: profile.id) },
+                        onSetChromeProfile: { store.setChromeProfile($0, for: profile.id) },
+                        onMoveUp: {
+                            movePresentedProfile(profile.id, offset: -1)
+                        },
+                        onMoveDown: {
+                            movePresentedProfile(profile.id, offset: 1)
+                        },
+                        onBeginReorder: { beginProfileReorder(profile.id) },
+                        onMoveReorder: previewProfileReorder,
+                        onDropReorder: finishProfileReorder,
+                        onEndReorder: {
+                            withAnimation(ProfileReorderMotion.animation(reduceMotion: reduceMotion)) { profileReorder = nil }
+                        },
+                        onDelete: { store.deleteProfile(profile.id) },
+                        onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) }
+                    )
+                    .opacity(profileReorder?.sourceID == profile.id ? 0.55 : 1)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: ProfileFramePreferenceKey.self,
+                                value: isEditingDisplayedProfiles ? [profile.id: geometry.frame(in: .global)] : [:]
+                            )
+                        }
+                    }
+                }
+            }
+            .onPreferenceChange(ProfileFramePreferenceKey.self) { frames in
+                if profileFrames != frames { profileFrames = frames }
+            }
+        }
+    }
+
     private var automationPanel: some View {
         HStack(spacing: 12) {
             Image(systemName: "arrow.triangle.2.circlepath")
@@ -983,7 +1520,7 @@ struct CodexAccountManagerView: View {
                     if store.feishuNotificationsEnabled && store.feishuWebhookConfigured {
                         Label(language.text("飞书已启用", "Feishu enabled"), systemImage: "paperplane.fill")
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.green)
+                            .foregroundStyle(FixedVisualPalette.statusSuccessForeground(effectiveColorScheme))
                     }
                 }
                 Text(language.text("低额度时提醒并推荐可用账号，不改写当前 Codex 身份", "Alerts and account suggestions only. Your current Codex sign-in stays unchanged."))
@@ -999,7 +1536,7 @@ struct CodexAccountManagerView: View {
                 systemImage: store.automaticAccountSwitchEnabled ? "checkmark.shield.fill" : "shield"
             )
             .font(.caption.weight(.semibold))
-            .foregroundStyle(store.automaticAccountSwitchEnabled ? Color.green : Color.secondary)
+            .foregroundStyle(store.automaticAccountSwitchEnabled ? FixedVisualPalette.statusSuccessForeground(effectiveColorScheme) : Color.secondary)
 
             Button(language.text("运行问题日志", "Issue journal")) {
                 store.openOperationsIssueJournal()
@@ -1107,6 +1644,79 @@ struct CodexAccountManagerView: View {
     }
 }
 
+private struct HomeOverviewProviderRow<Icon: View>: View {
+    let name: String
+    let accountCountText: String
+    let quotaText: String
+    let statusText: String
+    let language: WidgetLanguage
+    let icon: Icon
+    let action: () -> Void
+
+    init(
+        name: String,
+        accountCountText: String,
+        quotaText: String,
+        statusText: String,
+        language: WidgetLanguage,
+        action: @escaping () -> Void,
+        @ViewBuilder icon: () -> Icon
+    ) {
+        self.name = name
+        self.accountCountText = accountCountText
+        self.quotaText = quotaText
+        self.statusText = statusText
+        self.language = language
+        self.icon = icon()
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                icon
+                    .frame(width: 16, height: 16)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.subheadline.weight(.medium))
+                    Text(accountCountText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(quotaText)
+                        .font(.caption.monospacedDigit())
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
+                    if !statusText.isEmpty {
+                        Text(statusText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .sectionBackground()
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(language.text("打开\(name)页", "Opens the \(name) tab"))
+    }
+}
+
 private struct AutomationMaintenanceNotice: View {
     let features: [PausedAutomationFeature]
     let language: WidgetLanguage
@@ -1135,8 +1745,110 @@ private struct AutomationMaintenanceNotice: View {
     }
 }
 
-private struct AccountAutomationCenterView: View {
+private struct DispatchParticipationWindowEditor: View {
+    @Binding var window: DispatchParticipationWindow
+    let onSave: () -> Void
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.widgetLanguage) private var language
+
+    private func timeBinding(_ index: Int, start: Bool) -> Binding<Date> {
+        Binding(
+            get: {
+                let value = start ? window.intervals[index].startMinute : window.intervals[index].endMinute
+                return Calendar.current.date(from: DateComponents(year: 2001, month: 1, day: 1, hour: value / 60, minute: value % 60))!
+            },
+            set: { date in
+                let value = Calendar.current.component(.hour, from: date) * 60 + Calendar.current.component(.minute, from: date)
+                if start { window.intervals[index].startMinute = value } else { window.intervals[index].endMinute = value }
+            })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(language.text("参与调度时间段", "Dispatch hours")).font(.headline)
+            Picker(language.text("模式", "Mode"), selection: $window.mode) {
+                Text(language.text("不限制时间", "Any time")).tag(DispatchParticipationWindow.Mode.unrestricted)
+                Text(language.text("仅在时间段内参与", "Only within these hours")).tag(DispatchParticipationWindow.Mode.onlyWithin)
+                Text(language.text("排除以下时间段", "Except during these hours")).tag(DispatchParticipationWindow.Mode.exceptWithin)
+            }
+            TextField(language.text("时区，例如 Asia/Shanghai", "Time zone, e.g. Asia/Shanghai"), text: $window.timeZoneIdentifier)
+                .textFieldStyle(.roundedBorder)
+            if window.mode != .unrestricted {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(window.intervals.indices, id: \.self) { index in
+                                VStack(alignment: .leading) {
+                                    HStack {
+                                        DatePicker(language.text("开始", "Start"), selection: timeBinding(index, start: true), displayedComponents: .hourAndMinute)
+                                            .disabled(window.intervals[index].allDay)
+                                        DatePicker(language.text("结束", "End"), selection: timeBinding(index, start: false), displayedComponents: .hourAndMinute)
+                                            .disabled(window.intervals[index].allDay)
+                                        Button {
+                                            window.intervals.remove(at: index)
+                                        } label: {
+                                            Image(systemName: "minus.circle")
+                                        }
+                                        .accessibilityLabel(language.text("删除时间段", "Remove interval"))
+                                    }
+                                    HStack {
+                                        Toggle(language.text("全天", "All day"), isOn: $window.intervals[index].allDay)
+                                        Toggle(language.text("每天", "Every day"), isOn: $window.intervals[index].allDays)
+                                    }
+                                    if !window.intervals[index].allDays {
+                                        HStack {
+                                            ForEach(1...7, id: \.self) { day in
+                                                Toggle(
+                                                    String(day),
+                                                    isOn: Binding(
+                                                        get: { window.intervals[index].weekdays.contains(day) },
+                                                        set: { enabled in
+                                                            if enabled { window.intervals[index].weekdays.insert(day) } else { window.intervals[index].weekdays.remove(day) }
+                                                        })
+                                                ).toggleStyle(.button)
+                                            }
+                                        }
+                                        Text(language.text("1 为周一，7 为周日", "1 = Monday, 7 = Sunday")).font(.caption)
+                                    }
+                                }
+                                .id(index)
+                            }
+                        }
+                    }
+                    .onChange(of: window.intervals.count) { count in
+                        guard count > 0 else { return }
+                        withAnimation { proxy.scrollTo(count - 1, anchor: .bottom) }
+                    }
+                }
+                .frame(height: window.intervals.isEmpty ? 0 : 220)
+                Button(language.text("添加时间段", "Add interval")) {
+                    window.intervals.append(.init(startMinute: 9 * 60, endMinute: 18 * 60))
+                }.disabled(window.intervals.count >= 32)
+                Text(
+                    language.text(
+                        "结束时间不包含在内；跨午夜按开始日计算。空的参与时间段会暂停新派单。",
+                        "End time is exclusive; overnight hours belong to the starting day. An empty inclusion schedule blocks new assignments.")
+                )
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            Text(language.text("仅限制新派单；已运行任务、额度刷新和暖号继续。", "Applies to new assignments. Running tasks, quota refresh and warm-up continue."))
+                .font(.caption).foregroundStyle(.secondary)
+            if !window.isValid {
+                Text(language.text("请检查时区、星期和起止时间；全天请勾选“全天”。", "Check the time zone, weekdays and times; use All day for a full day."))
+                    .font(.caption).foregroundStyle(.red)
+            }
+            HStack {
+                Spacer()
+                Button(language.text("取消", "Cancel")) { dismiss() }
+                Button(language.text("保存", "Save"), action: onSave).buttonStyle(.borderedProminent).disabled(!window.isValid)
+            }
+        }.padding(16).frame(width: 440)
+    }
+}
+
+struct AccountAutomationCenterView: View {
+    @Environment(\.widgetLanguage) private var language
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var store: UsageStore
     @Environment(\.dismiss) private var dismiss
     @State private var webhookDraft = ""
@@ -1171,10 +1883,18 @@ private struct AccountAutomationCenterView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
-                    automaticSwitchGroup
+                    GroupBox {
+                        PublicResetAnnouncementView(monitor: store.publicResetAnnouncements, paused: false)
+                            .padding(4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        Label(language.text("重置消息", "Reset updates"), systemImage: "arrow.counterclockwise.circle")
+                            .font(.headline)
+                    }
                     localNotificationsGroup
-                    feishuGroup
-                    auditGroup
+                    DisclosureGroup(language.text("低额度提醒设置", "Low-limit alert settings")) { automaticSwitchGroup }
+                    DisclosureGroup(language.text("同时发送到飞书（可选）", "Also send to Feishu (optional)")) { feishuGroup }
+                    DisclosureGroup(language.text("活动记录", "Activity history")) { auditGroup }
                 }
                 .padding(20)
             }
@@ -1281,7 +2001,7 @@ private struct AccountAutomationCenterView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(language.text("低额度系统通知", "Low-limit system notifications"))
+                        Text(language.text("额度与重置提醒", "Limit and reset notifications"))
                             .font(.subheadline.weight(.semibold))
                         Text(language.text("默认开启；完成 macOS 授权后接收提醒", "On by default. Allow macOS permission to receive alerts."))
                             .font(.caption)
@@ -1304,8 +2024,8 @@ private struct AccountAutomationCenterView: View {
                 }
                 Text(
                     language.text(
-                        "只显示额度百分比，不包含账号资料；显示方式由 macOS 通知与专注模式决定。",
-                        "Shows remaining percentages without account details. macOS notification and Focus settings control presentation.")
+                        "显示额度与公开重置消息，不包含账号资料；显示方式由 macOS 通知与专注模式决定。",
+                        "Shows quota and public reset updates without account details. macOS notification and Focus settings control presentation.")
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1315,11 +2035,6 @@ private struct AccountAutomationCenterView: View {
                             ? language.text("打开通知设置", "Open notification settings") : language.text("允许系统通知", "Allow notifications")
                     ) { store.configureLocalNotifications() }
                     .disabled(store.isRequestingLocalNotificationPermission || store.pausedAutomationFeatures.contains(.localNotification))
-                }
-                if !store.automaticAccountSwitchEnabled {
-                    Label(language.text("请先开启上方的低额度提醒，才会产生通知。", "Enable low-limit alerts above to generate notifications."), systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 if let message = store.localNotificationMessage {
                     Text(message)
@@ -1339,8 +2054,12 @@ private struct AccountAutomationCenterView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(store.feishuWebhookConfigured ? language.text("Webhook 已配置", "Webhook configured") : language.text("待配置飞书机器人", "Feishu bot setup needed"))
-                            .font(.subheadline.weight(.semibold))
+                        Text(
+                            store.feishuWebhookConfigured
+                                ? language.text("飞书已连接", "Feishu connected")
+                                : (store.feishuNeedsAuthorization ? language.text("需要钥匙串授权", "Keychain permission needed") : language.text("待配置飞书机器人", "Feishu bot setup needed"))
+                        )
+                        .font(.subheadline.weight(.semibold))
                         Text(language.text("地址只保存在 macOS 钥匙串；不会写入设置、日志或仓库", "Stored only in macOS Keychain, never in settings, logs or the repository."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -1383,30 +2102,61 @@ private struct AccountAutomationCenterView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+                Divider()
+
+                FeishuMessageOptionsView(
+                    options: Binding(
+                        get: { store.feishuMessageOptions },
+                        set: { store.setFeishuMessageOptions($0) }
+                    ),
+                    disabled: store.pausedAutomationFeatures.contains(.feishu)
+                )
+
+                DisclosureGroup(language.text("飞书发送记录", "Feishu delivery details")) {
+                    PublicResetAnnouncementView(monitor: store.publicResetAnnouncements, paused: store.pausedAutomationFeatures.contains(.feishu), deliveryDetailsOnly: true)
+                }
+
                 SecureField("https://open.feishu.cn/open-apis/bot/v2/hook/…", text: $webhookDraft)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel(language.text("飞书机器人 Webhook", "Feishu bot webhook"))
 
+                Text(
+                    language.text(
+                        "首次连接时由 macOS 请求电脑登录密码。如系统提供“始终允许”，选择后可记住授权；升级后可能需要重新授权。后台不会弹窗。",
+                        "macOS may ask for your login password when connecting. Choose Always Allow, if offered, to remember access. An update may require authorization again. Background checks stay silent."
+                    )
+                )
+                .font(.caption).foregroundStyle(.secondary)
+
                 HStack {
-                    Button(language.text("安全保存", "Save to Keychain")) {
-                        if store.saveFeishuWebhook(webhookDraft) {
-                            webhookDraft = ""
+                    Button(language.text("保存并连接", "Save and connect")) {
+                        let submitted = webhookDraft
+                        store.saveFeishuWebhook(submitted) { saved in
+                            if saved, webhookDraft == submitted { webhookDraft = "" }
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(webhookDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(webhookDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isUpdatingFeishuConnection)
+
+                    if store.feishuNeedsAuthorization {
+                        Button(language.text("授权连接", "Authorize connection"), action: store.authorizeFeishuConnection)
+                            .disabled(store.isUpdatingFeishuConnection)
+                    }
+
+                    if store.isUpdatingFeishuConnection { ProgressView().controlSize(.small) }
 
                     Button(language.text("发送测试", "Send test notification")) {
                         store.sendFeishuTestNotification()
                     }
-                    .disabled(!store.feishuWebhookConfigured)
+                    .disabled(!store.feishuWebhookConfigured || store.isUpdatingFeishuConnection)
 
                     Spacer()
 
-                    if store.feishuWebhookConfigured {
+                    if store.feishuWebhookConfigured || store.feishuNeedsAuthorization {
                         Button(language.text("移除 Webhook", "Remove webhook"), role: .destructive) {
                             isConfirmingWebhookRemoval = true
                         }
+                        .disabled(store.isUpdatingFeishuConnection)
                     }
                 }
 
@@ -1499,9 +2249,9 @@ private struct AccountAutomationCenterView: View {
     private func auditColor(for level: AccountAutomationEvent.Level) -> Color {
         switch level {
         case .info: return .accentColor
-        case .success: return .green
-        case .warning: return .orange
-        case .failure: return .red
+        case .success: return FixedVisualPalette.statusSuccessForeground(colorScheme)
+        case .warning: return FixedVisualPalette.statusWarningForeground(colorScheme)
+        case .failure: return FixedVisualPalette.statusDangerForeground(colorScheme)
         }
     }
 }
@@ -1572,7 +2322,7 @@ struct CodexAccountMenuView: View {
 
     private func hubTaskStatus(for profile: CodexProfile) -> HubAccountTaskStatus {
         hubTaskStatusModel.status(
-            forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
+            forAccountAlias: store.accountTaskAlias(for: profile),
             accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
         )
     }
@@ -1609,7 +2359,7 @@ struct CodexAccountMenuView: View {
                         Button(text("历史完整", "History Complete")) {
                             store.confirmRestoredCodexHistory()
                         }
-                        .buttonStyle(AccountGlassButtonStyle(tint: .blue, foreground: .white, compact: true))
+                        .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white, compact: true))
                         Button(text("回滚原账号", "Roll Back")) {
                             store.rejectRestoredCodexHistory()
                         }
@@ -1703,7 +2453,7 @@ struct CodexAccountMenuView: View {
                         .lineLimit(1)
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(menuQuota.readSucceeded ? Color.green : Color.secondary)
+                            .fill(menuQuota.readSucceeded ? FixedVisualPalette.statusSuccess : Color.secondary)
                             .frame(width: 6, height: 6)
                         Text(
                             menuQuota.readSucceeded
@@ -1795,12 +2545,14 @@ struct CodexAccountMenuView: View {
                         store.snapshot.local?.allAgentsTodayTokens
                             ?? store.snapshot.local?.todayTokens
                     ),
-                    tint: .green
+                    tint: FixedVisualPalette.statusSuccessForeground(colorScheme)
                 )
                 statTile(
                     title: text("会员有效期", "Membership"),
                     value: membershipSummary,
-                    tint: membershipIsLow ? .red : .green
+                    tint: membershipIsLow
+                        ? FixedVisualPalette.statusDangerForeground(colorScheme)
+                        : FixedVisualPalette.statusSuccessForeground(colorScheme)
                 )
             }
 
@@ -1829,7 +2581,7 @@ struct CodexAccountMenuView: View {
             }
 
             Button(text("打开完整窗口", "Open Full Window")) { openFullWindow() }
-                .buttonStyle(AccountGlassButtonStyle(tint: .blue, foreground: .white))
+                .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white))
         }
         .padding(12)
     }
@@ -2020,7 +2772,7 @@ struct CodexAccountMenuView: View {
     private func homeProfileRow(_ profile: CodexProfile) -> some View {
         let remaining = sevenDayRemaining(for: profile)
         let cliTaskStatus = hubTaskStatusModel.status(
-            forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
+            forAccountAlias: store.accountTaskAlias(for: profile),
             accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
         )
         return HStack(spacing: 6) {
@@ -2042,11 +2794,11 @@ struct CodexAccountMenuView: View {
                             if let availableResetCredits = store.availableResetCredits(for: profile) {
                                 Label(language.text("可用 \(availableResetCredits)", "\(availableResetCredits) resets"), systemImage: "arrow.counterclockwise")
                                     .font(.system(size: 9, weight: .semibold))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(FixedVisualPalette.statusSuccessForeground(colorScheme))
                                     .help(text("官方返回的当前可用重置卡数量", "Available reset credits returned by Codex"))
                             }
                             if profile.id == store.selectedMonitorProfileID {
-                                Circle().fill(Color.green).frame(width: 6, height: 6)
+                                Circle().fill(FixedVisualPalette.statusSuccess).frame(width: 6, height: 6)
                             }
                             HubCLITaskStatusBadge(status: cliTaskStatus, compact: true)
                         }
@@ -2070,7 +2822,7 @@ struct CodexAccountMenuView: View {
             } label: {
                 Image(systemName: "terminal")
             }
-            .buttonStyle(AccountGlassButtonStyle(tint: .blue, foreground: .white, compact: true))
+            .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white, compact: true))
             .disabled(profile.isSystemProfile || profile.lastSnapshot == nil || cliTaskStatus.blocksLocalCLI)
             .help(
                 cliTaskStatus.blocksLocalCLI
@@ -2117,7 +2869,7 @@ struct CodexAccountMenuView: View {
                     .buttonStyle(AccountGlassButtonStyle(tint: .clear, foreground: .primary))
                 }
                 Button(text("打开完整窗口", "Open Full Window")) { openFullWindow() }
-                    .buttonStyle(AccountGlassButtonStyle(tint: .blue, foreground: .white))
+                    .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white))
             }
         }
         .padding(14)
@@ -2127,7 +2879,7 @@ struct CodexAccountMenuView: View {
         let remaining = sevenDayRemaining(for: profile)
         let isCurrent = isCurrentCodexAccount(profile)
         let cliTaskStatus = hubTaskStatusModel.status(
-            forAccountAlias: DispatchCodeCatalog.alias(for: profile.id, allowsLocalRead: !store.isPreview),
+            forAccountAlias: store.accountTaskAlias(for: profile),
             accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
         )
         return VStack(alignment: .leading, spacing: 9) {
@@ -2144,13 +2896,13 @@ struct CodexAccountMenuView: View {
                         if let availableResetCredits = store.availableResetCredits(for: profile) {
                             Label(language.text("可用 \(availableResetCredits)", "\(availableResetCredits) resets"), systemImage: "arrow.counterclockwise")
                                 .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FixedVisualPalette.statusSuccessForeground(colorScheme))
                                 .help(text("官方返回的当前可用重置卡数量", "Available reset credits returned by Codex"))
                         }
                         if profile.id == store.selectedMonitorProfileID {
                             Text(text("监控中", "Monitoring"))
                                 .font(.system(size: 8.5, weight: .bold))
-                                .foregroundStyle(.blue)
+                                .foregroundStyle(.tint)
                         }
                         HubCLITaskStatusBadge(status: cliTaskStatus, compact: true)
                     }
@@ -2176,7 +2928,7 @@ struct CodexAccountMenuView: View {
                         guard !cliTaskStatus.blocksLocalCLI else { return }
                         store.loginProfile(profile.id)
                     }
-                    .buttonStyle(AccountGlassButtonStyle(tint: .blue, foreground: .white, compact: true))
+                    .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white, compact: true))
                     .disabled(store.isLoggingIn || store.isLaunchingCodex || cliTaskStatus.blocksLocalCLI)
                     .help(
                         cliTaskStatus.blocksLocalCLI
@@ -2227,8 +2979,8 @@ struct CodexAccountMenuView: View {
                         guard !cliTaskStatus.blocksLocalCLI else { return }
                         store.launchCodex(with: profile.id)
                     }
-                    .buttonStyle(AccountGlassButtonStyle(tint: .blue, foreground: .white, compact: true))
-                    .disabled(store.isLaunchingCodex || store.isRefreshing || isCurrent || cliTaskStatus.blocksLocalCLI)
+                    .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white, compact: true))
+                    .disabled(store.isLaunchingCodex || isCurrent || cliTaskStatus.blocksLocalCLI)
                     .help(
                         cliTaskStatus.blocksLocalCLI
                             ? text("Hub 状态未确认或同账号有活跃任务，暂不能切换 Desktop", "Hub status is unverified or this account has an active task; Desktop switching is disabled")
@@ -2600,7 +3352,7 @@ private struct QuotaProgressTrack: View {
     }
 }
 
-/// Presentation only: retain the full status in details; omit dates already shown below the quota bars.
+/// Keep the latest warm-up result visible; omit only duplicate future schedules.
 enum WarmUpStatusText {
     static let criticalPhrases = [
         "7 天额度不足", "额度读取失败", "登录已失效", "暖号失败", "请求超时", "网络失败",
@@ -2627,7 +3379,7 @@ enum WarmUpStatusText {
             date.map { language.text("下次暖号 \(label) ", "Next \(label) warm-up ") + language.dateTime($0) }
         }
         let parts = status.components(separatedBy: " · ").filter {
-            !$0.hasPrefix(language.text("最近暖号成功 ", "Last warm-up succeeded ")) && !duplicateSchedules.contains($0)
+            !duplicateSchedules.contains($0)
         }
         let summary = parts.joined(separator: " · ")
         return summary.isEmpty ? nil : summary
@@ -2652,6 +3404,7 @@ private struct ProfileRow: View {
     let layout: AccountWorkspaceLayout
     let isLoggingIn: Bool
     let isLaunching: Bool
+    var isSwitchTarget: Bool = false
     let isRefreshingStatistics: Bool
     let isRefreshingProfile: Bool
     let isWarmingProfile: Bool
@@ -2664,6 +3417,9 @@ private struct ProfileRow: View {
     let resetsAt: Date?
     let currentDate: Date
     let warmUpStatus: String?
+    let creditBalance: CreditBalancePresentation
+    let allowsResetCreditAction: Bool
+    let hubAccountAlias: String?
     let availableResetCredits: Int?
     let resetCreditExpiries: [Date]
     let localResetHistoryCount: Int
@@ -2677,6 +3433,7 @@ private struct ProfileRow: View {
     let onCopyTerminalCommand: () -> Void
     let onSetAutomaticSwitchParticipation: (Bool) -> Void
     let onSetDispatchPriority: (Bool) -> Void
+    let onSetDispatchParticipationWindow: (DispatchParticipationWindow) -> Bool
     let onSetProTierMultiplier: (Int?) -> Void
     let onSetExecutionPreference: (CodexExecutionPreference, Bool) -> Void
     let onRename: (String) -> Void
@@ -2693,16 +3450,18 @@ private struct ProfileRow: View {
     @State private var isConfirmingDelete = false
     @State private var remarkDraft = ""
     @State private var isShowingDetails = false
+    @State private var isEditingDispatchWindow = false
+    @State private var dispatchWindowDraft = DispatchParticipationWindow()
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         let resetReminder = SevenDayResetReminder.message(resetsAt: resetsAt, now: currentDate, language: language)
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: layout == .cards ? 6 : 8) {
             if layout == .cards {
                 identitySummary
-                quotaSummary.padding(.vertical, 4)
-                Spacer(minLength: 2)
+                quotaSummary.padding(.vertical, 2)
+                Spacer(minLength: 0)
                 Divider().opacity(0.4)
                 primaryControls
             } else {
@@ -2713,26 +3472,19 @@ private struct ProfileRow: View {
                     primaryControls.frame(width: 290, alignment: .trailing)
                 }
             }
+            if layout == .cards {
+                officialResetSummary
+            }
             if isEditing {
                 Divider().opacity(0.55)
                 ScrollView(.horizontal, showsIndicators: true) { editControls }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, layout == .cards ? 14 : 10)
-        .background {
-            if layout == .cards {
-                LinearGradient(
-                    colors: [cardTint.opacity(colorScheme == .dark ? 0.15 : 0.12), Color.accentColor.opacity(0.04)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
-                .opacity(reduceTransparency ? 0.5 : 1)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            }
-        }
-        .cardBackground(cornerRadius: layout == .cards ? 20 : 12, elevated: isMonitoring)
+        .padding(.horizontal, layout == .cards ? 10 : 12)
+        .padding(.vertical, 10)
+        .cardBackground(cornerRadius: layout == .cards ? 14 : 12, elevated: isMonitoring)
         .overlay(
-            RoundedRectangle(cornerRadius: layout == .cards ? 20 : 12, style: .continuous)
+            RoundedRectangle(cornerRadius: layout == .cards ? 14 : 12, style: .continuous)
                 .strokeBorder(resetReminder == nil ? Color.clear : Color.red, lineWidth: 1.5)
                 .allowsHitTesting(false)
         )
@@ -2746,6 +3498,17 @@ private struct ProfileRow: View {
         }
     }
 
+    private var officialResetSummary: some View {
+        let evidence = profile.officialResetHistory?.confirmed(
+            profileID: profile.id, accountID: profile.lastSnapshot?.accountID, now: currentDate)
+        let value = evidence.map { language.dateTime($0.occurredAt) + " · " + $0.kind.rawValue } ?? "-"
+        return Text(language.text("上次官方重置：", "Last official reset: ") + value)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var profileAvatar: some View {
         Image(systemName: profile.isSystemProfile ? "house.fill" : "person.crop.circle")
             .font(.system(size: 16, weight: .medium))
@@ -2755,7 +3518,7 @@ private struct ProfileRow: View {
     }
 
     private var identitySummary: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 profileAvatar
                 if let dispatchCode {
@@ -2777,8 +3540,13 @@ private struct ProfileRow: View {
                 if isEditing && layout == .cards { reorderHandle }
             }
             HStack(spacing: 5) {
-                if isMonitoring { Text(language.text("监控", "Monitor")).profileBadge().help(language.text("正在监控此账号", "This account is being monitored")) }
-                if isLaunchProfile { Text(language.text("启动", "Launch target")).profileBadge().help(language.text("当前选定的 Desktop 启动账号", "Selected account for Desktop launch")) }
+                if isMonitoring && (layout != .cards || !isCurrentCodexAccount) {
+                    Text(language.text("监控", "Monitor")).profileBadge().help(language.text("正在监控此账号", "This account is being monitored"))
+                }
+                if isLaunchProfile && (layout != .cards || !isCurrentCodexAccount) {
+                    Text(language.text("启动", layout == .cards ? "Launch" : "Launch target")).profileBadge().help(
+                        language.text("当前选定的 Desktop 启动账号", "Selected account for Desktop launch"))
+                }
                 HubCLITaskStatusBadge(status: cliTaskStatus)
                     .fixedSize()
                 if linkedAccountName != nil {
@@ -2812,12 +3580,29 @@ private struct ProfileRow: View {
             if let warmUpStatus,
                 let summary = WarmUpStatusText.summary(warmUpStatus, fiveHourReset: fiveHourResetsAt, sevenDayReset: resetsAt, language: language)
             {
-                Text(WarmUpStatusText.attributed(summary))
+                let compactSummary =
+                    layout == .cards
+                    ? WarmUpStatusText.criticalPhrases.first(where: { summary.contains($0) }) ?? summary : summary
+                Text(WarmUpStatusText.attributed(compactSummary))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(layout == .cards ? 1 : nil)
+                    .help(summary)
             }
             resetCreditSummary
+            if allowsResetCreditAction, isMonitoring {
+                ResetCreditButton(
+                    profile: profile,
+                    selectedProfileID: profile.id,
+                    hubAccountAlias: hubAccountAlias,
+                    onConfirmedResult: onRefresh
+                )
+                .controlSize(.small)
+            }
+            if linkedAccountName == nil, creditBalance.value != .unavailable {
+                CreditBalanceView(presentation: creditBalance)
+            }
+            if layout != .cards { officialResetSummary }
             if let resetReminder = SevenDayResetReminder.message(resetsAt: resetsAt, now: currentDate, language: language) {
                 Label(resetReminder, systemImage: "exclamationmark.circle.fill")
                     .font(.caption2.weight(.bold))
@@ -2839,6 +3624,9 @@ private struct ProfileRow: View {
                     } ?? language.text("等待账号验证", "Waiting for verification")
             )
             ProfileSnapshotNotice(profile: profile)
+            resetCreditSummary
+            CreditBalanceView(presentation: creditBalance)
+            officialResetSummary
             if linkedAccountName == nil, let official = profile.officialProfile {
                 Text(officialAccountDetail(official))
                 if let activeUntil = official.subscriptionActiveUntil {
@@ -2849,6 +3637,13 @@ private struct ProfileRow: View {
             if let warmUpStatus {
                 Divider()
                 Text(WarmUpStatusText.attributed(warmUpStatus))
+                Text(language.text("暖号成功表示最小请求已完成；额度窗口以官方刷新结果为准。", "Warm-up success means the minimal request completed; quota windows use the official refresh result."))
+                    .foregroundStyle(.secondary)
+                if let history = profile.warmUpHistory, history.count > 1 {
+                    ForEach(Array(history.dropLast().suffix(4).reversed().enumerated()), id: \.offset) { _, attempt in
+                        Text((attempt.succeeded ? language.text("暖号成功 ", "Warm-up succeeded ") : language.text("暖号失败 ", "Warm-up failed ")) + language.dateTime(attempt.at))
+                    }
+                }
             }
         }
         .font(.caption)
@@ -2903,35 +3698,51 @@ private struct ProfileRow: View {
     }
 
     private var quotaSummary: some View {
-        VStack(alignment: .leading, spacing: layout == .cards ? 12 : 8) {
+        let quotaLayout =
+            layout == .cards
+            ? AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+        return quotaLayout {
             quotaWindow(
-                title: language.text("5 小时剩余", "5h available"),
+                title: layout == .cards ? language.text("5 小时", "5h") : language.text("5 小时剩余", "5h available"),
                 remainingPercent: fiveHourRemainingPercent,
                 resetsAt: fiveHourResetsAt,
                 officialReadSucceeded: quotaReadSucceeded,
                 prominent: layout == .cards,
                 weeklyLimitExhausted: QuotaAvailabilityPresentation.isWeeklyExhausted(remainingPercent)
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
             quotaWindow(
-                title: language.text("7 天剩余", "7d remaining"),
+                title: layout == .cards ? language.text("7 天", "7d") : language.text("7 天剩余", "7d remaining"),
                 remainingPercent: remainingPercent,
                 resetsAt: resetsAt,
-                officialReadSucceeded: quotaReadSucceeded
+                officialReadSucceeded: quotaReadSucceeded,
+                prominent: layout == .cards
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var resetCreditSummary: some View {
         HStack(spacing: 8) {
-            Label(
-                availableResetCredits.map { language.text("可用重置 \($0) 次", "\($0) reset credits") }
-                    ?? (quotaReadSucceeded ? language.text("可用重置 官方未返回", "Reset credits: not reported") : language.text("可用重置 暂无", "Reset credits: unknown")),
-                systemImage: "arrow.counterclockwise.circle"
-            )
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.counterclockwise.circle")
+                    .foregroundStyle(.secondary)
+                Text(language.text("可用重置", "Reset credits"))
+                    .foregroundStyle(.secondary)
+                if let availableResetCredits {
+                    Text(language.text("\(availableResetCredits) 次", "\(availableResetCredits)"))
+                        .foregroundStyle(FixedVisualPalette.statusSuccessForeground(colorScheme))
+                        .monospacedDigit()
+                } else {
+                    Text(quotaReadSucceeded ? language.text("官方未返回", "Not reported") : language.text("暂无", "Unknown"))
+                        .foregroundStyle(.secondary)
+                }
+            }
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
             .lineLimit(1)
             .help(language.text("仅显示 Codex 官方返回的当前可用重置卡数量", "Available banked reset credits reported by Codex. This label does not redeem a credit."))
+            .accessibilityElement(children: availableResetCredits == nil ? .contain : .ignore)
             .accessibilityLabel(
                 availableResetCredits.map { language.text("可用重置 \($0) 次", "\($0) reset credits") }
                     ?? (quotaReadSucceeded ? language.text("官方未返回可用重置次数", "Reset credit count not reported") : language.text("可用重置次数未知", "Reset credit count unknown")))
@@ -2962,18 +3773,18 @@ private struct ProfileRow: View {
                     .font(.caption.weight(.semibold))
                 Spacer()
                 Text(QuotaAvailabilityPresentation.percentText(remainingPercent))
-                    .font(prominent ? .system(size: 40, weight: .medium, design: .rounded).monospacedDigit() : .subheadline.weight(.bold).monospacedDigit())
+                    .font(prominent ? .system(size: 23, weight: .semibold, design: .rounded).monospacedDigit() : .subheadline.weight(.bold).monospacedDigit())
                     .foregroundStyle(remainingPercent == nil ? Color.secondary : Color.primary)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
-                    .frame(minHeight: prominent ? 48 : nil, alignment: .bottom)
+                    .frame(minHeight: prominent ? 28 : nil, alignment: .bottom)
             }
             QuotaProgressTrack(percent: remainingPercent)
             Text(
                 weeklyLimitExhausted
-                    ? language.text("周额度已用尽", "Weekly limit exhausted")
+                    ? language.text("周额度已用尽", layout == .cards ? "Weekly limit reached" : "Weekly limit exhausted")
                     : resetsAt.map {
-                        language.text("重置 ", "Resets ") + language.dateTime($0)
+                        (layout == .cards ? "" : language.text("重置 ", "Resets ")) + language.dateTime($0)
                     } ?? (officialReadSucceeded && windowUnavailable ? language.text("此窗口未由官方返回", "Limit not reported") : language.text("官方重置时间未知", "Reset time unknown"))
             )
             .font(.caption2)
@@ -3007,13 +3818,6 @@ private struct ProfileRow: View {
         }
         .controlSize(.small)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var cardTint: Color {
-        guard let remaining = [fiveHourRemainingPercent, remainingPercent].compactMap({ $0 }).min() else { return .gray }
-        if remaining <= 10 { return .red }
-        if remaining <= 35 { return .orange }
-        return .blue
     }
 
     private var reorderHandle: some View {
@@ -3075,7 +3879,20 @@ private struct ProfileRow: View {
     }
 
     private var dispatchControls: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: layout == .cards ? 8 : 14) {
+            Button {
+                dispatchWindowDraft = profile.dispatchParticipationWindow ?? .init()
+                isEditingDispatchWindow = true
+            } label: {
+                Image(systemName: "clock")
+            }
+            .buttonStyle(.plain)
+            .help(language.text("设置参与调度时间段", "Set dispatch participation hours"))
+            .popover(isPresented: $isEditingDispatchWindow) {
+                DispatchParticipationWindowEditor(window: $dispatchWindowDraft) {
+                    if onSetDispatchParticipationWindow(dispatchWindowDraft) { isEditingDispatchWindow = false }
+                }
+            }
             Toggle(
                 isOn: Binding(
                     get: { participatesInAutomaticSwitch },
@@ -3104,8 +3921,10 @@ private struct ProfileRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(language.text("优先标记", "Priority"))
                         .font(.caption.weight(.semibold))
-                    Text(language.text("供 Skill 选号", "For Skill selection"))
-                        .font(.system(size: 8))
+                    if layout != .cards {
+                        Text(language.text("供 Skill 选号", "For Skill selection"))
+                            .font(.system(size: 8))
+                    }
                 }
                 .foregroundStyle(prioritizesDispatch ? Color.red : Color.secondary)
             }
@@ -3142,12 +3961,13 @@ private struct ProfileRow: View {
                     : language.text("在终端中使用此账号", "Open CLI with this account"))
             Menu {
                 Button(language.text("以该账号打开 CLI（选择目录…）", "Open CLI in folder…")) { chooseDirectoryAndOpenTerminal() }
+                    .disabled(cliTaskStatus.blocksLocalCLI || isLaunching || isLoggingIn)
                 Button(language.text("复制一句话 CLI 调用命令", "Copy CLI launch command")) { onCopyTerminalCommand() }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
             .controlSize(.small)
-            .disabled(linkedAccountName != nil || profile.isSystemProfile || cliTaskStatus.blocksLocalCLI || isLaunching || isLoggingIn)
+            .disabled(linkedAccountName != nil || profile.isSystemProfile || isLoggingIn)
             .help(
                 cliTaskStatus.blocksLocalCLI
                     ? language.text("缺少可信映射、Hub 概览不新鲜或同账号有活跃任务", "Blocked: missing account mapping, stale Hub status or an active task.")
@@ -3189,11 +4009,16 @@ private struct ProfileRow: View {
                 guard !cliTaskStatus.blocksLocalCLI else { return }
                 onLaunch()
             } label: {
-                Label(isCurrentCodexAccount ? language.text("当前账号", "Current account") : language.text("切换桌面", "Switch Desktop"), systemImage: "macwindow")
-                    .frame(maxWidth: .infinity)
+                if isSwitchTarget && isLaunching {
+                    ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                        .accessibilityLabel(language.text("正在切换到此账号", "Switching to this account"))
+                } else {
+                    Label(isCurrentCodexAccount ? language.text("当前账号", "Current account") : language.text("切换桌面", "Switch Desktop"), systemImage: "macwindow")
+                        .frame(maxWidth: .infinity)
+                }
             }
             .buttonStyle(.bordered)
-            .disabled(isLaunching || isRefreshingStatistics || linkedAccountName != nil || isCurrentCodexAccount || cliTaskStatus.blocksLocalCLI)
+            .disabled(isLaunching || linkedAccountName != nil || isCurrentCodexAccount || cliTaskStatus.blocksLocalCLI)
             .help(
                 cliTaskStatus.blocksLocalCLI
                     ? language.text("Hub 状态未确认或同账号有活跃任务，暂不能切换 Desktop", "Desktop switching is blocked while Hub status is unverified or this account has an active task.")
@@ -3365,6 +4190,7 @@ enum DispatchCodeCatalog {
     private struct Entry {
         let code: String
         let alias: String
+        let active: Bool
     }
 
     private struct Payload: Decodable {
@@ -3380,7 +4206,7 @@ enum DispatchCodeCatalog {
     }
 
     static func code(for profileID: String, allowsLocalRead: Bool = true) -> String? {
-        allowsLocalRead ? entries[profileID]?.code : nil
+        allowsLocalRead && entries[profileID]?.active == true ? entries[profileID]?.code : nil
     }
 
     static func alias(for profileID: String, allowsLocalRead: Bool = true) -> String? {
@@ -3404,8 +4230,7 @@ enum DispatchCodeCatalog {
             let profileID = account.profileId.trimmingCharacters(in: .whitespacesAndNewlines)
             let code = account.code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             let alias = account.alias.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard account.active != false,
-                !profileID.isEmpty,
+            guard !profileID.isEmpty,
                 !alias.isEmpty,
                 profileID.utf8.count <= DispatchParticipationSync.maximumCatalogFieldBytes,
                 alias.utf8.count <= DispatchParticipationSync.maximumCatalogFieldBytes,
@@ -3414,7 +4239,7 @@ enum DispatchCodeCatalog {
                 code.unicodeScalars.allSatisfy({ (65...90).contains(Int($0.value)) }),
                 claimedCodes.insert(code).inserted
             else { continue }
-            entries[profileID] = Entry(code: code, alias: alias)
+            entries[profileID] = Entry(code: code, alias: alias, active: account.active != false)
         }
         return entries
     }
@@ -3437,26 +4262,18 @@ private struct DispatchCodeBadge: View {
 
 private struct HubCLITaskStatusBadge: View {
     @Environment(\.widgetLanguage) private var language
+    @Environment(\.colorScheme) private var colorScheme
     let status: HubAccountTaskStatus
     var compact = false
 
     private var tint: Color {
         switch status.phase {
-        case .succeeded: return .green
-        case .failed, .cancelled: return .red
-        case .uncertain, .unavailable, .cancelRequested: return .orange
+        case .succeeded: return FixedVisualPalette.statusSuccessForeground(colorScheme)
+        case .failed, .cancelled: return FixedVisualPalette.statusDangerForeground(colorScheme)
+        case .uncertain, .unavailable, .cancelRequested: return FixedVisualPalette.statusWarningForeground(colorScheme)
         case .awaitingApproval, .starting, .running, .maintenance: return .accentColor
-        case .awaitingAcceptance: return .orange
+        case .awaitingAcceptance: return FixedVisualPalette.statusWarningForeground(colorScheme)
         case .idle: return .secondary
-        }
-    }
-
-    private var gradientColors: [Color] {
-        switch status.phase {
-        case .awaitingApproval, .starting, .running:
-            return [Color.blue.opacity(0.18), Color.purple.opacity(0.16)]
-        default:
-            return [tint.opacity(0.13), tint.opacity(0.08)]
         }
     }
 
@@ -3472,15 +4289,8 @@ private struct HubCLITaskStatusBadge: View {
         .foregroundStyle(tint)
         .padding(.horizontal, compact ? 5 : 7)
         .padding(.vertical, compact ? 2 : 3)
-        .background(
-            Capsule().fill(
-                LinearGradient(
-                    colors: gradientColors,
-                    startPoint: .leading,
-                    endPoint: .trailing
-                ))
-        )
-        .overlay(Capsule().stroke(tint.opacity(0.16), lineWidth: 0.5))
+        .background(Capsule().fill(FixedVisualPalette.statusFill(tint, colorScheme: colorScheme)))
+        .overlay(Capsule().stroke(Color.primary.opacity(0.09), lineWidth: 0.5))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(language.text("CLI 任务状态：\(status.localizedLabel)", "CLI task status: \(status.label(language))"))
     }

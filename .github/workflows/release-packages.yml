@@ -10,6 +10,11 @@ on:
         description: "Version to package (must match Resources/Info.plist)"
         required: true
         type: string
+      windows:
+        description: Explicitly include the existing Windows installers
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -58,6 +63,7 @@ jobs:
           if-no-files-found: error
 
   windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.windows == true
     needs: resolve-version
     runs-on: windows-latest
     steps:
@@ -79,6 +85,7 @@ jobs:
 
   verify:
     needs: [resolve-version, macos, windows]
+    if: always() && needs.resolve-version.result == 'success' && needs.macos.result == 'success' && (needs.windows.result == 'success' || needs.windows.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,10 +94,19 @@ jobs:
           name: account-manager-next-macos-${{ needs.resolve-version.outputs.version }}
           path: dist
       - uses: actions/download-artifact@v4
+        if: needs.windows.result == 'success'
         with:
           name: account-manager-next-windows-${{ needs.resolve-version.outputs.version }}
           path: dist/windows
-      - name: Verify all installers and checksums
+      - name: Verify macOS checksums
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          for arch in arm64 x86_64; do
+            shasum -a 256 -c "dist/CodexAccountManagerNext-${VERSION}-mac-${arch}.dmg.sha256"
+          done
+      - name: Verify optional cross-platform bundle
+        if: needs.windows.result == 'success'
         run: bash scripts/check-cross-platform-release-assets.sh "${{ needs.resolve-version.outputs.version }}" dist
       - name: Upload verified release bundle
         uses: actions/upload-artifact@v4

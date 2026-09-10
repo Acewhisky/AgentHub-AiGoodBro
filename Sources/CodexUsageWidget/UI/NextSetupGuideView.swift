@@ -6,6 +6,15 @@ struct NextSetupGuideView: View {
     var openAutomation: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var webhookDraft = ""
+    @StateObject private var runtime: NextRuntimeSetupModel
+
+    init(store: UsageStore, settings: AppSettings, openAutomation: @escaping () -> Void, runtime: NextRuntimeSetupModel = NextRuntimeSetupModel()) {
+        self.store = store
+        self.settings = settings
+        self.openAutomation = openAutomation
+        _runtime = StateObject(wrappedValue: runtime)
+    }
 
     private var language: WidgetLanguage { settings.language }
     private var step: NextSetupStep { settings.setupProgress.step }
@@ -30,9 +39,13 @@ struct NextSetupGuideView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .environment(\.widgetLanguage, language)
         .environment(\.locale, language.locale)
-        .onAppear { store.refreshLocalNotificationAuthorization() }
+        .onAppear {
+            store.refreshLocalNotificationAuthorization()
+            if step == .runtime { runtime.refresh() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             store.refreshLocalNotificationAuthorization()
+            if step == .runtime { runtime.refresh() }
         }
     }
 
@@ -49,7 +62,7 @@ struct NextSetupGuideView: View {
                         go(to: item)
                     } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: item.rawValue < step.rawValue ? "checkmark.circle.fill" : item.symbol)
+                            Image(systemName: item.symbol)
                                 .frame(width: 20)
                             Text(item.title(language)).font(.subheadline.weight(item == step ? .semibold : .regular))
                             Spacer(minLength: 0)
@@ -69,9 +82,9 @@ struct NextSetupGuideView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("\(step.rawValue + 1) / \(NextSetupStep.allCases.count)")
+            Text("\(step.index + 1) / \(NextSetupStep.allCases.count)")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                .accessibilityLabel(language.text("第 \(step.rawValue + 1) 步，共 4 步", "Step \(step.rawValue + 1) of 4"))
+                .accessibilityLabel(language.text("第 \(step.index + 1) 步，共 \(NextSetupStep.allCases.count) 步", "Step \(step.index + 1) of \(NextSetupStep.allCases.count)"))
         }
         .padding(22)
         .frame(width: 205)
@@ -81,10 +94,104 @@ struct NextSetupGuideView: View {
     @ViewBuilder
     private var pageContent: some View {
         switch step {
+        case .runtime: runtimePage
         case .accounts: accountsPage
         case .features: featuresPage
         case .notifications: notificationsPage
         case .ready: readyPage
+        }
+    }
+
+    private var runtimePage: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            heading(language.text("让现有工具就绪", "Get your tools ready"),
+                language.text("优先复用已安装的工具。缺少时按需安装，回到这里会自动重新检查。", "Use the tools already on your Mac. Install missing tools when needed; Next checks again when you return."))
+            VStack(spacing: 12) {
+                ForEach(["codex", "python", "hub"], id: \.self) { id in
+                    let component = runtime.report?.components.first { $0.id == id }
+                    HStack(spacing: 10) {
+                        Image(systemName: component?.state == "ready" ? "checkmark.circle.fill" : "circle.dashed")
+                            .foregroundStyle(component?.state == "ready" ? Color.green : Color.secondary)
+                        Text(id == "codex" ? "Codex CLI" : id == "python" ? "Python" : language.text("本机调度组件", "Local dispatch component"))
+                        Spacer()
+                        Text(componentStatus(id: id, component: component))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        if id != "hub" {
+                            Menu(language.text(component?.state == "ready" ? "管理" : "安装", component?.state == "ready" ? "Manage" : "Install")) {
+                                Button(language.text("打开官方安装指南", "Open official installation guide")) {
+                                    NSWorkspace.shared.open(id == "python" ? NextRuntimeEnvironment.pythonInstallationURL : NextRuntimeEnvironment.codexInstallationURL)
+                                }
+                                if id == "codex" {
+                                    Button(language.text("复制官方安装命令", "Copy official install command")) {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(NextRuntimeEnvironment.codexInstallCommand, forType: .string)
+                                    }
+                                }
+                                Button(language.text("选择已安装的程序…", "Choose an installed executable…")) { runtime.chooseExecutable(for: id) }
+                            }.fixedSize().disabled(runtime.isBusy)
+                        }
+                    }
+                }
+            }
+            if runtime.isBusy {
+                HStack(spacing: 8) { ProgressView().controlSize(.small); Text(language.text("正在验证组件…", "Checking components…")).font(.caption) }
+            }
+            if runtime.failed {
+                Text(runtime.failureMessage(language))
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if runtime.selectionFailed {
+                Text(language.text("所选程序未通过版本或能力检查，已保留原有选择。请从官方安装入口准备后重试。", "The selected executable did not pass the version or capability check. Your previous choice is preserved. Install from the official source and try again."))
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button(language.text("重新检查", "Check again")) { runtime.refresh() }.disabled(runtime.isBusy)
+                Spacer()
+                Button(runtime.report?.skill == "ready" ? language.text("配套工具已安装", "Companion tools installed") : language.text("安装配套调用工具", "Install companion tools")) { runtime.installTools() }
+                    .disabled(!runtime.toolsReady || runtime.isBusy || runtime.report?.skill == "ready")
+            }
+            Text(language.text("Codex CLI 用于账号命令；Python 3.9+ 只用于配套 Skill。Python 未安装时，基础账号管理仍可使用。", "Codex CLI runs account commands. Python 3.9+ is only required for the companion Skill; basic account management works without it."))
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(language.text("“可执行”只代表本机程序与能力检查通过，不代表已登录。账号身份、额度新鲜度、服务连通和任务审批会在实际调度时分别校验。", "Executable means only that the local program and required capabilities passed. Sign-in, account identity, fresh limits, service connectivity, and task approval are checked separately when dispatching."))
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Divider()
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(language.text("本机任务调度", "Local task dispatch")).font(.subheadline.weight(.semibold))
+                    Text(hubSetupStatus).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Button(language.text("选择工作目录并启用", "Choose workspace and enable")) { runtime.chooseProjectAndSetUpHub() }
+                    .disabled(!runtime.canSetUpHub || store.profiles.filter { !$0.isSystemProfile }.isEmpty)
+            }
+            Text(language.text("先在工作台添加账号，再启用调度。账号登录、macOS 通知和飞书连接由后续步骤引导完成；已有服务与个人配置会保留。", "Add an account in the workspace before enabling dispatch. The next steps cover sign-in and alerts. Existing services and personal settings are preserved."))
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(language.text("首次调度先用配套入口生成 plan；启动中断时按原预约查看 status，再用 result 收取并校验结果。服务不会跳过审批。", "For the first dispatch, create a plan with the companion entry point. If interrupted, check status using the original lease, then collect and verify it with result. Service approval is never skipped."))
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func componentStatus(id: String, component: NextRuntimeSetupModel.Component?) -> String {
+        guard let component else { return language.text("待检查", "Not checked") }
+        if component.state == "incompatible" { return language.text("需升级", "Update needed") }
+        guard component.state == "ready" else { return language.text("未找到", "Not found") }
+        let prefix = id == "hub" ? language.text("组件可用", "Bundled") : language.text("可执行", "Executable")
+        return component.version.isEmpty ? prefix : "\(prefix) · \(component.version)"
+    }
+
+    private var hubSetupStatus: String {
+        guard let component = runtime.report?.components.first(where: { $0.id == "hub" }) else {
+            return language.text("尚未检查随包调度组件。", "The bundled dispatch component has not been checked yet.")
+        }
+        guard component.state == "ready" else {
+            return language.text("随包调度组件缺失或损坏。请重新获取正式 Next 安装包。", "The bundled dispatch component is missing or damaged. Reinstall Next from an official package.")
+        }
+        switch runtime.report?.hub {
+        case "ready": return language.text("已验证现有本机服务连通且版本匹配", "Existing local service is reachable and its version matches")
+        case "existing_stopped": return language.text("发现现有配置，服务未运行。请从原部署入口恢复。", "Existing configuration found; the service is stopped. Restore it from its original deployment.")
+        case "setup_incomplete": return language.text("上次启用已写入配置但未确认服务健康。请先核实现有服务，不要重复启动。", "The previous setup wrote configuration but did not confirm service health. Verify the existing service; do not start another one.")
+        case "port_conflict": return language.text("服务地址已被占用或无法验证。请先检查现有服务。", "The service address is occupied or could not be verified. Check the existing service first.")
+        default: return language.text("组件已随包提供，启用后仅在本机运行，任务仍需批准。", "Included with Next. Enable it for local use; tasks still require approval.")
         }
     }
 
@@ -101,7 +208,7 @@ struct NextSetupGuideView: View {
                 instruction(
                     "2", title: language.text("为新任务选账号", "Choose an account for new work"),
                     detail: language.text(
-                        "新添加的账号默认参与调度。每张账号卡都可退出，暖号和额度维护仍会继续。", "New accounts join dispatch by default. Opt out on any account card while keeping its maintenance active."))
+                        "新账号需先完成独立登录，再确认参与开关、模型与推理强度。新添加的账号默认参与调度；退出后暖号和额度维护仍会继续。", "Finish isolated sign-in first, then confirm participation, model, and reasoning settings. New accounts join dispatch by default; opting out keeps maintenance active."))
                 instruction(
                     "3", title: language.text("从账号卡打开终端", "Open a terminal from the account card"),
                     detail: language.text("确认账号空闲后开始。桌面切换有独立入口，由你主动确认。", "Start once the account is idle. Desktop switching has its own action and confirmation."))
@@ -125,6 +232,28 @@ struct NextSetupGuideView: View {
                 language.text("功能默认全开，按需调整", "On by default, yours to adjust"),
                 language.text("已保存的选择会保留。暖号会发送最小请求，消耗少量额度。", "Saved choices are kept. Warm-up sends a minimal request and uses a small amount of quota.")
             )
+            VStack(alignment: .leading, spacing: 8) {
+                Text(language.text("工作台显示", "Workspace display"))
+                    .font(.subheadline.weight(.semibold))
+                Picker(language.text("工作台显示", "Workspace display"), selection: $settings.workspaceDisplayMode) {
+                    ForEach(WorkspaceDisplayMode.allCases, id: \.self) { mode in
+                        Text(mode.title(language)).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 280)
+                .accessibilityLabel(language.text("工作台显示", "Workspace display"))
+                Text(
+                    language.text(
+                        "专业版保留当前完整主页并默认展开；极简版减少信息，可在总览、账号卡片或自定义模块中选择。",
+                        "Professional keeps the current Home, expanded. Simple reduces information and lets you choose Overview, Account cards, or custom modules."
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Text(language.text("\(store.enabledSetupFeatureCount) / 7 项已开启", "\(store.enabledSetupFeatureCount) of 7 enabled"))
                     .font(.caption.weight(.medium)).foregroundStyle(.secondary)
@@ -178,7 +307,7 @@ struct NextSetupGuideView: View {
                     connectionTitle(
                         "macOS", symbol: "bell.badge", status: localStatus,
                         ready: store.localNotificationsEnabled && store.localNotificationAuthorizationReady)
-                    Text(language.text("额度不足时在电脑上提醒，只显示剩余百分比。", "Receive low-limit alerts on this Mac, showing only remaining percentages."))
+                    Text(language.text("在电脑上接收额度不足和重置消息，无需配置飞书。", "Receive low-limit alerts and reset news on this Mac. Feishu setup is optional."))
                         .font(.subheadline).foregroundStyle(.secondary)
                     if let message = store.localNotificationMessage {
                         Text(message).font(.caption).foregroundStyle(.secondary)
@@ -205,7 +334,34 @@ struct NextSetupGuideView: View {
                             "Receive low-limit, reset and new-credit alerts. Add a custom bot to a Feishu group, then save its webhook.")
                     )
                     .font(.subheadline).foregroundStyle(.secondary)
-                    Button(language.text("前往配置飞书", "Set up Feishu"), action: openAutomation)
+                    if store.feishuNeedsAuthorization {
+                        Button(language.text("授权连接", "Authorize connection"), action: store.authorizeFeishuConnection)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(store.isUpdatingFeishuConnection)
+                    } else if !store.feishuWebhookConfigured {
+                        SecureField(language.text("飞书机器人 Webhook 地址", "Feishu bot webhook URL"), text: $webhookDraft)
+                            .textFieldStyle(.roundedBorder)
+                        Button(language.text("保存并连接", "Save and connect")) {
+                            let submitted = webhookDraft
+                            store.saveFeishuWebhook(submitted) { saved in
+                                if saved, webhookDraft == submitted { webhookDraft = "" }
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(webhookDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isUpdatingFeishuConnection)
+                    }
+                    if store.isUpdatingFeishuConnection { ProgressView().controlSize(.small) }
+                    Text(
+                        language.text(
+                            "密码只在 macOS 系统弹窗中输入。如有“始终允许”，选择后可记住授权；升级后可能需重新授权。后台检查不会弹窗。",
+                            "Enter your password only in the macOS dialog. Choose Always Allow, if offered, to remember access. Updates may require authorization again. Background checks stay silent."
+                        )
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
+                    if let message = store.feishuNotificationMessage {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button(language.text("更多飞书设置", "More Feishu settings"), action: openAutomation)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).padding(8)
             }
@@ -234,7 +390,7 @@ struct NextSetupGuideView: View {
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             instruction(
                 "→", title: language.text("从一次新任务开始", "Start with your next task"),
-                detail: language.text("回到工作台，查看账号额度与任务状态，再从账号卡打开终端。", "Return to the workspace, check limits and task status, then open a terminal from an account card."))
+                detail: language.text("回到工作台，确认独立账号已登录、额度为新鲜读取且当前空闲。配套调度先生成 plan，启动后仍需批准；中断时沿用原任务查看 status/result。", "Return to the workspace and confirm the isolated account is signed in, limits are fresh, and it is idle. Companion dispatch starts with a plan and still requires approval; after interruption, use the original task for status/result."))
             Text(language.text("“使用引导”入口一直保留；自动化中心可以随时调整全部开关。", "Getting started stays available. Adjust feature switches anytime in Automation."))
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -247,8 +403,10 @@ struct NextSetupGuideView: View {
     }
 
     private var feishuStatus: String {
+        if store.isUpdatingFeishuConnection { return language.text("正在连接", "Connecting") }
         if store.pausedAutomationFeatures.contains(.feishu) { return language.text("维护暂停", "Paused") }
         if !store.feishuNotificationsEnabled { return language.text("已关闭", "Off") }
+        if store.feishuNeedsAuthorization { return language.text("待系统授权", "Permission needed") }
         return store.feishuWebhookConfigured ? language.text("已连接", "Connected") : language.text("待配置", "Setup needed")
     }
 
@@ -260,15 +418,15 @@ struct NextSetupGuideView: View {
             }
             .keyboardShortcut(.cancelAction)
             Spacer()
-            if step != .accounts {
-                Button(language.text("上一步", "Back")) { go(to: NextSetupStep(rawValue: step.rawValue - 1) ?? .accounts) }
+            if step != .runtime {
+                Button(language.text("上一步", "Back")) { go(to: step.previous) }
             }
             Button(step == .ready ? language.text("开始使用", "Open workspace") : language.text("下一步", "Continue")) {
                 if step == .ready {
                     settings.setupProgress.completed = true
                     dismiss()
                 } else {
-                    go(to: NextSetupStep(rawValue: step.rawValue + 1) ?? .ready)
+                    go(to: step.next)
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -280,6 +438,7 @@ struct NextSetupGuideView: View {
     private func go(to step: NextSetupStep) {
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) { settings.setupProgress.step = step }
         if step == .notifications { store.refreshLocalNotificationAuthorization() }
+        if step == .runtime { runtime.refresh() }
     }
 
     private func heading(_ title: String, _ detail: String) -> some View {

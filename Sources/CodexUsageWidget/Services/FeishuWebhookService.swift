@@ -5,6 +5,7 @@ enum FeishuWebhookError: LocalizedError {
     case invalidWebhook
     case missingWebhook
     case keychain(OSStatus)
+    case keychainAuthorizationRequired
     case keychainTimedOut
     case keychainBusy
     case cancelled
@@ -24,6 +25,10 @@ enum FeishuWebhookError: LocalizedError {
             return WidgetLanguage.storedOrAutomatic().text("尚未保存飞书 Webhook。", "No Feishu webhook has been saved.")
         case .keychain(let status):
             return WidgetLanguage.storedOrAutomatic().text("无法访问飞书 Webhook 凭据（\(status)）。", "Could not access the Feishu webhook credential (\(status)).")
+        case .keychainAuthorizationRequired:
+            return WidgetLanguage.storedOrAutomatic().text(
+                "飞书连接需要钥匙串授权。请在使用引导或自动化中心点击“授权连接”；后台不会弹出密码框。",
+                "Feishu needs Keychain permission. Choose Authorize connection in Getting started or Automation. Background checks will not show password prompts.")
         case .keychainTimedOut:
             return WidgetLanguage.storedOrAutomatic().text("读取飞书配置超时；账号刷新与暖号继续运行。", "Reading the Feishu configuration timed out. Account refresh and warm-up continue.")
         case .keychainBusy:
@@ -47,11 +52,36 @@ enum FeishuWebhookError: LocalizedError {
             return WidgetLanguage.storedOrAutomatic().text("飞书拒绝了通知（\(code)）。", "Feishu rejected the notification (\(code)).")
         }
     }
+
+    static func credential(_ status: OSStatus) -> FeishuWebhookError {
+        switch status {
+        case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled:
+            return .keychainAuthorizationRequired
+        default:
+            return .keychain(status)
+        }
+    }
 }
 
 /// A display-only account label. Raw email addresses, IDs and paths are rejected.
 struct FeishuMaskedAccount: Equatable {
     let value: String
+
+    /// Only UI display names enter this initializer; credentials and account IDs do not.
+    init(displayName: String, dispatchCode: String? = nil) throws {
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " .-•·()（）"))
+        guard !name.isEmpty, name.count <= 48,
+            name.unicodeScalars.allSatisfy({
+                allowed.contains($0) || $0.properties.generalCategory == .otherSymbol
+                    || $0.value == 0x200D || $0.value == 0xFE0F
+            }),
+            dispatchCode == nil || dispatchCode?.range(of: "^[A-Z]$", options: .regularExpression) != nil
+        else { throw FeishuWebhookError.invalidMaskedAccount }
+        // Dispatch letters are useful inside the app, but are not account facts
+        // and must never be rendered in outbound messages.
+        value = name
+    }
 
     init(_ value: String) throws {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -70,6 +100,12 @@ struct FeishuMaskedAccount: Equatable {
 }
 
 struct FeishuSwitchNotification {
+    enum SwitchOrigin: Equatable {
+        case manual
+        case lowQuota
+        case restartTest
+    }
+
     enum Event {
         case test
         case lowQuotaDetected
@@ -105,10 +141,13 @@ struct FeishuSwitchNotification {
     let event: Event
     let sourceAccount: FeishuMaskedAccount
     let targetAccount: FeishuMaskedAccount?
+    let switchOrigin: SwitchOrigin
     let triggerThresholdPercent: Int
     let fiveHourTriggerThresholdPercent: Int
-    let fiveHourRemainingPercent: Int?
-    let sevenDayRemainingPercent: Int?
+    let fiveHourRemainingPercent: Double?
+    let sevenDayRemainingPercent: Double?
+    let accountFacts: FeishuAccountFacts
+    let messageOptions: FeishuMessageOptions
     let occurredAt: Date
     let eventID: UUID
 
@@ -116,10 +155,13 @@ struct FeishuSwitchNotification {
         event: Event,
         sourceAccount: FeishuMaskedAccount,
         targetAccount: FeishuMaskedAccount? = nil,
+        switchOrigin: SwitchOrigin = .manual,
         triggerThresholdPercent: Int,
         fiveHourTriggerThresholdPercent: Int = 5,
-        fiveHourRemainingPercent: Int?,
-        sevenDayRemainingPercent: Int?,
+        fiveHourRemainingPercent: Double?,
+        sevenDayRemainingPercent: Double?,
+        accountFacts: FeishuAccountFacts? = nil,
+        messageOptions: FeishuMessageOptions = .standard,
         occurredAt: Date = Date(),
         eventID: UUID = UUID()
     ) throws {
@@ -133,6 +175,12 @@ struct FeishuSwitchNotification {
         if case .switchSucceeded = event, targetAccount == nil {
             throw FeishuWebhookError.invalidNotification
         }
+        if case .lowQuotaDetected = event,
+            !(fiveHourRemainingPercent.map { $0 <= Double(fiveHourTriggerThresholdPercent) } ?? false),
+            !(sevenDayRemainingPercent.map { $0 < Double(triggerThresholdPercent) } ?? false)
+        {
+            throw FeishuWebhookError.invalidNotification
+        }
         if case .quotaChange(let change) = event {
             switch change {
             case .quotaReset(let fiveHour, let sevenDay):
@@ -144,10 +192,18 @@ struct FeishuSwitchNotification {
         self.event = event
         self.sourceAccount = sourceAccount
         self.targetAccount = targetAccount
+        self.switchOrigin = switchOrigin
         self.triggerThresholdPercent = triggerThresholdPercent
         self.fiveHourTriggerThresholdPercent = fiveHourTriggerThresholdPercent
         self.fiveHourRemainingPercent = fiveHourRemainingPercent
         self.sevenDayRemainingPercent = sevenDayRemainingPercent
+        self.accountFacts =
+            try accountFacts
+            ?? FeishuAccountFacts.quotasOnly(
+                fiveHourRemaining: fiveHourRemainingPercent,
+                sevenDayRemaining: sevenDayRemainingPercent
+            )
+        self.messageOptions = messageOptions
         self.occurredAt = occurredAt
         self.eventID = eventID
     }
@@ -196,6 +252,42 @@ private final class FeishuKeychainRead<Value> {
     }
 }
 
+/// Existing credentials use the file-based macOS Keychain. Its UI policy is
+/// process-wide; query-only authentication flags do not protect legacy items.
+/// Serialize every app-owned Keychain operation and restore the previous policy.
+final class FeishuKeychainInteraction {
+    private static let lock = NSLock()
+    private let getAllowed: () throws -> Bool
+    private let setAllowed: (Bool) throws -> Void
+
+    static let system = FeishuKeychainInteraction(
+        getAllowed: {
+            var allowed: DarwinBoolean = false
+            let status = SecKeychainGetUserInteractionAllowed(&allowed)
+            guard status == errSecSuccess else { throw FeishuWebhookError.credential(status) }
+            return allowed.boolValue
+        },
+        setAllowed: { allowed in
+            let status = SecKeychainSetUserInteractionAllowed(allowed)
+            guard status == errSecSuccess else { throw FeishuWebhookError.credential(status) }
+        })
+
+    init(getAllowed: @escaping () throws -> Bool, setAllowed: @escaping (Bool) throws -> Void) {
+        self.getAllowed = getAllowed
+        self.setAllowed = setAllowed
+    }
+
+    func perform<Value>(allowInteraction: Bool, _ operation: () throws -> Value) throws -> Value {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        let previous = try getAllowed()
+        try setAllowed(allowInteraction)
+        let result = Result { try operation() }
+        try setAllowed(previous)
+        return try result.get()
+    }
+}
+
 final class FeishuWebhookService {
     static let keychainService = "com.blackielf.codex-account-manager-next.feishu-webhook"
 
@@ -209,16 +301,22 @@ final class FeishuWebhookService {
     fileprivate let keychainQueue = DispatchQueue(label: "com.blackielf.codex-account-manager-next.feishu-keychain", qos: .utility)
     private let keychainCapacity: DispatchSemaphore
     private let keychainReadTimeout: TimeInterval
+    private let keychainInteraction: FeishuKeychainInteraction
+    private let updateItem: (CFDictionary, CFDictionary) -> OSStatus
     private let copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
 
     init(
         keychainReadTimeout: TimeInterval = 5,
         maximumPendingReads: Int = 16,
         sessionConfiguration: URLSessionConfiguration = .ephemeral,
+        keychainInteraction: FeishuKeychainInteraction = .system,
+        updateItem: @escaping (CFDictionary, CFDictionary) -> OSStatus = SecItemUpdate,
         copyMatching: @escaping (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching
     ) {
         precondition(keychainReadTimeout > 0 && maximumPendingReads > 0)
         self.keychainReadTimeout = keychainReadTimeout
+        self.keychainInteraction = keychainInteraction
+        self.updateItem = updateItem
         keychainCapacity = DispatchSemaphore(value: maximumPendingReads)
         self.copyMatching = copyMatching
         let configuration = sessionConfiguration
@@ -244,7 +342,49 @@ final class FeishuWebhookService {
         session.invalidateAndCancel()
     }
 
-    func storeWebhook(_ rawValue: String) throws {
+    func storeWebhook(_ rawValue: String, completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
+        performUserKeychainAction(
+            {
+                try self.storeWebhookSynchronously(rawValue)
+                _ = try self.loadStoredWebhook()
+            }, completion: completion)
+    }
+
+    func authorizeStoredWebhook(completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
+        performUserKeychainAction({ _ = try self.loadStoredWebhook() }, completion: completion)
+    }
+
+    func removeStoredWebhook(completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
+        performUserKeychainAction(
+            {
+                let status = SecItemDelete(Self.keychainQuery as CFDictionary)
+                guard status == errSecSuccess || status == errSecItemNotFound else {
+                    throw FeishuWebhookError.credential(status)
+                }
+            }, completion: completion)
+    }
+
+    /// Only explicit setup actions may request the native system password dialog.
+    /// Keep the action pending until it returns so retries cannot stack dialogs.
+    private func performUserKeychainAction(
+        _ operation: @escaping () throws -> Void,
+        completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
+    ) {
+        keychainQueue.async {
+            let result: Result<Void, FeishuWebhookError>
+            do {
+                try self.keychainInteraction.perform(allowInteraction: true, operation)
+                result = .success(())
+            } catch let error as FeishuWebhookError {
+                result = .failure(error)
+            } catch {
+                result = .failure(.invalidWebhook)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    private func storeWebhookSynchronously(_ rawValue: String) throws {
         let endpoint = try Self.validatedWebhookURL(from: rawValue)
         let data = Data(endpoint.absoluteString.utf8)
         let query = Self.keychainQuery
@@ -252,38 +392,29 @@ final class FeishuWebhookService {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let updateStatus = updateItem(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess { return }
         guard updateStatus == errSecItemNotFound else {
-            throw FeishuWebhookError.keychain(updateStatus)
+            throw FeishuWebhookError.credential(updateStatus)
         }
 
         var item = query
         attributes.forEach { item[$0.key] = $0.value }
         let addStatus = SecItemAdd(item as CFDictionary, nil)
         guard addStatus == errSecSuccess else {
-            throw FeishuWebhookError.keychain(addStatus)
-        }
-    }
-
-    func removeStoredWebhook() throws {
-        let status = SecItemDelete(Self.keychainQuery as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw FeishuWebhookError.keychain(status)
+            throw FeishuWebhookError.credential(addStatus)
         }
     }
 
     func hasStoredWebhook(completion: @escaping (Result<Bool, FeishuWebhookError>) -> Void) {
         readCredential(
             {
-                var query = Self.keychainQuery
-                query[kSecReturnAttributes as String] = true
-                query[kSecMatchLimit as String] = kSecMatchLimitOne
-                var result: CFTypeRef?
-                let status = self.copyMatching(query as CFDictionary, &result)
-                if status == errSecItemNotFound { return false }
-                guard status == errSecSuccess else { throw FeishuWebhookError.keychain(status) }
-                return true
+                do {
+                    _ = try self.loadStoredWebhook()
+                    return true
+                } catch FeishuWebhookError.missingWebhook {
+                    return false
+                }
             }, completion: completion)
     }
 
@@ -327,13 +458,56 @@ final class FeishuWebhookService {
                 return
             }
             do {
-                read.finish(.success(try operation()))
+                read.finish(.success(try self.keychainInteraction.perform(allowInteraction: false, operation)))
             } catch let error as FeishuWebhookError {
                 read.finish(.failure(error))
             } catch {
                 read.finish(.failure(.invalidWebhook))
             }
         }
+    }
+
+    func sendPublicResetAnnouncement(
+        _ announcement: PublicResetAnnouncement,
+        shouldSend: @escaping () -> Bool,
+        completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
+    ) {
+        let body: Data
+        do { body = try Self.publicResetPayload(announcement) } catch {
+            completion(.failure(.invalidNotification))
+            return
+        }
+        readCredential(
+            { try self.loadStoredWebhook() },
+            completion: { result in
+                guard shouldSend() else {
+                    completion(.failure(.cancelled))
+                    return
+                }
+                switch result {
+                case .success(let endpoint): self.send(body: body, to: endpoint, completion: completion)
+                case .failure(let error): completion(.failure(error))
+                }
+            })
+    }
+
+    static func publicResetPayload(
+        _ announcement: PublicResetAnnouncement,
+        language: WidgetLanguage = .storedOrAutomatic()
+    ) throws -> Data {
+        guard announcement.isValid(now: Date()) else { throw FeishuWebhookError.invalidNotification }
+        let link = announcement.source.url ?? PublicResetClient.siteURL
+        let message =
+            announcement.summary(language)
+            + "\n\n" + language.text("来源：Codex Resets（第三方汇总）", "Source: Codex Resets (third-party feed)")
+            + "\n[" + language.text("查看来源", "View source") + "](\(link.absoluteString))"
+        return try JSONSerialization.data(withJSONObject: [
+            "msg_type": "interactive",
+            "card": [
+                "header": ["template": "blue", "title": ["tag": "plain_text", "content": announcement.title(language)]],
+                "elements": [["tag": "div", "text": ["tag": "lark_md", "content": message]]],
+            ],
+        ])
     }
 
     private func send(
@@ -352,6 +526,13 @@ final class FeishuWebhookService {
             return
         }
 
+        send(body: body, to: endpoint, completion: completion)
+    }
+
+    private func send(
+        body: Data, to endpoint: URL,
+        completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
+    ) {
         var request = URLRequest(
             url: endpoint,
             cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
@@ -362,26 +543,36 @@ final class FeishuWebhookService {
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        session.dataTask(with: request) { data, response, error in
-            guard error == nil else {
-                // Do not surface URLSession's message: it may contain the secret URL.
+        Task {
+            do {
+                let (bytes, response) = try await session.bytes(for: request)
+                defer { bytes.task.cancel() }
+                guard let http = response as? HTTPURLResponse else {
+                    completion(.failure(.invalidResponse))
+                    return
+                }
+                guard (200..<300).contains(http.statusCode) else {
+                    completion(.failure(.httpStatus(http.statusCode)))
+                    return
+                }
+                guard response.expectedContentLength <= Self.maximumResponseBytes else {
+                    completion(.failure(.invalidResponse))
+                    return
+                }
+                var data = Data()
+                for try await byte in bytes {
+                    guard data.count < Self.maximumResponseBytes else {
+                        completion(.failure(.invalidResponse))
+                        return
+                    }
+                    data.append(byte)
+                }
+                completion(Self.parseResponse(data))
+            } catch {
+                // URLSession errors can contain the secret URL.
                 completion(.failure(.transportFailed))
-                return
             }
-            guard let http = response as? HTTPURLResponse else {
-                completion(.failure(.invalidResponse))
-                return
-            }
-            guard (200..<300).contains(http.statusCode) else {
-                completion(.failure(.httpStatus(http.statusCode)))
-                return
-            }
-            guard let data, data.count <= Self.maximumResponseBytes else {
-                completion(.failure(.invalidResponse))
-                return
-            }
-            completion(Self.parseResponse(data))
-        }.resume()
+        }
     }
 
     static func validatedWebhookURL(from rawValue: String) throws -> URL {
@@ -416,41 +607,61 @@ final class FeishuWebhookService {
         return endpoint
     }
 
-    static func payloadData(for notification: FeishuSwitchNotification, language: WidgetLanguage = .storedOrAutomatic()) throws -> Data {
-        let presentation = presentation(for: notification.event, language: language)
-        var lines = [
-            language.text("**结果**：\(presentation.result)", "**Result**: \(presentation.result)"),
-            language.text("**原账号**：`\(notification.sourceAccount.value)`", "**Source account**: `\(notification.sourceAccount.value)`"),
-        ]
-        if case .quotaChange(let change) = notification.event {
+    static func payloadData(
+        for notification: FeishuSwitchNotification,
+        language: WidgetLanguage = .storedOrAutomatic(),
+        timeZone: TimeZone = .autoupdatingCurrent
+    ) throws -> Data {
+        let presentation = presentation(for: notification.event, origin: notification.switchOrigin, language: language)
+        let options = notification.messageOptions
+        var lines = [language.text("**结果**：\(presentation.result)", "**Result**: \(presentation.result)")]
+        if options.includesAgentName {
+            lines.append(language.text("**Agent**：Codex", "**Agent**: Codex"))
+        }
+        if options.includesAccountLabel {
+            lines.append(language.text("**账号**：\(notification.sourceAccount.value)", "**Account**: \(notification.sourceAccount.value)"))
+        }
+        switch notification.event {
+        case .test:
+            lines.append(language.text("仅测试连接；不会切换账号、重启 Codex 或使用 Reset 卡。", "Connection test only; no account switch, Codex restart, or reset-credit use."))
+        case .quotaChange(let change):
             switch change {
-            case .quotaReset(let fiveHour, let sevenDay):
-                let windows = [(fiveHour, language.text("5 小时", "5-hour")), (sevenDay, language.text("7 天", "7-day"))].filter(\.0).map(\.1)
-                lines.append(language.text("**重置窗口**：\(windows.joined(separator: "、"))", "**Reset windows**: \(windows.joined(separator: ", "))"))
-                lines.append(language.text("已读取官方新状态；暖号仍需已启用且账号身份与空闲检查通过。", "Official state refreshed. Warm-up still requires opt-in, identity verification, and an idle account."))
+            case .quotaReset:
+                break
             case .resetCreditsAdded(let added, let available):
-                lines.append(language.text("**新增 Reset 卡**：\(added) 次", "**Reset credits added**: \(added)"))
-                lines.append(language.text("**官方可用次数**：\(available) 次", "**Official available resets**: \(available)"))
-                lines.append(language.text("仅报告官方可用次数增加，不会自动使用 Reset 卡。", "This only reports an increase in available resets. Reset credits are never used automatically."))
+                lines.append(language.text("**变化**：新增 \(added) 次，可用 \(available) 次", "**Change**: +\(added), \(available) available"))
             }
-        } else {
+        case .lowQuotaDetected:
+            lines.append(lowQuotaTrigger(for: notification, language: language))
+        case .switchSucceeded, .switchFailed:
+            break
+        }
+        if options.includesAccountLabel, let target = notification.targetAccount {
+            if case .lowQuotaDetected = notification.event {
+                lines.append(language.text("**推荐账号**：\(target.value)", "**Recommended account**: \(target.value)"))
+            } else {
+                lines.append(language.text("**目标账号**：\(target.value)", "**Target account**: \(target.value)"))
+            }
+        }
+        if options.includesQuotas {
             lines.append(
-                language.text(
-                    "**触发规则**：5 小时 ≤ \(notification.fiveHourTriggerThresholdPercent)%；7 天 < \(notification.triggerThresholdPercent)%",
-                    "**Trigger rule**: 5-hour ≤ \(notification.fiveHourTriggerThresholdPercent)%; 7-day < \(notification.triggerThresholdPercent)%"))
+                quotaLine(
+                    label: language.text("5 小时", "5h"), value: notification.accountFacts.fiveHour,
+                    includesResetTime: options.includesResetTimes, language: language, timeZone: timeZone
+                )
+            )
+            lines.append(
+                quotaLine(
+                    label: language.text("7 天", "7d"), value: notification.accountFacts.sevenDay,
+                    includesResetTime: options.includesResetTimes, language: language, timeZone: timeZone
+                )
+            )
+        } else if options.includesResetTimes {
+            lines += resetTimeLines(for: notification.accountFacts, language: language, timeZone: timeZone)
         }
-        if let target = notification.targetAccount {
-            lines.append(language.text("**目标账号**：`\(target.value)`", "**Target account**: `\(target.value)`"))
+        if options.includesResetCredits {
+            lines.append(resetCreditLine(for: notification, language: language, timeZone: timeZone))
         }
-        if let remaining = notification.fiveHourRemainingPercent {
-            lines.append(language.text("**5 小时额度**：剩余 \(remaining)%", "**5-hour quota**: \(remaining)% remaining"))
-        }
-        if let remaining = notification.sevenDayRemainingPercent {
-            lines.append(language.text("**7 天额度**：剩余 \(remaining)%", "**7-day quota**: \(remaining)% remaining"))
-        }
-        lines.append(
-            language.text("**时间**：\(Self.timestampFormatter.string(from: notification.occurredAt))", "**Time**: \(Self.timestampFormatter.string(from: notification.occurredAt))"))
-        lines.append(language.text("**事件 ID**：`\(notification.eventID.uuidString)`", "**Event ID**: `\(notification.eventID.uuidString)`"))
 
         let payload: [String: Any] = [
             "msg_type": "interactive",
@@ -511,7 +722,7 @@ final class FeishuWebhookService {
         var result: CFTypeRef?
         let status = copyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { throw FeishuWebhookError.missingWebhook }
-        guard status == errSecSuccess else { throw FeishuWebhookError.keychain(status) }
+        guard status == errSecSuccess else { throw FeishuWebhookError.credential(status) }
         guard let data = result as? Data,
             let value = String(data: data, encoding: .utf8)
         else {
@@ -529,14 +740,110 @@ final class FeishuWebhookService {
         ]
     }
 
-    private static func presentation(for event: FeishuSwitchNotification.Event, language: WidgetLanguage) -> (
+    private static func percentText(_ percent: Double) -> String {
+        percent.formatted(.number.precision(.fractionLength(0...2)).locale(Locale(identifier: "en_US_POSIX")))
+    }
+
+    private static func quotaLine(
+        label: String,
+        value: FeishuQuotaValue,
+        includesResetTime: Bool,
+        language: WidgetLanguage,
+        timeZone: TimeZone
+    ) -> String {
+        let detail: String
+        switch value {
+        case .finite(let remaining, let resetsAt):
+            detail =
+                language.text(
+                    "剩余 \(percentText(remaining))%",
+                    "\(percentText(remaining))% left"
+                )
+                + (includesResetTime ? resetSuffix(resetsAt, language: language, timeZone: timeZone) : "")
+        case .unlimited:
+            detail = "∞"
+        case .unknown:
+            detail = language.text("未知", "Unknown")
+        }
+        return language.text("**\(label)**：\(detail)", "**\(label)**: \(detail)")
+    }
+
+    private static func resetTimeLines(
+        for facts: FeishuAccountFacts,
+        language: WidgetLanguage,
+        timeZone: TimeZone
+    ) -> [String] {
+        [(language.text("5 小时重置", "5h reset"), facts.fiveHour), (language.text("7 天重置", "7d reset"), facts.sevenDay)]
+            .map { label, value in
+                guard case .finite(_, let resetsAt) = value else {
+                    return language.text("**\(label)**：未知", "**\(label)**: Unknown")
+                }
+                return language.text("**\(label)**：", "**\(label)**: ")
+                    + compactDate(resetsAt, language: language, timeZone: timeZone)
+            }
+    }
+
+    private static func resetSuffix(_ date: Date?, language: WidgetLanguage, timeZone: TimeZone) -> String {
+        guard let date else { return " · " + language.text("重置时间未知", "reset unknown") }
+        return " · " + language.text("重置 ", "resets ") + compactDate(date, language: language, timeZone: timeZone)
+    }
+
+    private static func resetCreditLine(
+        for notification: FeishuSwitchNotification,
+        language: WidgetLanguage,
+        timeZone: TimeZone
+    ) -> String {
+        let count = notification.accountFacts.availableResetCredits.map(String.init) ?? language.text("未知", "Unknown")
+        var line = language.text("**可用 Reset 卡**：\(count) 次", "**Available resets**: \(count)")
+        guard notification.messageOptions.resetExpiryDetail != .none,
+            notification.accountFacts.availableResetCredits != 0
+        else { return line }
+        let upcoming = notification.accountFacts.resetCreditExpiries
+            .filter { $0 >= notification.occurredAt }
+        let available =
+            notification.accountFacts.availableResetCredits
+            .map { Array(upcoming.prefix($0)) } ?? upcoming
+        guard !available.isEmpty else { return line + language.text(" · 到期时间未知", " · expiry unknown") }
+        let dates = notification.messageOptions.resetExpiryDetail == .nearest ? Array(available.prefix(1)) : available
+        let formatted = dates.map { compactDate($0, language: language, timeZone: timeZone) }.joined(separator: language.text("、", ", "))
+        line += language.text(" · 到期 \(formatted)", " · expires \(formatted)")
+        return line
+    }
+
+    private static func compactDate(_ date: Date?, language: WidgetLanguage, timeZone: TimeZone) -> String {
+        guard let date else { return language.text("未知", "Unknown") }
+        let formatter = DateFormatter()
+        formatter.locale = language.locale
+        formatter.timeZone = timeZone
+        formatter.dateFormat = language == .zh ? "M月d日 HH:mm" : "M/d HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private static func lowQuotaTrigger(for notification: FeishuSwitchNotification, language: WidgetLanguage) -> String {
+        var reasons: [String] = []
+        if let value = notification.fiveHourRemainingPercent, value <= Double(notification.fiveHourTriggerThresholdPercent) {
+            reasons.append(
+                language.text(
+                    "5 小时剩余 \(percentText(value))% ≤ \(notification.fiveHourTriggerThresholdPercent)%",
+                    "5-hour remaining \(percentText(value))% ≤ \(notification.fiveHourTriggerThresholdPercent)%"))
+        }
+        if let value = notification.sevenDayRemainingPercent, value < Double(notification.triggerThresholdPercent) {
+            reasons.append(
+                language.text(
+                    "7 天剩余 \(percentText(value))% < \(notification.triggerThresholdPercent)%", "7-day remaining \(percentText(value))% < \(notification.triggerThresholdPercent)%"))
+        }
+        return language.text("**触发原因**：", "**Trigger**: ")
+            + (reasons.isEmpty ? language.text("未确认低额度条件", "Low-quota condition unverified") : reasons.joined(separator: "; "))
+    }
+
+    private static func presentation(for event: FeishuSwitchNotification.Event, origin: FeishuSwitchNotification.SwitchOrigin, language: WidgetLanguage) -> (
         title: String,
         result: String,
         template: String
     ) {
         switch event {
         case .test:
-            return (language.text("Codex 自动化测试通知", "Codex automation test"), language.text("配置可用", "Configuration ready"), "blue")
+            return (language.text("Codex 飞书连接测试", "Codex Feishu connection test"), language.text("测试消息", "Test message"), "blue")
         case .lowQuotaDetected:
             return (language.text("Codex 额度低于阈值", "Codex quota is low"), language.text("已检测到低额度", "Low quota detected"), "orange")
         case .quotaChange(.quotaReset):
@@ -544,18 +851,24 @@ final class FeishuWebhookService {
         case .quotaChange(.resetCreditsAdded):
             return (language.text("Codex 获得 Reset 卡", "Codex reset credits added"), language.text("官方可用 Reset 次数增加", "Official available reset count increased"), "blue")
         case .switchSucceeded:
-            return (language.text("Codex 账号已自动切换", "Codex account switched automatically"), language.text("切换成功", "Switch successful"), "green")
+            let title =
+                origin == .restartTest
+                ? language.text("Codex 测试重启完成", "Codex restart test complete")
+                : origin == .lowQuota
+                    ? language.text("Codex 账号已自动切换", "Codex account switched automatically")
+                    : language.text("Codex 桌面账号已手动切换", "Codex Desktop account switched manually")
+            return (title, language.text("切换成功", "Switch successful"), "green")
         case .switchFailed(let reason):
-            return (language.text("Codex 自动切换未完成", "Codex automatic switch incomplete"), reason.displayName(language), "red")
+            let title =
+                origin == .restartTest
+                ? language.text("Codex 测试重启未完成", "Codex restart test incomplete")
+                : origin == .lowQuota
+                    ? language.text("Codex 自动切换未完成", "Codex automatic switch incomplete")
+                    : language.text("Codex 手动切换未完成", "Codex manual switch incomplete")
+            return (title, reason.displayName(language), "red")
         }
     }
 
-    private static let timestampFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        return formatter
-    }()
 }
 
 private final class FeishuWebhookTestProtocol: URLProtocol {
@@ -587,9 +900,19 @@ private final class FeishuWebhookTestProtocol: URLProtocol {
 enum FeishuWebhookServiceSelfTest {
     static func run() -> Bool {
         var failures: [String] = []
+        if !PublicResetAnnouncementSelfTest.run() { failures.append("public reset announcement policy failed") }
         if !CodexQuotaEventTrackerSelfTest.run() { failures.append("quota event policy failed") }
         func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
             if !condition() { failures.append(message) }
+        }
+        func markdown(_ data: Data) -> String {
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let card = root["card"] as? [String: Any],
+                let body = card["body"] as? [String: Any],
+                let elements = body["elements"] as? [[String: Any]],
+                let content = elements.first?["content"] as? String
+            else { return "" }
+            return content
         }
 
         let valid = [
@@ -631,6 +954,7 @@ enum FeishuWebhookServiceSelfTest {
             expect(text.contains("\"msg_type\":\"interactive\""), "interactive payload missing")
             expect(text.contains("p***-source"), "masked source missing")
             expect(!text.contains("person@example.com"), "raw account leaked")
+            expect(!text.contains(notification.eventID.uuidString), "internal event ID rendered")
             expect((try? FeishuMaskedAccount("person@example.com***")) == nil, "email-like label accepted")
             let customThresholds = try FeishuSwitchNotification(
                 event: .lowQuotaDetected, sourceAccount: source,
@@ -638,7 +962,7 @@ enum FeishuWebhookServiceSelfTest {
                 fiveHourRemainingPercent: 18, sevenDayRemainingPercent: 70
             )
             let customText = String(data: try FeishuWebhookService.payloadData(for: customThresholds, language: .en), encoding: .utf8) ?? ""
-            expect(customText.contains("5-hour ≤ 20%") && customText.contains("7-day < 15%"), "custom alert thresholds missing from notification")
+            expect(customText.contains("5-hour remaining 18% ≤ 20%") && !customText.contains("7-day remaining 70% < 15%"), "notification must show only the threshold actually met")
 
             let testNotification = try FeishuSwitchNotification(
                 event: .test,
@@ -651,10 +975,158 @@ enum FeishuWebhookServiceSelfTest {
             )
             let testPayload = try FeishuWebhookService.payloadData(for: testNotification, language: .zh)
             expect(
-                String(data: testPayload, encoding: .utf8)?.contains("Codex 自动化测试通知") == true,
+                String(data: testPayload, encoding: .utf8)?.contains("Codex 飞书连接测试") == true,
                 "test notification mislabeled"
             )
+            let testText = String(data: testPayload, encoding: .utf8) ?? ""
+            expect(!testText.contains("触发规则") && !testText.contains("≤") && !testText.contains("自动切换"), "connection test must not claim a quota trigger or automatic switch")
+            let named = try FeishuMaskedAccount(displayName: "evan", dispatchCode: "A")
+            let unassigned = try FeishuMaskedAccount(displayName: "pro20x")
+            let emoji = try FeishuMaskedAccount(displayName: "👨‍🍳", dispatchCode: "F")
+            expect(named.value == "evan", "dispatch code leaked into outbound account label")
+            expect(unassigned.value == "pro20x", "unassigned display name must remain readable")
+            expect(emoji.value == "👨‍🍳", "emoji labels must remain readable without dispatch code")
+            for invalid in ["person@example.com", "/private/account", "[click](https://example.invalid)", "line\nline"] {
+                expect((try? FeishuMaskedAccount(displayName: invalid, dispatchCode: "A")) == nil, "unsafe display name accepted")
+            }
+            for origin in [FeishuSwitchNotification.SwitchOrigin.manual, .restartTest] {
+                let manual = try FeishuSwitchNotification(
+                    event: .switchSucceeded, sourceAccount: named, targetAccount: target, switchOrigin: origin,
+                    triggerThresholdPercent: 10, fiveHourRemainingPercent: 100, sevenDayRemainingPercent: 80
+                )
+                let body = String(data: try FeishuWebhookService.payloadData(for: manual, language: .zh), encoding: .utf8) ?? ""
+                expect(
+                    body.contains(origin == .manual ? "手动切换" : "测试重启") && !body.contains("自动切换") && !body.contains("≤"),
+                    "explicit manual and restart test causes must not become quota triggers")
+            }
+            let shanghai = TimeZone(identifier: "Asia/Shanghai")!
+            let firstExpiry = Date(timeIntervalSince1970: 172_800)
+            let secondExpiry = Date(timeIntervalSince1970: 259_200)
+            let facts = try FeishuAccountFacts(
+                fiveHour: .unlimited,
+                sevenDay: .finite(remainingPercent: 64, resetsAt: firstExpiry),
+                availableResetCredits: 2,
+                resetCreditExpiries: [secondExpiry, firstExpiry]
+            )
+            let compact = try FeishuSwitchNotification(
+                event: .test, sourceAccount: unassigned,
+                triggerThresholdPercent: 10, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 64,
+                accountFacts: facts, occurredAt: Date(timeIntervalSince1970: 0),
+                eventID: UUID(uuidString: "00000000-0000-0000-0000-000000000099")!
+            )
+            let compactText = markdown(try FeishuWebhookService.payloadData(for: compact, language: .zh, timeZone: shanghai))
+            expect(compactText.contains("**账号**：pro20x"), "default account label missing")
+            expect(compactText.contains("**5 小时**：∞"), "confirmed unlimited 5-hour value missing")
+            expect(compactText.contains("1月3日 08:00") && !compactText.contains("1月4日 08:00"), "default expiry must show nearest upcoming value only")
+            expect(!compactText.contains("事件 ID") && !compactText.contains("00000000-0000"), "compact card exposed audit UUID")
+            expect(!compactText.contains("**Agent**"), "agent name must be optional and off by default")
+
+            let expiryNow = Date(timeIntervalSince1970: 200_000)
+            let expiryFacts = try FeishuAccountFacts(
+                fiveHour: .unknown,
+                sevenDay: .unknown,
+                availableResetCredits: 1,
+                resetCreditExpiries: [
+                    expiryNow.addingTimeInterval(-60),
+                    expiryNow.addingTimeInterval(3_600),
+                    expiryNow.addingTimeInterval(7_200),
+                ]
+            )
+            let expiryNotification = try FeishuSwitchNotification(
+                event: .test, sourceAccount: unassigned,
+                triggerThresholdPercent: 10, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil,
+                accountFacts: expiryFacts, occurredAt: expiryNow
+            )
+            let expiryText = markdown(
+                try FeishuWebhookService.payloadData(for: expiryNotification, language: .en, timeZone: shanghai)
+            )
+            expect(
+                expiryText.contains("1/3 16:33") && !expiryText.contains("1/3 17:33"),
+                "expired detail hid the nearest available expiry"
+            )
+            let zeroFacts = try FeishuAccountFacts(
+                fiveHour: .unknown,
+                sevenDay: .unknown,
+                availableResetCredits: 0,
+                resetCreditExpiries: []
+            )
+            let zeroNotification = try FeishuSwitchNotification(
+                event: .test, sourceAccount: unassigned,
+                triggerThresholdPercent: 10, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil,
+                accountFacts: zeroFacts, occurredAt: expiryNow
+            )
+            let zeroText = markdown(
+                try FeishuWebhookService.payloadData(for: zeroNotification, language: .en, timeZone: shanghai)
+            )
+            expect(
+                zeroText.contains("**Available resets**: 0") && !zeroText.contains("expiry unknown"),
+                "zero available resets appended an irrelevant unknown expiry"
+            )
+
+            var allOptions = FeishuMessageOptions.standard
+            allOptions.includesAgentName = true
+            allOptions.includesAccountLabel = false
+            allOptions.includesQuotas = false
+            allOptions.includesResetTimes = false
+            allOptions.resetExpiryDetail = .all
+            let persistedOptions = try JSONDecoder().decode(
+                FeishuMessageOptions.self,
+                from: JSONEncoder().encode(allOptions)
+            )
+            expect(persistedOptions == allOptions, "message options did not persist losslessly")
+            let filtered = try FeishuSwitchNotification(
+                event: .test, sourceAccount: unassigned,
+                triggerThresholdPercent: 10, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 64,
+                accountFacts: facts, messageOptions: allOptions, occurredAt: Date(timeIntervalSince1970: 0)
+            )
+            let filteredText = markdown(try FeishuWebhookService.payloadData(for: filtered, language: .en, timeZone: shanghai))
+            expect(filteredText.contains("**Agent**: Codex"), "enabled agent field missing")
+            expect(!filteredText.contains("pro20x") && !filteredText.contains("**5h**") && !filteredText.contains("**7d**"), "disabled fields rendered")
+            expect(filteredText.contains("1/3 08:00") && filteredText.contains("1/4 08:00"), "all expiry details were not rendered")
+
+            let finitePro = FeishuQuotaValue.generalFiveHour(
+                window: RateWindow(usedPercent: 37, windowDurationMins: 300, resetsAt: nil), confirmedPlan: "pro"
+            )
+            expect(finitePro == .finite(remainingPercent: 63, resetsAt: nil), "finite Pro 5-hour window was overwritten")
+            expect(FeishuQuotaValue.generalFiveHour(window: nil, confirmedPlan: "PRO") == .unlimited, "absent confirmed Pro 5-hour window was not unlimited")
+            expect(FeishuQuotaValue.generalFiveHour(window: nil, confirmedPlan: "plus") == .unknown, "missing non-Pro 5-hour window was not unknown")
+            for invalidPercent in [Double.nan, Double.infinity, -0.1, 100.1] {
+                expect(
+                    (try? FeishuAccountFacts.quotasOnly(
+                        fiveHourRemaining: invalidPercent,
+                        sevenDayRemaining: nil
+                    )) == nil,
+                    "invalid quota percentage was clamped into a valid outbound fact"
+                )
+            }
+            expect(CreditBalancePresentation(credits: nil).value == .unavailable, "missing balance became zero")
+            expect(
+                CreditBalancePresentation(
+                    credits: CreditsInfo(hasCredits: true, unlimited: false, balance: "0", resetCredits: nil, resetCreditDetails: nil)
+                ).value == .reported("0"), "zero balance became unavailable"
+            )
+            expect(
+                CreditBalancePresentation(
+                    credits: CreditsInfo(hasCredits: true, unlimited: false, balance: "USD 5", resetCredits: nil, resetCreditDetails: nil)
+                ).value == .unavailable, "unspecified balance text was labeled as currency"
+            )
+            expect(
+                CreditBalancePresentation(
+                    balance: "1,234.50", unlimited: false
+                ).value == .reported("1,234.50"), "valid decimal balance was rejected"
+            )
+            expect(
+                CreditBalancePresentation(
+                    balance: "1,2.3.4", unlimited: false
+                ).value == .unavailable, "malformed decimal balance was accepted"
+            )
+            expect(
+                (try? FeishuSwitchNotification(
+                    event: .lowQuotaDetected, sourceAccount: named,
+                    triggerThresholdPercent: 10, fiveHourRemainingPercent: 5.4, sevenDayRemainingPercent: 10
+                )) == nil, "rounded quota must not falsely meet the low-quota threshold")
             failures += credentialIsolationTests(notification: testNotification, endpoint: valid[0])
+            failures += credentialAuthorizationTests(notification: testNotification, endpoint: valid[0])
             for change in [
                 CodexQuotaEvent.quotaReset(fiveHour: true, sevenDay: true),
                 .resetCreditsAdded(added: 2, available: 3),
@@ -663,18 +1135,18 @@ enum FeishuWebhookServiceSelfTest {
                     event: .quotaChange(change), sourceAccount: source,
                     triggerThresholdPercent: 10, fiveHourRemainingPercent: 100, sevenDayRemainingPercent: 80
                 )
-                let body = String(data: try FeishuWebhookService.payloadData(for: event, language: .zh), encoding: .utf8) ?? ""
+                let body = markdown(try FeishuWebhookService.payloadData(for: event, language: .zh))
                 expect(body.contains("p***-source"), "quota event missing masked account")
                 expect(!body.contains("触发规则"), "quota event inherited low-quota rule")
                 expect(!body.contains("目标账号"), "quota event suggests switching")
-                let english = String(data: try FeishuWebhookService.payloadData(for: event, language: .en), encoding: .utf8) ?? ""
+                let english = markdown(try FeishuWebhookService.payloadData(for: event, language: .en))
                 expect(english.range(of: "\\p{Han}", options: .regularExpression) == nil, "English notification must not contain Chinese app copy")
                 expect(english.contains("p***-source") && !english.contains("person@example.com"), "English notification must preserve masking")
                 switch change {
                 case .quotaReset:
-                    expect(body.contains("重置窗口") && body.contains("5 小时、7 天"), "reset windows missing")
+                    expect(body.contains("5 小时") && body.contains("7 天"), "reset quotas missing")
                 case .resetCreditsAdded:
-                    expect(body.contains("新增 Reset 卡") && body.contains("3 次"), "official credit count missing")
+                    expect(body.contains("新增 2 次") && body.contains("可用 3 次"), "official credit count missing")
                 }
             }
             for invalidChange in [
@@ -730,6 +1202,7 @@ enum FeishuWebhookServiceSelfTest {
         let service = FeishuWebhookService(
             keychainReadTimeout: 0.15, maximumPendingReads: 2,
             sessionConfiguration: configuration,
+            keychainInteraction: FeishuKeychainInteraction(getAllowed: { true }, setAllowed: { _ in }),
             copyMatching: { _, result in
                 readLock.lock()
                 readCount += 1
@@ -793,7 +1266,10 @@ enum FeishuWebhookServiceSelfTest {
         expect(sendResults.count == 1 && probeResults.count == 2, "late credential result completed twice")
         expect(FeishuWebhookTestProtocol.requestCount == requestsBefore, "timed-out send issued a late request")
 
-        let successService = FeishuWebhookService(sessionConfiguration: configuration) { _, result in
+        let successService = FeishuWebhookService(
+            sessionConfiguration: configuration,
+            keychainInteraction: FeishuKeychainInteraction(getAllowed: { true }, setAllowed: { _ in })
+        ) { _, result in
             result?.pointee = Data(endpoint.utf8) as CFData
             return errSecSuccess
         }
@@ -810,6 +1286,105 @@ enum FeishuWebhookServiceSelfTest {
         if case .failure(.cancelled)? = cancelledSend {} else { failures.append("send did not recheck opt-in after credential read") }
         expect(FeishuWebhookTestProtocol.requestCount == requestsBefore + 1, "cancelled send issued a request")
         withExtendedLifetime((service, successService)) {}
+        return failures
+    }
+
+    private static func credentialAuthorizationTests(notification: FeishuSwitchNotification, endpoint: String) -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+            if !condition() { failures.append(message) }
+        }
+        func waitUntil(_ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(2)
+            while !condition(), Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+        }
+        var allowed = true
+        var authorized = false
+        var policy: [Bool] = []
+        var prompts = 0
+        var readOnMain = false
+        let interaction = FeishuKeychainInteraction(
+            getAllowed: { allowed },
+            setAllowed: {
+                allowed = $0
+                policy.append($0)
+            })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FeishuWebhookTestProtocol.self]
+        let service = FeishuWebhookService(sessionConfiguration: configuration, keychainInteraction: interaction) { query, result in
+            readOnMain = readOnMain || Thread.isMainThread
+            guard (query as NSDictionary)[kSecReturnData as String] as? Bool == true else { return errSecParam }
+            if !authorized {
+                guard allowed else { return errSecInteractionNotAllowed }
+                prompts += 1
+                authorized = true
+            }
+            result?.pointee = Data(endpoint.utf8) as CFData
+            return errSecSuccess
+        }
+        let requestsBefore = FeishuWebhookTestProtocol.requestCount
+        var probe: Result<Bool, FeishuWebhookError>?
+        service.hasStoredWebhook { probe = $0 }
+        waitUntil { probe != nil }
+        if case .failure(.keychainAuthorizationRequired)? = probe {} else { failures.append("silent probe hid authorization requirement") }
+        var blocked: Result<Void, FeishuWebhookError>?
+        service.send(notification) { blocked = $0 }
+        waitUntil { blocked != nil }
+        if case .failure(.keychainAuthorizationRequired)? = blocked {} else { failures.append("background send did not fail closed") }
+        service.keychainQueue.sync {}
+        expect(prompts == 0 && allowed, "background read requested UI or failed to restore policy")
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore, "unauthorized send reached transport")
+
+        var authorization: Result<Void, FeishuWebhookError>?
+        service.authorizeStoredWebhook { authorization = $0 }
+        waitUntil { authorization != nil }
+        service.keychainQueue.sync {}
+        expect(authorization?.isSuccess == true && prompts == 1, "explicit authorization did not request access once")
+        expect(!readOnMain, "authorization blocked the main thread")
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore, "authorization sent an unsolicited notification")
+        var delivered: Result<Void, FeishuWebhookError>?
+        service.send(notification) { result in DispatchQueue.main.async { delivered = result } }
+        waitUntil { delivered != nil }
+        service.keychainQueue.sync {}
+        expect(delivered?.isSuccess == true && prompts == 1, "authorized background delivery requested another prompt")
+        expect(policy == [false, true, false, true, true, true, false, true], "Keychain UI policy was not scoped to explicit actions")
+
+        let cancelled = FeishuWebhookService(sessionConfiguration: configuration, keychainInteraction: interaction) { _, _ in errSecUserCanceled }
+        var cancellation: Result<Void, FeishuWebhookError>?
+        cancelled.authorizeStoredWebhook { cancellation = $0 }
+        waitUntil { cancellation != nil }
+        cancelled.keychainQueue.sync {}
+        if case .failure(.keychainAuthorizationRequired)? = cancellation {} else { failures.append("cancelled authorization reported connected") }
+        expect(allowed, "throwing Keychain operation left global interaction disabled")
+
+        var reachedOperation = false
+        let failingPolicy = FeishuKeychainInteraction(
+            getAllowed: { true }, setAllowed: { _ in throw FeishuWebhookError.keychain(errSecNotAvailable) })
+        do {
+            try failingPolicy.perform(allowInteraction: false) { reachedOperation = true }
+            failures.append("failed UI suppression was accepted")
+        } catch {}
+        expect(!reachedOperation, "credential read ran when UI suppression failed")
+
+        var storedValue: Data?
+        let failedReadback = FeishuWebhookService(
+            sessionConfiguration: configuration, keychainInteraction: interaction,
+            updateItem: { _, attributes in
+                storedValue = (attributes as NSDictionary)[kSecValueData as String] as? Data
+                return errSecSuccess
+            },
+            copyMatching: { _, _ in errSecNotAvailable })
+        var saveResult: Result<Void, FeishuWebhookError>?
+        failedReadback.storeWebhook(endpoint) { saveResult = $0 }
+        waitUntil { saveResult != nil }
+        failedReadback.keychainQueue.sync {}
+        expect(storedValue == Data(endpoint.utf8), "readback failure fixture did not save the new value")
+        if case .failure(.keychain(errSecNotAvailable))? = saveResult {} else { failures.append("readback failure was not reported") }
+        if let saveResult {
+            expect(UsageStore.feishuConnectionCompletionSelfTest(saveResult), "failed connection retained stale readiness or cleared unrelated transport readiness")
+        }
         return failures
     }
 }

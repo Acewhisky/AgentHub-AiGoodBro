@@ -37,6 +37,22 @@ mkdir -p "$DMG_ROOT" "$DIST_DIR"
 ditto "$APP_DIR" "$DMG_ROOT/$APP_NAME.app"
 ln -s /Applications "$DMG_ROOT/Applications"
 
+# Package only the reviewed public files; never copy a user's installed Skill.
+COMPANION_SOURCE=".agents/skills/multi-agent-management"
+COMPANION_DEST="$DMG_ROOT/Companion Skill/multi-agent-management"
+COMPANION_FILES=(
+  "SKILL.md" "使用说明.md"
+  "config/dispatch-codes-v1.json" "config/dispatch-policy-v1.json"
+  "references/coordination.md" "references/dispatch-brief.md" "references/local-runtime.md"
+  "scripts/next_dispatch_activity.py" "scripts/next_dispatch_preflight.py"
+)
+for relative in "${COMPANION_FILES[@]}"; do
+  [[ -f "$COMPANION_SOURCE/$relative" ]] || { echo "Missing companion Skill file: $relative" >&2; exit 1; }
+  mkdir -p "$(dirname "$COMPANION_DEST/$relative")"
+  install -m 644 "$COMPANION_SOURCE/$relative" "$COMPANION_DEST/$relative"
+done
+install -m 644 LICENSE "$DMG_ROOT/Companion Skill/LICENSE"
+
 cat > "$DMG_ROOT/README.txt" <<README
 ${DISPLAY_NAME} ${VERSION}
 适用机型: ${ARCH_LABEL}
@@ -51,14 +67,21 @@ ${DISPLAY_NAME} ${VERSION}
 - 本机已安装并登录 Codex。
 - Codex 至少使用过一次，以便生成 ~/.codex/state_5.sqlite。
 
-权限:
-- 全局快捷键默认关闭；用户启用并录制后用于显示/隐藏主窗口。
+配套 Skill（可选）:
+- Companion Skill 文件夹附多账号调度 Skill、脚本与中文使用说明。
+- 已安装同名 Skill 时先比较差异并备份，保留个人 config；不要直接覆盖账号映射。
+- 公开配置仅含停用示例；安装 Skill 不会自动配置 Hub 或启动任务。
+
+权限与提醒:
+- 新用户默认使用 ⌘U 显示/隐藏主窗口；已有快捷键设置保留。
 - 菜单栏图标可以打开 Runtime 浮窗、主窗口、设置或退出应用。
+- 重置消息默认开启，不消耗账号额度；macOS 提醒需系统允许通知。
+- 自动化中心可查看消息或关闭接收；飞书是可选转发，不是必要配置。
 
 隐私:
 - 本应用读取 Codex app-server、~/.codex、独立账号目录和可选 ~/.claude 的本地数据。
 - 认证内容只用于本机身份校验和用户启用的账号切换，不显示、不记录、不随诊断上传。
-- 飞书通知默认关闭；启用后只发送脱敏账号标识、额度窗口、结果和时间。
+- 飞书开关与 Webhook 配置分别管理；配置并启用后只发送脱敏事件及公开重置消息。
 README
 
 rm -f "$DMG_PATH" "$TMP_DMG"

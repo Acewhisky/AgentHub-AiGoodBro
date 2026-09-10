@@ -2,6 +2,7 @@
 """macOS-only Python/Swift shared-file contract and real flock interoperability."""
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,8 @@ enum DispatchParticipationSync {
     static func main() {
         let store = DispatchActivityStore(directory: URL(fileURLWithPath: CommandLine.arguments[1]))
         do {
-            let id = try store.reserveWarmUp(account: CommandLine.arguments[2], alias: "fixture-alias")
+            let alias = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : "fixture-alias-" + CommandLine.arguments[2]
+            let id = try store.reserveWarmUp(account: CommandLine.arguments[2], alias: alias)
             try store.finishWarmUp(id, succeeded: true)
             try store.appendIssue(id: "interop", phase: "verified", summary: "Swift fixture appended", code: "B")
             print("WROTE")
@@ -53,12 +55,16 @@ with tempfile.TemporaryDirectory(prefix='next-activity-interop-') as temporary:
     binary = root / 'fixture'
     compile_result = subprocess.run(
         ['xcrun', 'swiftc', '-parse-as-library', str(ROOT / 'Sources/CodexUsageWidget/Services/DispatchActivityStore.swift'),
-         str(source), '-o', str(binary)], capture_output=True, text=True)
+         str(source), '-o', str(binary)], capture_output=True, text=True,
+        env={**os.environ, 'CLANG_MODULE_CACHE_PATH': str(root / 'module-cache')})
     if compile_result.returncode:
         print('Interop fixture compilation failed; no live state was used')
+        detail = compile_result.stderr.replace(str(ROOT), '<repo>').replace(str(root), '<temp>').strip()
+        if detail:
+            print(detail)
         raise SystemExit(1)
     registry = activity.Registry(root / 'state')
-    lease = registry.reserve(account_key=activity.digest('fixture-a'), alias_key=activity.digest('fixture-alias'),
+    lease = registry.reserve(account_key=activity.digest('fixture-a'), alias_key=activity.digest('fixture-alias-fixture-a'),
                              code='A', project=activity.digest('fixture-project'), owner='fixture-owner',
                              task='fixture-task', route='direct')
     # Unknown process fields are preserved by Swift's schema-preserving mutation.
@@ -66,6 +72,8 @@ with tempfile.TemporaryDirectory(prefix='next-activity-interop-') as temporary:
     def invoke(account):
         return subprocess.run([str(binary), str(registry.root), account], capture_output=True, text=True, check=True).stdout.strip()
     assert invoke('fixture-a') == 'BUSY', 'Swift failed to honor Python account reservation'
+    same_alias = subprocess.run([str(binary), str(registry.root), 'different-account', 'fixture-alias-fixture-a'], capture_output=True, text=True, check=True)
+    assert same_alias.stdout.strip() == 'BUSY', 'Swift failed to honor Python alias reservation'
     with registry.lock():
         assert invoke('fixture-b') == 'BUSY', 'Swift failed to honor Python system file lock'
     assert invoke('fixture-b') == 'WROTE'

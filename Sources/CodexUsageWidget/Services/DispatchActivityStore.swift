@@ -113,7 +113,7 @@ struct DispatchActivityStore {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             guard lstat(directory.path, &info) == 0 else { throw Failure.unavailable }
         }
-        guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid() else { throw Failure.unavailable }
+        guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else { throw Failure.unavailable }
         let fd = Darwin.open(directory.appendingPathComponent(Self.lockName).path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw Failure.unavailable }
         defer { Darwin.close(fd) }
@@ -156,26 +156,160 @@ struct DispatchActivityStore {
     }
 
     func reserveWarmUp(account: String, alias: String, now: Date = Date()) throws -> String {
+        try reserveAccountActivity(account: account, alias: alias, route: "warmup", now: now)
+    }
+
+    func reserveMaintenance(account: String, alias: String, now: Date = Date()) throws -> String {
+        try reserveAccountActivity(account: account, alias: alias, route: "maintenance", now: now)
+    }
+
+    /// Source and target are reserved together, so a busy second account never
+    /// leaves the first account with an orphaned preparation reservation.
+    func reserveMaintenance(accounts: [(account: String, alias: String)], now: Date = Date()) throws -> [String] {
+        let keys = accounts.map { (account: Self.hash($0.account), alias: Self.hash($0.alias.lowercased())) }
+        guard !keys.isEmpty, keys.count <= 2, Set(keys.map(\.account)).count == keys.count,
+            Set(keys.map(\.alias)).count == keys.count
+        else { throw Failure.invalidState }
+        let ids = keys.map { _ in UUID().uuidString.lowercased() }
+        try mutate { records in
+            guard
+                !records.contains(where: { row in
+                    Self.activeStates.contains(row["state"] as? String ?? "")
+                        && keys.contains { $0.account == row["accountKey"] as? String || $0.alias == row["aliasKey"] as? String }
+                })
+            else { throw Failure.busy }
+            for (index, key) in keys.enumerated() {
+                records.append([
+                    "leaseId": ids[index], "ownerThreadId": "next-\(getpid())", "taskId": "desktop-switch-\(ids[index])",
+                    "accountKey": key.account, "aliasKey": key.alias, "projectKey": Self.hash("maintenance:\(key.account)"),
+                    "route": "maintenance", "state": "preparing", "createdAt": now.timeIntervalSince1970,
+                    "updatedAt": now.timeIntervalSince1970, "heartbeatDueAt": now.timeIntervalSince1970 + 600,
+                ])
+            }
+        }
+        return ids
+    }
+
+    /// Called only after switch-journal recovery has completed. An expired
+    /// heartbeat alone never releases another process's reservation.
+    func finishRecoveredDesktopMaintenance(recoveryIsClear: Bool, now: Date = Date()) throws {
+        guard recoveryIsClear else { return }
+        try mutate { records in
+            for index in records.indices {
+                guard records[index]["route"] as? String == "maintenance",
+                    let id = records[index]["leaseId"] as? String,
+                    records[index]["taskId"] as? String == "desktop-switch-\(id)",
+                    Self.activeStates.contains(records[index]["state"] as? String ?? ""),
+                    let owner = records[index]["ownerThreadId"] as? String, owner.hasPrefix("next-"),
+                    let pid = pid_t(owner.dropFirst(5)), pid > 1, pid != getpid(),
+                    kill(pid, 0) != 0, errno == ESRCH
+                else { continue }
+                records[index]["state"] = "cancelled"
+                records[index]["updatedAt"] = now.timeIntervalSince1970
+                records[index]["heartbeatDueAt"] = now.timeIntervalSince1970
+            }
+        }
+    }
+
+    private func reserveAccountActivity(account: String, alias: String, route: String, now: Date) throws -> String {
         let accountKey = Self.hash(account)
+        let aliasKey = Self.hash(alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
         let id = UUID().uuidString.lowercased()
         try mutate { records in
-            guard !records.contains(where: { ($0["accountKey"] as? String) == accountKey && Self.activeStates.contains($0["state"] as? String ?? "") })
+            guard
+                !records.contains(where: {
+                    (($0["accountKey"] as? String) == accountKey || ($0["aliasKey"] as? String) == aliasKey) && Self.activeStates.contains($0["state"] as? String ?? "")
+                })
             else { throw Failure.busy }
             let current = now.timeIntervalSince1970
             let owner = "next-\(getpid())"
             records.append([
-                "leaseId": id, "ownerThreadId": owner, "taskId": "warmup-\(id)",
-                "accountKey": accountKey, "aliasKey": Self.hash(alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
-                "projectKey": Self.hash("warmup:\(accountKey)"), "route": "warmup", "state": "preparing",
+                "leaseId": id, "ownerThreadId": owner, "taskId": "\(route)-\(id)",
+                "accountKey": accountKey, "aliasKey": aliasKey,
+                "projectKey": Self.hash("\(route):\(accountKey)"), "route": route, "state": "preparing",
                 "createdAt": current, "updatedAt": current, "heartbeatDueAt": current + 600,
             ])
         }
         return id
     }
 
-    func finishWarmUp(_ id: String, succeeded: Bool, cancelled: Bool = false, now: Date = Date()) throws {
+    func reserveTerminal(account: String, alias: String, workingDirectory: URL, now: Date = Date()) throws -> String {
+        let accountKey = Self.hash(account)
+        let aliasKey = Self.hash(alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        let projectKey = Self.hash(workingDirectory.resolvingSymlinksInPath().standardizedFileURL.path)
+        let id = UUID().uuidString.lowercased()
         try mutate { records in
-            guard let index = records.firstIndex(where: { ($0["leaseId"] as? String) == id && ($0["ownerThreadId"] as? String) == "next-\(getpid())" })
+            guard
+                !records.contains(where: {
+                    Self.activeStates.contains($0["state"] as? String ?? "")
+                        && (($0["accountKey"] as? String) == accountKey || ($0["aliasKey"] as? String) == aliasKey || ($0["projectKey"] as? String) == projectKey)
+                })
+            else { throw Failure.busy }
+            let current = now.timeIntervalSince1970
+            records.append([
+                "leaseId": id, "ownerThreadId": "next-\(getpid())", "taskId": "terminal-\(id)",
+                "accountKey": accountKey, "aliasKey": aliasKey, "projectKey": projectKey,
+                "route": "terminal", "state": "preparing",
+                "createdAt": current, "updatedAt": current, "heartbeatDueAt": current + 120,
+            ])
+        }
+        return id
+    }
+
+    func updateTerminal(_ id: String, state: String, pid: pid_t? = nil, now: Date = Date()) throws {
+        guard ["running", "uncertain", "cancelled", "failed", "awaiting_acceptance"].contains(state) else { throw Failure.invalidState }
+        try mutate { records in
+            guard
+                let index = records.firstIndex(where: {
+                    ($0["leaseId"] as? String) == id && ($0["ownerThreadId"] as? String) == "next-\(getpid())" && ($0["route"] as? String) == "terminal"
+                }), Self.activeStates.contains(records[index]["state"] as? String ?? "")
+            else { throw Failure.invalidState }
+            records[index]["state"] = state
+            records[index]["updatedAt"] = now.timeIntervalSince1970
+            records[index]["heartbeatDueAt"] = now.timeIntervalSince1970 + (Self.activeStates.contains(state) ? 120 : 0)
+            if let pid { records[index]["pid"] = Int(pid) }
+            let active = records.filter { Self.activeStates.contains($0["state"] as? String ?? "") }
+            let ended = Self.recentEndedRecords(records)
+            records = active + ended
+        }
+    }
+
+    /// Only Next-owned terminal receipts can be resumed, and only after the
+    /// original app process has ended. Expired heartbeats never prove this.
+    func resumeTerminal(_ lease: Lease, now: Date = Date()) throws {
+        guard lease.route == "terminal", lease.taskId == "terminal-\(lease.leaseId)",
+            lease.ownerThreadId.hasPrefix("next-"),
+            let previousPID = pid_t(lease.ownerThreadId.dropFirst(5)), previousPID > 1,
+            previousPID == getpid() || (kill(previousPID, 0) != 0 && errno == ESRCH)
+        else { throw Failure.busy }
+        try mutate { records in
+            guard
+                let index = records.firstIndex(where: {
+                    ($0["leaseId"] as? String) == lease.leaseId && ($0["ownerThreadId"] as? String) == lease.ownerThreadId
+                        && ($0["route"] as? String) == "terminal" && Self.activeStates.contains($0["state"] as? String ?? "")
+                })
+            else { throw Failure.invalidState }
+            records[index]["ownerThreadId"] = "next-\(getpid())"
+            records[index]["state"] = "uncertain"
+            records[index]["updatedAt"] = now.timeIntervalSince1970
+            records[index]["heartbeatDueAt"] = now.timeIntervalSince1970 + 120
+        }
+    }
+
+    func finishWarmUp(_ id: String, succeeded: Bool, cancelled: Bool = false, now: Date = Date()) throws {
+        try finishAccountActivity(id, route: "warmup", succeeded: succeeded, cancelled: cancelled, now: now)
+    }
+
+    func finishMaintenance(_ id: String, succeeded: Bool, now: Date = Date()) throws {
+        try finishAccountActivity(id, route: "maintenance", succeeded: succeeded, cancelled: false, now: now)
+    }
+
+    private func finishAccountActivity(_ id: String, route: String, succeeded: Bool, cancelled: Bool, now: Date) throws {
+        try mutate { records in
+            guard
+                let index = records.firstIndex(where: {
+                    ($0["leaseId"] as? String) == id && ($0["ownerThreadId"] as? String) == "next-\(getpid())" && ($0["route"] as? String) == route
+                })
             else { throw Failure.invalidState }
             records[index]["state"] = cancelled ? "cancelled" : (succeeded ? "accepted" : "failed")
             records[index]["updatedAt"] = now.timeIntervalSince1970
@@ -183,9 +317,22 @@ struct DispatchActivityStore {
             // Keep active records and bounded terminal history; this is status,
             // not the append-only incident journal.
             let active = records.filter { Self.activeStates.contains($0["state"] as? String ?? "") }
-            let ended = records.filter { !Self.activeStates.contains($0["state"] as? String ?? "") }.suffix(100)
+            let ended = Self.recentEndedRecords(records)
             records = active + ended
         }
+    }
+
+    /// A formerly active lease may be first in the array. Retain by completion
+    /// time so the next write cannot evict a just-finished task before acceptance.
+    static func recentEndedRecords(_ records: [[String: Any]]) -> [[String: Any]] {
+        Array(records.filter { !activeStates.contains($0["state"] as? String ?? "") }
+            .sorted {
+                let left = $0["updatedAt"] as? Double ?? 0
+                let right = $1["updatedAt"] as? Double ?? 0
+                return left == right
+                    ? ($0["leaseId"] as? String ?? "") < ($1["leaseId"] as? String ?? "")
+                    : left < right
+            }.suffix(100))
     }
 
     /// Fixed application messages only. Raw errors, account names and paths never
@@ -222,6 +369,15 @@ enum DispatchActivityStoreSelfTest {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = DispatchActivityStore(directory: root)
         do {
+            let oldRecords: [[String: Any]] = (0..<101).map {
+                ["leaseId": "old-\($0)", "state": "accepted", "updatedAt": Double($0)]
+            }
+            let recent: [String: Any] = ["leaseId": "just-finished", "state": "awaiting_acceptance", "updatedAt": 500.0]
+            let retained = DispatchActivityStore.recentEndedRecords([recent] + oldRecords)
+            guard retained.count == 100,
+                retained.last?["leaseId"] as? String == "just-finished",
+                !retained.contains(where: { $0["leaseId"] as? String == "old-0" })
+            else { return false }
             guard try store.read().leases.isEmpty else { return false }
             let id = try store.reserveWarmUp(account: "fixture-account", alias: "fixture-alias")
             let snapshot = try store.read()
@@ -239,6 +395,32 @@ enum DispatchActivityStoreSelfTest {
             guard try !store.read().blocks(accountKey: DispatchActivityStore.hash("fixture-account")),
                 try store.read().latest(forAlias: nil, accountKey: DispatchActivityStore.hash("fixture-account")) == nil
             else { return false }
+            let cli = try store.reserveTerminal(account: "fixture-account", alias: "fixture-alias", workingDirectory: root)
+            let beforeBatch = try store.read().leases.count
+            do {
+                _ = try store.reserveMaintenance(accounts: [("unused-account", "unused-alias"), ("fixture-account", "fixture-alias")])
+                return false
+            } catch DispatchActivityStore.Failure.busy {}
+            guard try store.read().leases.count == beforeBatch else { return false }
+            let pair = try store.reserveMaintenance(accounts: [("source-account", "source-alias"), ("target-account", "target-alias")])
+            guard pair.count == 2, try store.read().blocks(accountKey: DispatchActivityStore.hash("source-account")),
+                try store.read().blocks(accountKey: DispatchActivityStore.hash("target-account"))
+            else { return false }
+            for lease in pair { try store.finishMaintenance(lease, succeeded: false) }
+            do {
+                _ = try store.reserveWarmUp(account: "fixture-account", alias: "fixture-alias")
+                return false
+            } catch DispatchActivityStore.Failure.busy {}
+            do {
+                _ = try store.reserveTerminal(account: "another-account", alias: "another-alias", workingDirectory: root)
+                return false
+            } catch DispatchActivityStore.Failure.busy {}
+            try store.updateTerminal(cli, state: "running", pid: getpid())
+            guard try store.read().latest(forAlias: "fixture-alias")?.taskStatus().phase == .running else { return false }
+            try store.updateTerminal(cli, state: "uncertain")
+            guard try store.read().blocks(accountKey: DispatchActivityStore.hash("fixture-account")) else { return false }
+            try store.updateTerminal(cli, state: "awaiting_acceptance")
+            guard try !store.read().blocks(accountKey: DispatchActivityStore.hash("fixture-account")) else { return false }
             try store.appendIssue(id: "fixture-issue", phase: "observed", summary: "First observation")
             try store.appendIssue(id: "fixture-issue", phase: "verified", summary: "Second observation")
             let lines = try String(contentsOf: root.appendingPathComponent(DispatchActivityStore.issueName), encoding: .utf8).split(separator: "\n")

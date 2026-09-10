@@ -21,7 +21,7 @@ enum NextSetupPreviewRenderer {
                     settings.themeMode = scheme == .dark ? .dark : .light
                     for step in NextSetupStep.allCases {
                         settings.setupProgress = NextSetupProgress(step: step)
-                        let view = NextSetupGuideView(store: store, settings: settings, openAutomation: {})
+                        let view = NextSetupGuideView(store: store, settings: settings, openAutomation: {}, runtime: NextRuntimeSetupModel(preview: true))
                             .transaction { $0.disablesAnimations = true }
                             .preferredColorScheme(scheme)
                         let name = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-step\(step.rawValue + 1).png"

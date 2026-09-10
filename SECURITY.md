@@ -24,7 +24,7 @@ Network access is limited to explicit product functions:
 
 - the installed Codex CLI and `codex app-server` communicate with OpenAI services for login, identity, quota, and tasks; user-enabled warm-up sends a minimal request directly to the ChatGPT Codex backend endpoint;
 - official profile metadata may be requested from `https://chatgpt.com/backend-api/wham/profiles/me` using the selected local account;
-- the updater reads public metadata from `https://api.github.com/repos/BLACKIELF/codex-account-manager-next/releases` and never installs silently;
+- the updater reads public metadata from `https://api.github.com/repos/BLACKIELF/AgentHub-AiGoodBro/releases` and never installs silently;
 - optional Feishu notifications send masked account information and non-sensitive event metadata to an allowlisted HTTPS webhook on `open.feishu.cn` or `open.larksuite.com`, without redirects.
 
 Feishu is a user-enabled third-party disclosure boundary. Notification failure never changes local account or quota state. Standard transport metadata such as IP address, TLS information, User-Agent, and request time remains visible to the contacted service.

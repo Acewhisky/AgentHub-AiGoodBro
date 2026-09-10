@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Eager native layout keeps every account in full-content screenshots, including offscreen rows.
 struct AccountCardGridLayout: Layout {
-    static let minimumCardWidth: CGFloat = 280
-    static let spacing: CGFloat = 12
+    static let minimumCardWidth: CGFloat = 250
+    static let spacing: CGFloat = 10
 
     static func columnCount(width: CGFloat, itemCount: Int) -> Int {
         guard width.isFinite, width > 0, itemCount > 0 else { return 1 }

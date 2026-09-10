@@ -278,7 +278,13 @@ final class HubAccountTaskStatusModel: ObservableObject {
         do {
             let overview = try await HubConsoleModel.fetchInspectionOverview()
             guard !Task.isCancelled else { return }
-            tasksByAlias = HubAccountTaskStatusResolver.latestTasksByAlias(overview.tasks ?? [])
+            guard let tasks = overview.tasks else {
+                // A successful HTTP response without task evidence is still unverified.
+                tasksByAlias = [:]
+                connectionState = .offline
+                return
+            }
+            tasksByAlias = HubAccountTaskStatusResolver.latestTasksByAlias(tasks)
             lastSuccessfulRefreshAt = Date()
             connectionState = .online
         } catch {

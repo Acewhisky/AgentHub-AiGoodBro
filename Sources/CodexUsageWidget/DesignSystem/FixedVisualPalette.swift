@@ -4,7 +4,9 @@ import SwiftUI
 enum FixedVisualPalette {
     static let dataFlowParticle = NSColor.white
 
-    static let statusSuccess = Color(red: 0.188, green: 0.820, blue: 0.345)  // #30D158
+    // Status accents are intentionally calmer than the system neon variants. They are
+    // reserved for compact marks and text, never used as a card-wide background.
+    static let statusSuccess = Color(red: 0.204, green: 0.667, blue: 0.384)  // #34AA62
     static let statusInfo = Color(red: 0.039, green: 0.518, blue: 1.000)  // #0A84FF
     static let statusWarning = Color(red: 1.000, green: 0.624, blue: 0.039)  // #FF9F0A
     static let statusDanger = Color(red: 1.000, green: 0.271, blue: 0.227)  // #FF453A
@@ -33,7 +35,7 @@ enum FixedVisualPalette {
         if reduceTransparency {
             return Color(nsColor: .controlBackgroundColor)
         }
-        return colorScheme == .dark ? Color.white.opacity(0.035) : Color.white.opacity(0.86)
+        return colorScheme == .dark ? Color.white.opacity(0.035) : Color.black.opacity(0.024)
     }
 
     static func sectionStroke(_ colorScheme: ColorScheme, increasedContrast: Bool = false) -> Color {
@@ -100,5 +102,25 @@ enum FixedVisualPalette {
 
     static func statusDangerStroke(_ colorScheme: ColorScheme) -> Color {
         statusDanger.opacity(colorScheme == .dark ? 0.34 : 0.24)
+    }
+
+    static func statusSuccessForeground(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? statusSuccess : statusSuccessLightText
+    }
+
+    static func statusWarningForeground(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? statusWarning : statusWarningLightText
+    }
+
+    static func statusDangerForeground(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? statusDanger : statusDangerLightText
+    }
+
+    static func statusScheduledForeground(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? statusScheduled : statusScheduledLightText
+    }
+
+    static func statusFill(_ foreground: Color, colorScheme: ColorScheme) -> Color {
+        foreground.opacity(colorScheme == .dark ? 0.10 : 0.065)
     }
 }

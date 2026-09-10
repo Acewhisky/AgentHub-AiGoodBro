@@ -1,0 +1,99 @@
+{
+  "component": "Agent Remote Control companion",
+  "sourceCommit": "b68162797966ed5669704ab7d2dd95597728581c",
+  "includesReviewedLocal0910v1Changes": true,
+  "sourceFiles": [
+    {
+      "path": "codex_board.go",
+      "sha256": "01993ba4080ec0e9446d633626c75199a2c069d26f85ab4197a372a5aed1e3d1"
+    },
+    {
+      "path": "codex_toolbar.go",
+      "sha256": "1146edbd3bf9ebfe3ff0cc8d216aa91875784b07dfdcd73734d75ffdb2e92a58"
+    },
+    {
+      "path": "codex_toolbar_test.go",
+      "sha256": "6408ea546bf7247f5542aad13252615a311d92a95c738b8cba3456e3671fbfec"
+    },
+    {
+      "path": "desktop_reliability_test.go",
+      "sha256": "eff478c43c7828cf4c0f95246de5f4f5b041a5e8ea08db5a23b5d24bdaaffc96"
+    },
+    {
+      "path": "dispatch_activity.go",
+      "sha256": "44c00b64c401d8d598f9faebcc9ff6d4309a2ec16e08f5895c3e569968fdbe86"
+    },
+    {
+      "path": "dispatch_activity_test.go",
+      "sha256": "a32c8d08b1a07182bf5f5290a08c86972a9fa6f9c4f1a44bb2d1f7eaab431ac7"
+    },
+    {
+      "path": "dispatch_window.go",
+      "sha256": "ae4f7ea6d4c26277e1c8e408838ed676c4a430c85dbf2639e3b7ebf8c5e7cd56"
+    },
+    {
+      "path": "dispatch_window_test.go",
+      "sha256": "9fac94e901cd88c6f4f88bb526aed9d04ff08748733e07dc8f3ffecb2acc2c47"
+    },
+    {
+      "path": "hub.go",
+      "sha256": "700b841c67b74c091bea8ea5a7c8be99960bce295a63f7581d345c4502aa5d23"
+    },
+    {
+      "path": "hub_test.go",
+      "sha256": "fc98d928ce8fbfcef43091851c484b1c63730f7672b40852f7bb64d6c1d3899c"
+    },
+    {
+      "path": "kimi_tasks.go",
+      "sha256": "82c1153faa0132fbc9cbe487f2ff21ce054006b9e95e0b3c21172b554f15e307"
+    },
+    {
+      "path": "kimi_tasks_test.go",
+      "sha256": "e0a6fe8735207a6a4bbf7ada455479e40a0aef5f78188f97354299db025c4b83"
+    },
+    {
+      "path": "main.go",
+      "sha256": "07f27939f9d1304277397ab9cbbea116a07268a41f53da51cde17519bfc4067f"
+    },
+    {
+      "path": "manager_overview.go",
+      "sha256": "1075a48b97b02c4a1e65b8d91220713a2ab16c8e93e8cad4eb36f6ed618e9f80"
+    },
+    {
+      "path": "process_other.go",
+      "sha256": "58ee0fd24942e5d4ec49c2a7afcc041e240396272b3c9559239bb9905cec6301"
+    },
+    {
+      "path": "process_unix.go",
+      "sha256": "ecc1ddd27eb8c9dd67cb981d7eb30dab439c22c273671ca539faa651e47d59dd"
+    },
+    {
+      "path": "task_messages.go",
+      "sha256": "b1746f2358e6eef0536e93e57810631ae33e38e3004dddcaaa8dc838860170aa"
+    },
+    {
+      "path": "task_messages_test.go",
+      "sha256": "451ec96a396727c3dff1276de2b9c51d5134c6b78aae76a118b47aeee3151d55"
+    },
+    {
+      "path": "go.mod",
+      "sha256": "786ec99ebc9ee88c5044aeaec8d1f542a4604595312250df10d924e5a3479fe3"
+    },
+    {
+      "path": "web/index.html",
+      "sha256": "287f59e409f949bdd02ad5794f7728ea29e48e6b718d2577c236d9f7fa649d6d"
+    },
+    {
+      "path": "web/desktop_content_logic_test.js",
+      "sha256": "95f588e9f573fceb70143eb216446d1235167962784f20dba6b8082323170796"
+    },
+    {
+      "path": "web/task_live_logic_test.js",
+      "sha256": "0d7080e59143c595a87600f3ac37b061d9109a3b4287372be7cb31976d2118dc"
+    }
+  ],
+  "distributionChanges": [
+    "Runtime configuration may enable only the bundled Codex adapter; optional providers are not advertised without configuration.",
+    "Codex pool tasks freeze saved and derived effective execution preferences for standard, sol_luna, and luna_direct; any child-enabled custom slot requires a fresh CLI-and-role-bound local capability report and a task-private next_preset_worker role copy."
+  ]
+}

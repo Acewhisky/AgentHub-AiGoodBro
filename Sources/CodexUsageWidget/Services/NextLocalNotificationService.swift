@@ -34,6 +34,7 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
     static let shared = NextLocalNotificationService()
 
     private static let notificationIdentifierPrefix = "com.blackielf.codex-account-manager-next.low-quota."
+    private static let resetIdentifierPrefix = "com.blackielf.codex-account-manager-next.reset."
 
     private let center: UNUserNotificationCenter
 
@@ -132,13 +133,82 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
         }
     }
 
+    func submitResetAnnouncement(
+        _ announcement: PublicResetAnnouncement,
+        language: WidgetLanguage = .storedOrAutomatic(),
+        completion: @escaping (Result<SubmissionReceipt, ServiceError>) -> Void
+    ) {
+        guard announcement.isValid(now: Date()) else {
+            Self.completeOnMain(.failure(.invalidQuotaData), completion: completion)
+            return
+        }
+        submitReset(
+            identifier: Self.resetIdentifierPrefix + announcement.id,
+            title: announcement.title(language),
+            body: announcement.summary(language),
+            completion: completion)
+    }
+
+    func submitOfficialReset(
+        _ event: CodexQuotaEvent,
+        language: WidgetLanguage = .storedOrAutomatic(),
+        completion: @escaping (Result<SubmissionReceipt, ServiceError>) -> Void
+    ) {
+        let title: String
+        let body: String
+        switch event {
+        case .quotaReset(let fiveHour, let sevenDay):
+            title = language.text("账号额度已恢复", "Account limits restored")
+            let windows = [fiveHour ? language.text("5 小时", "5-hour") : nil, sevenDay ? language.text("7 天", "7-day") : nil].compactMap { $0 }.joined(separator: "、")
+            body = language.text("\(windows)额度已通过官方刷新确认，可以继续工作。", "Your \(windows) limit refresh is confirmed. You can keep working.")
+        case .resetCreditsAdded(let added, let available):
+            title = language.text("收到新的重置卡", "New reset credits received")
+            body = language.text("新增 \(added) 次，当前可用 \(available) 次。需要时可在 Codex 中使用。", "\(added) added; \(available) available. Use them in Codex when needed.")
+        }
+        submitReset(identifier: Self.resetIdentifierPrefix + UUID().uuidString, title: title, body: body, completion: completion)
+    }
+
+    private func submitReset(
+        identifier: String, title: String, body: String,
+        completion: @escaping (Result<SubmissionReceipt, ServiceError>) -> Void
+    ) {
+        center.getNotificationSettings { [center] settings in
+            if let error = Self.submissionAuthorizationError(for: Self.authorizationState(from: settings)) {
+                Self.completeOnMain(.failure(error), completion: completion)
+                return
+            }
+            // The stable public ID also reconciles a process exit after submit
+            // but before the delivery ledger was saved.
+            center.getDeliveredNotifications { delivered in
+                if delivered.contains(where: { $0.request.identifier == identifier }) {
+                    Self.completeOnMain(.success(.init(identifier: identifier)), completion: completion)
+                    return
+                }
+                center.getPendingNotificationRequests { pending in
+                    if pending.contains(where: { $0.identifier == identifier }) {
+                        Self.completeOnMain(.success(.init(identifier: identifier)), completion: completion)
+                        return
+                    }
+                    let content = UNMutableNotificationContent()
+                    content.title = title
+                    content.body = body
+                    content.sound = nil
+                    center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
+                        Self.completeOnMain(error == nil ? .success(.init(identifier: identifier)) : .failure(.notificationSubmissionFailed), completion: completion)
+                    }
+                }
+            }
+        }
+    }
+
     func userNotificationCenter(
         _: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         let options: UNNotificationPresentationOptions =
-            notification.request.identifier.hasPrefix(Self.notificationIdentifierPrefix) ? [.banner, .list] : []
+            notification.request.identifier.hasPrefix(Self.notificationIdentifierPrefix)
+                || notification.request.identifier.hasPrefix(Self.resetIdentifierPrefix) ? [.banner, .list] : []
         Self.completeOnMain(options, completion: completionHandler)
     }
 

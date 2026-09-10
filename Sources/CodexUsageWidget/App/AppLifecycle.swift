@@ -72,7 +72,7 @@ final class MainAppWindow: NSWindow {
             backing: .buffered,
             defer: false
         )
-        title = "Codex Account Manager Next"
+        title = "AiGoodBro"
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
         isReleasedWhenClosed = false
@@ -335,11 +335,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
 
-        let appMenu = NSMenu(title: "Codex Account Manager Next")
+        let appMenu = NSMenu(title: "AiGoodBro")
         appMenuItem.submenu = appMenu
         appMenu.addItem(
             NSMenuItem(
-                title: language.text("关于 Codex Account Manager Next", "About Codex Account Manager Next"),
+                title: language.text("关于 AiGoodBro", "About AiGoodBro"),
                 action: #selector(showAboutPanel),
                 keyEquivalent: ""
             ))
@@ -353,7 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         appMenu.addItem(.separator())
 
         let hideItem = NSMenuItem(
-            title: language.text("隐藏 Codex Account Manager Next", "Hide Codex Account Manager Next"),
+            title: language.text("隐藏 AiGoodBro", "Hide AiGoodBro"),
             action: #selector(NSApplication.hide(_:)),
             keyEquivalent: "h"
         )
@@ -379,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         appMenu.addItem(.separator())
         appMenu.addItem(
             NSMenuItem(
-                title: language.text("退出 Codex Account Manager Next", "Quit Codex Account Manager Next"),
+                title: language.text("退出 AiGoodBro", "Quit AiGoodBro"),
                 action: #selector(quitFromMenu),
                 keyEquivalent: "q"
             ))
@@ -771,7 +771,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             appearance: appearance
         )
         button.toolTip = presentation.tooltip
-        button.setAccessibilityLabel("Codex Account Manager Next")
+        button.setAccessibilityLabel("AiGoodBro")
         button.setAccessibilityValue(presentation.accessibilityValue)
         PerformanceMonitor.shared.end(performanceSpan)
     }

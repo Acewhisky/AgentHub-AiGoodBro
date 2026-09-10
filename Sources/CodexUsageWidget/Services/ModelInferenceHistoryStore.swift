@@ -27,9 +27,10 @@ enum ModelInferenceHistoryStore {
 
     static func load(fileManager: FileManager = .default, now: Date) -> ModelInferenceHistoryArchive {
         guard let url = archiveURL(fileManager: fileManager),
-            let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-            Int64(values.fileSize ?? 0) <= maximumArchiveBytes,
-            let data = try? Data(contentsOf: url),
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(
+                url,
+                maximumBytes: Int(maximumArchiveBytes)
+            ),
             let envelope = try? JSONDecoder().decode(DiskEnvelope.self, from: data),
             envelope.version == schemaVersion
         else {

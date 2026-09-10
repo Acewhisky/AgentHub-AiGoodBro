@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-REPORT_DIR="$ROOT_DIR/build/memory-risk"
+REPORT_DIR="$ROOT_DIR/${BUILD_DIR:-build}/memory-risk"
 REPORT_FILE="$REPORT_DIR/report.md"
 mkdir -p "$REPORT_DIR"
 
@@ -105,6 +105,40 @@ fi
 
 require_literal Sources/CodexUsageWidget/Services/CodexAppServerTaskClient.swift \
   'private let maximumOutputBufferBytes' 'app-server 流缺少明确的缓冲区上限'
+require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
+  'count <= maximumOutputBytes - data.count' '本地子进程输出缺少累计字节上限'
+require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
+  'POSIX_SPAWN_SETPGROUP' '本地子进程缺少本次启动专用进程组'
+require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
+  'POSIX_SPAWN_CLOEXEC_DEFAULT' '本地子进程缺少默认 close-on-exec 描述符隔离'
+require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
+  'flags | FD_CLOEXEC' '本地子进程 pipe 缺少 close-on-exec 标记'
+require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
+  'processGroupExists(pid: pid)' '本地子进程成功路径缺少进程组退出核验'
+require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
+  'Darwin.kill(-pid, SIGKILL)' '本地子进程组缺少超时强制收尾'
+require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
+  'waitForExit(pid: pid' '本地子进程 terminate/kill 后缺少有界 reap 等待'
+require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
+  'maximumOutputBytes >= 0' '本地子进程输出上限参数缺少安全校验'
+require_literal Sources/CodexUsageWidget/Services/CCSwitchUsageReader.swift \
+  'BoundedLocalProcess.run(executable: executable,' 'SQLite 读取必须在子进程运行时持续排空输出'
+require_literal Sources/CodexUsageWidget/Services/CCSwitchUsageReader.swift \
+  'WITH RECURSIVE x(n)' 'SQLite 超时回归覆盖缺失'
+require_literal Sources/CodexUsageWidget/Services/FeishuWebhookService.swift \
+  'data.count < Self.maximumResponseBytes' '飞书响应必须在读取过程中限制累计字节'
+require_literal Sources/CodexUsageWidget/Services/FeishuWebhookService.swift \
+  'bytes.task.cancel()' '飞书响应流必须在超限或完成时关闭网络任务'
+require_literal Sources/CodexUsageWidget/Services/PublicResetAnnouncements.swift \
+  'data.count < 512 * 1024' '公开公告响应缺少读取过程中的总量上限'
+require_literal Sources/CodexUsageWidget/Services/AccountAutomationAuditStore.swift \
+  'static let maximumArchiveBytes' '自动化审计归档缺少明确的总量上限'
+require_literal Sources/CodexUsageWidget/Services/AccountAutomationAuditStore.swift \
+  'DispatchParticipationSync.readBoundedRegularFile(' '自动化审计归档读取缺少普通文件与有界读取门禁'
+require_literal Sources/CodexUsageWidget/Services/AccountAutomationAuditStore.swift \
+  'guard data.count <= Self.maximumArchiveBytes' '自动化审计归档写入缺少编码后总量门禁'
+require_literal Sources/CodexUsageWidget/Services/AccountAutomationAuditStore.swift \
+  'var events = try readEvents()' '自动化审计 append 不得把读取失败的历史当空记录覆盖'
 require_literal Sources/CodexUsageWidget/Services/AFUnixWebSocket.swift \
   'maximumMessageBytes' '共享 daemon WebSocket 缺少明确的消息上限'
 require_literal Sources/CodexUsageWidget/Services/AFUnixWebSocket.swift \
@@ -118,16 +152,50 @@ require_literal scripts/self-tests.txt \
   '--self-test-app-server-pipe' '统一自测清单没有包含 app-server 部分响应读取回归测试'
 require_literal scripts/build-release-artifacts.sh \
   'make test' '发布包装没有复用统一自测入口'
+require_literal scripts/build-release-artifacts.sh \
+  'BUNDLE_COMPANION=1' '正式 macOS 发布包装没有强制包含 Next companion'
+require_literal scripts/build-release-artifacts.sh \
+  "'runtime-paths.json', 'runtime-python.txt'" '正式包缺少私有 runtime 绑定文件排除验证'
 require_literal Sources/CodexUsageWidget/Services/CodexAppServerTaskClient.swift \
   'pendingThreadListIDs.first' 'thread/list 缺少单一在途请求约束'
 require_literal Sources/CodexUsageWidget/Services/CodexAppServerTaskClient.swift \
   'threadListTimeoutSeconds' 'thread/list 缺少超时回收'
 require_swift_literal 'private static let memorySessionUsageCacheLimit' 'session 内存缓存缺少独立数量上限'
 require_swift_literal 'private static let maximumPersistentCacheBytes' '持久缓存读取缺少字节上限'
+require_literal Sources/CodexUsageWidget/Services/CodexUsageReader.swift \
+  'maximumBytes: 4 * 1_024 * 1_024' 'Skill 静态统计读取缺少 4 MiB 过程内上限'
+require_literal Sources/CodexUsageWidget/Services/CodexUsageReader.swift \
+  'maximumBytes: Int(Self.maximumPersistentCacheBytes)' 'session 缓存读取缺少通用有界普通文件读取器'
+require_literal Sources/CodexUsageWidget/Services/CodexUsageReader.swift \
+  'guard Int64(data.count) <= Self.maximumPersistentCacheBytes else { return }' 'session 缓存写入缺少编码后体积门禁'
+require_literal Sources/CodexUsageWidget/Services/ModelInferenceHistoryStore.swift \
+  'maximumBytes: Int(maximumArchiveBytes)' '推理历史读取缺少 32 MiB 过程内上限'
+require_literal Sources/CodexUsageWidget/Services/CCSwitchUsageReader.swift \
+  'maximumBytes: min(limits.maximumFileBytes, remainingBytes)' 'Grok 会话读取缺少单文件与全扫描字节上限'
+require_literal Sources/CodexUsageWidget/Services/CCSwitchUsageReader.swift \
+  'entryCount <= limits.maximumEntries' 'Grok 会话遍历缺少数量上限'
+require_literal Sources/CodexUsageWidget/Services/CCSwitchUsageReader.swift \
+  'end - start <= limits.maximumLineBytes' 'Grok 单行解析缺少工作集上限'
+require_literal Sources/CodexUsageWidget/Services/CCSwitchUsageReader.swift \
+  'ProcessInfo.processInfo.systemUptime - started < limits.timeout' 'Grok 全时段扫描缺少耗时上限'
+require_literal Sources/CodexUsageWidget/Services/CCSwitchUsageReader.swift \
+  'guard !pair.overflow, !sum.overflow else { return nil }' 'Grok 聚合缺少溢出退出路径'
 require_literal Sources/CodexUsageWidget/Services/UsageStore.swift \
   'quotaResetRefreshAttempts.filter { activeProfileIDs.contains($0.key) }' '额度到期重试记录必须随账号删除而清理'
 require_literal Sources/CodexUsageWidget/Services/UsageStore.swift \
   'quotaResetRefreshAttempts.removeAll()' '额度到期重试记录缺少停止时清理'
+require_literal Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift \
+  'data.count > maximumBytes - chunk.count' '本地 CLI 额度响应缺少读取过程中的累计字节限制'
+require_literal Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift \
+  'configuration.timeoutIntervalForResource = 15' '本地 CLI 额度响应缺少总时限'
+require_literal Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift \
+  'defer { session.invalidateAndCancel() }' '本地 CLI 额度会话缺少结束后取消与释放'
+require_literal Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift \
+  'quotas = quotas.filter { activeIDs.contains($0.key) }' '本地 CLI 账号重新扫描后必须清理失效额度缓存'
+require_literal Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift \
+  'requests = requests.filter { activeIDs.contains($0.key) }' '本地 CLI 账号重新扫描后必须清理失效请求标识'
+require_literal Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift \
+  'tasks.removeValue(forKey: id)?.cancel()' '本地 CLI 账号移除后必须取消失效刷新任务'
 require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
   'static let maximumConfigurationBytes' '调度配置读取缺少明确的字节上限'
 require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +35,14 @@ def issue_worker(root, number):
                                        summary="Concurrent observation " + str(number))
 
 
+def fixture_process_birth(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    return activity.digest(str(pid))
+
+
 class ActivityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="next-dispatch-test-")
@@ -42,6 +50,12 @@ class ActivityTests(unittest.TestCase):
         self.registry = activity.Registry(self.root / "state")
         self.work = self.root / "work"
         self.work.mkdir()
+        self.birth_patch = patch.object(activity, "process_birth", side_effect=fixture_process_birth)
+        self.group_patch = patch.object(activity, "group_has_live_process", return_value=False)
+        self.birth_patch.start()
+        self.group_patch.start()
+        self.addCleanup(self.birth_patch.stop)
+        self.addCleanup(self.group_patch.stop)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -84,9 +98,36 @@ class ActivityTests(unittest.TestCase):
         with self.assertRaises(activity.ActivityError):
             self.reserve()
         self.assertEqual(preflight.execution_preference({}),
-                         {"model": "gpt-6-astra", "reasoningEffort": "low", "serviceTier": "default"})
+                         {"model": "gpt-6-astra", "reasoningEffort": "low", "serviceTier": "default",
+                          "subagentMode": "standard"})
         saved = {"model": "gpt-5.5", "reasoningEffort": "high", "serviceTier": "fast"}
-        self.assertEqual(preflight.execution_preference({"executionPreference": saved}), saved)
+        self.assertEqual(preflight.execution_preference({"executionPreference": saved}),
+                         {**saved, "subagentMode": "standard"})
+        self.assertIsNone(preflight.execution_preference({"executionPreference": {
+            **saved, "subagentMode": "unknown"
+        }}))
+        custom = {"sol_luna": {"name": "自定义中蹬", "useSavedModel": False,
+            "model": "gpt-5.6-terra", "reasoningEffort": "xhigh", "subagentsEnabled": True,
+            "subagentModel": "gpt-5.5", "subagentReasoningEffort": "high"}}
+        customized = preflight.execution_preference({"executionPreference": {
+            **saved, "subagentMode": "sol_luna", "customPresets": custom}})
+        strategy = preflight.effective_strategy(customized)
+        self.assertEqual((strategy["model"], strategy["reasoningEffort"], strategy["subagentModel"],
+                          strategy["subagentReasoningEffort"], strategy["maximumConcurrentSubagents"]),
+                         ("gpt-5.6-terra", "xhigh", "gpt-5.5", "high", 1))
+        for bad in ({"extra": custom["sol_luna"]},
+                    {"sol_luna": {**custom["sol_luna"], "name": " bad"}},
+                    {"sol_luna": {**custom["sol_luna"], "name": "bad\u0085name"}},
+                    {"sol_luna": {**custom["sol_luna"], "name": "bad\ud800name"}},
+                    {"sol_luna": {**custom["sol_luna"], "model": []}},
+                    {"sol_luna": {**custom["sol_luna"], "subagentsEnabled": "yes"}}):
+            self.assertIsNone(preflight.execution_preference({"executionPreference": {
+                **saved, "subagentMode": "sol_luna", "customPresets": bad}}))
+        fast_saved_unsupported = preflight.execution_preference({"executionPreference": {
+            "model": "gpt-5.2", "reasoningEffort": "xhigh", "serviceTier": "fast",
+            "subagentMode": "sol_luna"}})
+        self.assertIsNotNone(fast_saved_unsupported)
+        self.assertEqual(preflight.effective_strategy(fast_saved_unsupported)["model"], "gpt-5.6-sol")
 
     def test_directory_aliases_have_same_key(self):
         link = self.root / "linked"
@@ -100,6 +141,35 @@ class ActivityTests(unittest.TestCase):
         self.assertNotIn("childPID", saved)
         self.assertIn(saved["state"], activity.ACTIVE)
         self.assertEqual(saved["leaseId"], lease["leaseId"])
+
+    def test_retention_keeps_just_finished_first_record_and_all_active(self):
+        just_finished = self.reserve(task="just-finished")
+        self.registry.update(just_finished["leaseId"], "owner-one", "accepted")
+        with self.registry.lock():
+            state = self.registry.read()
+            recent = state["leases"][0]
+            recent["updatedAt"] = 10_000
+            older = []
+            for index in range(101):
+                item = {**recent, "leaseId": f"00000000-0000-4000-8000-{index:012d}",
+                        "ownerThreadId": f"old-owner-{index}", "taskId": f"old-task-{index}",
+                        "updatedAt": float(1 if index in (1, 2) else index), "createdAt": float(index)}
+                older.append(item)
+            state["leases"] = [recent] + older
+            self.registry._write(state)
+
+        active = self.reserve(account="account-b", project=activity.digest("other-project"),
+                              owner="owner-two", task="new-active")
+        saved = self.registry.read()["leases"]
+        terminals = [item for item in saved if item["state"] not in activity.ACTIVE]
+        terminal_ids = {item["leaseId"] for item in terminals}
+        self.assertEqual(len(terminals), 100)
+        self.assertIn(just_finished["leaseId"], terminal_ids)
+        self.assertNotIn("00000000-0000-4000-8000-000000000000", terminal_ids)
+        self.assertNotIn("00000000-0000-4000-8000-000000000001", terminal_ids)
+        self.assertIn("00000000-0000-4000-8000-000000000002", terminal_ids)
+        self.assertIn(active["leaseId"], {item["leaseId"] for item in saved})
+        self.assertEqual(terminals, sorted(terminals, key=lambda item: (item["updatedAt"], item["leaseId"])))
 
     def test_stale_reservation_never_becomes_free(self):
         lease = self.reserve()
@@ -164,15 +234,43 @@ class ActivityTests(unittest.TestCase):
             activity.supervise(self.registry, lease, [sys.executable, "-c", "raise SystemExit(88)"], self.work)
         self.assertEqual(self.registry.read()["leases"][0]["state"], "starting")
 
+    def test_heartbeat_retries_bounded_transient_lock_contention(self):
+        registry = Mock()
+        registry.update.side_effect = [activity.ActivityError("activity_lock_busy"),
+                                       activity.ActivityError("activity_lock_busy"), {"state": "running"}]
+        stop = Mock()
+        stop.wait.return_value = False
+        self.assertTrue(activity.renew_heartbeat(registry, "lease-one", "owner-one", stop, (0, 0)))
+        self.assertEqual(registry.update.call_count, 3)
+        registry.update.assert_called_with("lease-one", "owner-one")
+
+    def test_heartbeat_does_not_retry_identity_or_storage_failure(self):
+        for reason in ("reservation_owner_mismatch", "activity_state_invalid"):
+            with self.subTest(reason=reason):
+                registry = Mock()
+                registry.update.side_effect = activity.ActivityError(reason)
+                with self.assertRaisesRegex(activity.ActivityError, reason):
+                    activity.renew_heartbeat(registry, "lease-one", "owner-one", Mock(), (0, 0))
+                self.assertEqual(registry.update.call_count, 1)
+
+    def test_heartbeat_lock_retries_have_a_hard_limit(self):
+        registry = Mock()
+        registry.update.side_effect = activity.ActivityError("activity_lock_busy")
+        stop = Mock()
+        stop.wait.return_value = False
+        with self.assertRaisesRegex(activity.ActivityError, "activity_lock_busy"):
+            activity.renew_heartbeat(registry, "lease-one", "owner-one", stop, (0, 0))
+        self.assertEqual(registry.update.call_count, 3)
+
     def test_cli_descendants_keep_account_occupied(self):
         lease = self.reserve()
         command = [sys.executable, "-c", "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(0.7)'])"]
-        self.assertEqual(activity.supervise(self.registry, lease, command, self.work), 4)
-        self.assertEqual(self.registry.read()["leases"][0]["state"], "uncertain")
-        with self.assertRaisesRegex(activity.ActivityError, "process_group_still_running"):
+        with patch.object(activity, "group_has_live_process", side_effect=[True, True, False]):
+            self.assertEqual(activity.supervise(self.registry, lease, command, self.work), 4)
+            self.assertEqual(self.registry.read()["leases"][0]["state"], "uncertain")
+            with self.assertRaisesRegex(activity.ActivityError, "process_group_still_running"):
+                self.registry.update(lease["leaseId"], "owner-one", "failed")
             self.registry.update(lease["leaseId"], "owner-one", "failed")
-        time.sleep(0.8)
-        self.registry.update(lease["leaseId"], "owner-one", "failed")
 
     def test_reused_pid_does_not_identify_old_runner(self):
         lease = self.reserve()
@@ -220,7 +318,7 @@ class ActivityTests(unittest.TestCase):
         for text in ["fixture@example.invalid", "/Users/private/file", "Bearer secret", "https://private.invalid/hook"]:
             with self.assertRaises(activity.ActivityError):
                 self.registry.issue(issue_id="i", component="cli", phase="observed", summary=text)
-        self.registry.root.mkdir(exist_ok=True)
+        self.registry.root.mkdir(exist_ok=True, mode=0o700)
         target = self.root / "protected"
         target.write_text("preserve")
         (self.registry.root / activity.ISSUE_NAME).symlink_to(target)
@@ -229,7 +327,7 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "preserve")
 
     def test_invalid_registry_fails_closed_without_overwriting(self):
-        self.registry.root.mkdir()
+        self.registry.root.mkdir(mode=0o700)
         self.registry.path.write_text("{broken")
         self.registry.path.chmod(0o600)
         with self.assertRaises(activity.ActivityError):

@@ -187,9 +187,9 @@ struct NextSettingsHeader: View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("NEXT")
+                    Text("AiGoodBro")
                         .font(.system(size: 23, weight: .black, design: .rounded))
-                        .tracking(1)
+                        .tracking(0.4)
                     Text(language.text("设置", "Settings"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -503,15 +503,15 @@ struct SettingsPanelView: View {
     private var aboutPage: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Text("NEXT")
+                Text("AiGoodBro")
                     .font(.system(size: 32, weight: .black, design: .rounded))
-                    .tracking(2)
+                    .tracking(0.4)
                 Spacer()
                 Text(updateStore.result.currentVersion)
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            Text("Codex Account Manager Next")
+            Text("AiGoodBro")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
             SettingsValueRow(

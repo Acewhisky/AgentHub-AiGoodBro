@@ -1,0 +1,456 @@
+import AppKit
+import Combine
+import CryptoKit
+import Darwin
+import Foundation
+
+@MainActor
+final class LocalCLIAccountStore: ObservableObject {
+    typealias QuotaLoader = @Sendable (LocalCLIProfile) async -> LocalCLIQuotaResult
+    @Published private(set) var profiles: [LocalCLIProfile] = []
+    @Published private(set) var installed: [LocalCLIKind: String] = [:]
+    @Published private(set) var quotas: [String: LocalCLIQuotaResult] = [:]
+    @Published private(set) var stale: Set<String> = []
+    @Published private(set) var refreshing: Set<String> = []
+    @Published private(set) var signingIn: Set<String> = []
+    @Published private(set) var loginMessages: [String: String] = [:]
+    @Published var message: String?
+    private var requests: [String: UUID] = [:]
+    private var tasks: [String: Task<Void, Never>] = [:]
+    private var loginTasks: [String: Task<Void, Never>] = [:]
+    private var loginVerification: Set<String> = []
+    private var saved: [LocalCLIProfile] = []
+    private var savedDigest: Data?
+    private var storageValid = true
+    private let home: URL
+    private let support: URL
+    private let applicationsDirectory: URL
+    private let quotaLoader: QuotaLoader
+
+    init(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        support: URL = DispatchParticipationPaths.supportDirectory(),
+        applicationsDirectory: URL = URL(fileURLWithPath: "/Applications", isDirectory: true),
+        quotaLoader: @escaping QuotaLoader = { profile in
+            switch profile.kind {
+            case .gemini, .mimo:
+                await AdditionalCLIQuotaReader().load(profile: profile)
+            case .zcode:
+                await ZCodeCLIQuotaReader().load(profile: profile)
+            case .claudeCode, .grok, .openCode, .kimi, .trae, .workBuddy:
+                await LocalCLIQuotaReader().load(profile: profile)
+            }
+        }
+    ) {
+        self.home = home
+        self.support = support
+        self.applicationsDirectory = applicationsDirectory
+        self.quotaLoader = quotaLoader
+    }
+
+    deinit {
+        tasks.values.forEach { $0.cancel() }
+        loginTasks.values.forEach { $0.cancel() }
+    }
+
+    func discover() {
+        let fm = FileManager.default
+        var found: [LocalCLIKind: String] = [:]
+        let applicationRoots = [applicationsDirectory, home.appendingPathComponent("Applications", isDirectory: true)]
+        for kind in LocalCLIKind.allCases {
+            if kind == .workBuddy {
+                // WorkBuddy ships a product-specific CLI. Never substitute an external
+                // codebuddy/cbc executable, which may belong to another product/account.
+                for applicationRoot in applicationRoots {
+                    let app = applicationRoot.appendingPathComponent("WorkBuddy.app", isDirectory: true)
+                    let cli = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
+                    let electron = app.appendingPathComponent("Contents/MacOS/Electron")
+                    let product = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/product.json")
+                    if regularFile(cli, executable: true), regularFile(electron, executable: true),
+                       regularFile(product, executable: false) {
+                        found[kind] = cli.path
+                        break
+                    }
+                }
+                continue
+            }
+            if kind == .trae {
+                let names = ["TRAE SOLO CN.app", "TRAE SOLO.app"]
+                if let app = applicationRoots.flatMap({ root in names.map { root.appendingPathComponent($0, isDirectory: true) } })
+                    .first(where: isOfficialTRAESOLO) {
+                    found[kind] = app.path
+                }
+                continue
+            }
+            if kind == .zcode {
+                for applicationRoot in applicationRoots {
+                    let app = applicationRoot.appendingPathComponent("ZCode.app", isDirectory: true)
+                    let cli = app.appendingPathComponent("Contents/Resources/glm/zcode.cjs")
+                    let electron = app.appendingPathComponent("Contents/MacOS/ZCode")
+                    if regularFile(cli, executable: false), regularFile(electron, executable: true) {
+                        found[kind] = cli.path
+                        break
+                    }
+                }
+                continue
+            }
+            var candidates = [home.appendingPathComponent(".local/bin/\(kind.commandName)").path,
+                "/opt/homebrew/bin/\(kind.commandName)", "/usr/local/bin/\(kind.commandName)"]
+            if kind == .grok { candidates.insert(home.appendingPathComponent(".grok/bin/grok").path, at: 0) }
+            if kind == .mimo { candidates.insert(home.appendingPathComponent(".mimocode/bin/mimo").path, at: 0) }
+            if let path = candidates.first(where: fm.isExecutableFile(atPath:)) {
+                found[kind] = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            }
+        }
+        installed = found
+        do {
+            let data = try DispatchParticipationSync.readBoundedRegularFile(storageURL, maximumBytes: 256 * 1024, allowMissing: true)
+            let decoded = try data.map { try JSONDecoder().decode([LocalCLIProfile].self, from: $0) } ?? []
+            guard decoded.count <= 64, Set(decoded.map(\.id)).count == decoded.count,
+                decoded.allSatisfy(validProfile)
+            else { throw Failure.invalid }
+            saved = decoded
+            savedDigest = data.map { Data(SHA256.hash(data: $0)) }
+            storageValid = true
+        } catch {
+            storageValid = false
+            message = language.text("账号关联记录无法读取；原文件已保留。", "Account links could not be read. The existing file was preserved.")
+        }
+        rebuildProfiles()
+    }
+
+    func profiles(for kind: LocalCLIKind) -> [LocalCLIProfile] { profiles.filter { $0.kind == kind } }
+
+    func createGrokAccount(name: String) -> LocalCLIProfile? {
+        guard storageValid, validName(name), installed[.grok] != nil, saved.count < 64 else {
+            fail(Failure.invalid); return nil
+        }
+        let id = UUID().uuidString.lowercased()
+        let root = home.appendingPathComponent(".codex-account-manager-next/grok", isDirectory: true)
+        let directory = root.appendingPathComponent(id.replacingOccurrences(of: "-", with: ""), isDirectory: true)
+        do {
+            guard validDirectory(root.path), directory.appendingPathComponent("leader.sock").path.utf8.count < 104 else {
+                throw Failure.invalid
+            }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            var info = stat()
+            guard lstat(root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+                  info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else { throw Failure.invalid }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            let profile = LocalCLIProfile(id: id, kind: .grok, displayName: name, configDirectory: directory.path, isDefault: false)
+            guard save(saved + [profile]) else {
+                try? FileManager.default.removeItem(at: directory)
+                return nil
+            }
+            return profile
+        } catch { fail(error); return nil }
+    }
+
+    func signIn(_ profile: LocalCLIProfile) {
+        guard canSignIn(profile), signingIn.isEmpty,
+              let executable = installed[profile.kind] else { return }
+        let directory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
+        do {
+            if profile.isDefault {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            }
+            guard validDirectory(directory.path) else { throw Failure.invalid }
+        } catch { fail(error); return }
+        tasks.removeValue(forKey: profile.id)?.cancel()
+        requests.removeValue(forKey: profile.id)
+        refreshing.remove(profile.id)
+        quotas.removeValue(forKey: profile.id)
+        stale.remove(profile.id)
+        signingIn.insert(profile.id)
+        loginMessages[profile.id] = switch profile.kind {
+        case .grok:
+            language.text(
+                "请在浏览器完成 Grok OAuth。完成后会自动核验当前独立环境。",
+                "Complete Grok OAuth in your browser. The isolated environment will then be verified.")
+        case .openCode:
+            language.text(
+                "请在官方 opencode 中选择服务商并登录。模型按“服务商/模型”区分；凭据只填写在官方终端。",
+                "Choose and sign in to a provider in official opencode. Models are identified as provider/model; enter credentials only in the official terminal.")
+        case .workBuddy:
+            language.text(
+                "请在 WorkBuddy 内置 CLI 中输入 /login 完成登录，再选择账号可用的模型。",
+                "Enter /login in WorkBuddy's bundled CLI, then choose a model available to your account.")
+        case .zcode:
+            language.text(
+                "请完成 Z.AI OAuth。登录退出码不代表指定模型已可用，请在 ZCode CLI 中另行确认。",
+                "Complete Z.AI OAuth. A successful sign-in exit does not prove a requested model is available; confirm it separately in ZCode CLI.")
+        case .claudeCode, .trae, .kimi, .mimo, .gemini:
+            language.text(
+                "请在官方 CLI 中完成登录；凭据只填写在官方终端。",
+                "Complete sign-in in the official CLI and enter credentials only there.")
+        }
+        loginTasks[profile.id] = Task { [weak self] in
+            do {
+                let session = try await LocalCLITerminalLauncher.launch(profile: profile, executable: executable, action: .signIn, workingDirectory: directory)
+                let code = try await LocalCLITerminalLauncher.waitForExit(session)
+                guard let self, !Task.isCancelled,
+                      let current = self.profiles.first(where: { $0.id == profile.id && $0.configDirectory == profile.configDirectory }) else { return }
+                self.signingIn.remove(profile.id)
+                self.loginTasks.removeValue(forKey: profile.id)
+                if code == 0 {
+                    self.loginVerification.insert(profile.id)
+                    self.loginMessages[profile.id] = self.language.text("官方登录流程已结束，正在核验账号。", "The official sign-in flow ended. Verifying the account.")
+                    self.refresh(current)
+                } else {
+                    self.loginMessages[profile.id] = self.language.text("登录未完成，请查看终端提示后重试。", "Sign-in did not finish. Check the terminal and try again.")
+                }
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.signingIn.remove(profile.id)
+                self.loginTasks.removeValue(forKey: profile.id)
+                self.loginMessages[profile.id] = self.language.text("暂未确认登录结果。若浏览器已授权，点击刷新核验；终端窗口已保留。", "Sign-in has not been confirmed. If browser authorization finished, refresh to verify. The terminal was left open.")
+            }
+        }
+    }
+
+    func openCLI(_ profile: LocalCLIProfile, workingDirectory: URL) {
+        guard canOpen(profile), !signingIn.contains(profile.id),
+              let executable = installed[profile.kind] else { return }
+        if profile.kind == .trae {
+            let app = URL(fileURLWithPath: executable, isDirectory: true)
+            guard isOfficialTRAESOLO(app) else { return }
+            Task { [weak self] in
+                do {
+                    _ = try await NSWorkspace.shared.openApplication(
+                        at: app, configuration: NSWorkspace.OpenConfiguration())
+                } catch {
+                    self?.message = self?.language.text(
+                        "未能打开 TRAE SOLO，请确认官方个人版仍安装在“应用程序”中。",
+                        "TRAE SOLO could not open. Confirm that the official personal edition is still installed in Applications.")
+                }
+            }
+            return
+        }
+        let profileDirectory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
+        do {
+            if profile.isDefault {
+                try FileManager.default.createDirectory(
+                    at: profileDirectory,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700])
+            }
+            guard validDirectory(profileDirectory.path) else { throw Failure.invalid }
+        } catch {
+            fail(error)
+            return
+        }
+        Task { [weak self] in
+            do {
+                _ = try await LocalCLITerminalLauncher.launch(profile: profile, executable: executable, action: .open, workingDirectory: workingDirectory)
+            } catch {
+                self?.message = self?.language.text("未能打开 CLI，请检查终端与工作目录。", "The CLI could not open. Check Terminal and the working directory.")
+            }
+        }
+    }
+
+    func canSignIn(_ profile: LocalCLIProfile) -> Bool {
+        profile.kind.supportsTerminalSignIn && profiles.contains(profile)
+            && installed[profile.kind] != nil
+            && (profile.kind != .zcode || profile.isDefault)
+    }
+
+    func canOpen(_ profile: LocalCLIProfile) -> Bool {
+        profile.kind.supportsNativeOpen && profiles.contains(profile)
+            && installed[profile.kind] != nil
+            && (profile.kind != .zcode || profile.isDefault)
+            && (profile.kind != .trae || profile.isDefault)
+    }
+
+    func link(kind: LocalCLIKind, directory: URL, name: String) {
+        let path = directory.standardizedFileURL.path
+        var isDirectory: ObjCBool = false
+        guard kind.supportsLinkedEnvironments, validName(name), validDirectory(path), installed[kind] != nil,
+            !path.lowercased().hasSuffix(".app"),
+            FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue
+        else { fail(Failure.invalid); return }
+        if kind == .grok {
+            var info = stat()
+            guard lstat(directory.appendingPathComponent("auth.json").path, &info) == 0,
+                  info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_nlink == 1 else {
+                message = language.text("这个文件夹没有 Grok 登录配置。请使用“新增账号并登录”，或选择含 auth.json 的已有配置文件夹。", "This folder has no Grok sign-in configuration. Add an account and sign in, or select an existing folder containing auth.json.")
+                return
+            }
+        }
+        guard !profiles.contains(where: { $0.kind == kind && $0.configDirectory == path }) else {
+            message = language.text("这个账号目录已经关联。", "This account directory is already linked.")
+            return
+        }
+        var next = saved
+        next.append(LocalCLIProfile(id: UUID().uuidString.lowercased(), kind: kind, displayName: name, configDirectory: path, isDefault: false))
+        save(next)
+    }
+
+    func rename(_ profile: LocalCLIProfile, name: String) {
+        guard profiles.contains(profile), validName(name) else { fail(Failure.invalid); return }
+        var next = saved.filter { $0.id != profile.id }
+        var value = profile
+        value.displayName = name
+        next.append(value)
+        save(next)
+    }
+
+    func unlink(_ profile: LocalCLIProfile) {
+        guard !profile.isDefault, !signingIn.contains(profile.id) else { return }
+        if save(saved.filter { $0.id != profile.id }) {
+            tasks.removeValue(forKey: profile.id)?.cancel()
+            requests.removeValue(forKey: profile.id)
+            quotas.removeValue(forKey: profile.id)
+            stale.remove(profile.id)
+            refreshing.remove(profile.id)
+            loginMessages.removeValue(forKey: profile.id)
+            loginVerification.remove(profile.id)
+        }
+    }
+
+    func refresh(_ profile: LocalCLIProfile) {
+        guard !refreshing.contains(profile.id), profiles.contains(profile) else { return }
+        let request = UUID()
+        requests[profile.id] = request
+        refreshing.insert(profile.id)
+        tasks[profile.id] = Task { [weak self] in
+            guard let self else { return }
+            let result = await self.quotaLoader(profile)
+            guard !Task.isCancelled, self.requests[profile.id] == request,
+                self.profiles.contains(where: { $0.id == profile.id && $0.configDirectory == profile.configDirectory })
+            else { return }
+            self.refreshing.remove(profile.id)
+            self.tasks.removeValue(forKey: profile.id)
+            let previous = self.quotas[profile.id]
+            if self.loginVerification.remove(profile.id) != nil {
+                self.loginMessages[profile.id] = result.state == .available
+                    ? self.language.text(
+                        "对应额度接口已验证当前配置；模型执行状态仍以 CLI 为准。",
+                        "The matching quota endpoint verified this configuration; model execution status still comes from the CLI.")
+                    : self.language.text("官方登录窗口已结束；账号与实际调用仍需在 CLI 核验，不能仅凭退出码确认。", "The official sign-in window closed. Verify the account and an actual response in the CLI; exit status alone is not proof.")
+            }
+            if result.state != .available, previous?.state == .available {
+                self.stale.insert(profile.id)
+            } else {
+                self.quotas[profile.id] = result
+                self.stale.remove(profile.id)
+            }
+        }
+    }
+
+    func sharesQuota(_ profile: LocalCLIProfile) -> Bool {
+        guard let fingerprint = quotas[profile.id]?.identityFingerprint else { return false }
+        return profiles.contains { $0.id != profile.id && $0.kind == profile.kind && quotas[$0.id]?.identityFingerprint == fingerprint }
+    }
+
+    private var storageURL: URL { support.appendingPathComponent("local-cli-accounts-v1.json") }
+    private var language: WidgetLanguage { WidgetLanguage.storedOrAutomatic() }
+    private enum Failure: Error, Equatable { case invalid, conflict }
+
+    private func rebuildProfiles() {
+        var result: [LocalCLIProfile] = []
+        for kind in LocalCLIKind.allCases where installed[kind] != nil {
+            let id = "local-" + kind.rawValue
+            let directory = kind.defaultConfigDirectory(home: home).standardizedFileURL.path
+            if let override = saved.first(where: { $0.id == id && $0.kind == kind && $0.isDefault && $0.configDirectory == directory }) {
+                result.append(override)
+            } else {
+                result.append(LocalCLIProfile(id: id, kind: kind,
+                    displayName: language.text("本机登录", "Local sign-in"), configDirectory: directory, isDefault: true))
+            }
+            result += saved.filter { $0.kind == kind && !$0.isDefault }
+        }
+        profiles = result
+        let activeIDs = Set(result.map(\.id))
+        for id in Array(tasks.keys) where !activeIDs.contains(id) {
+            tasks.removeValue(forKey: id)?.cancel()
+        }
+        requests = requests.filter { activeIDs.contains($0.key) }
+        quotas = quotas.filter { activeIDs.contains($0.key) }
+        stale.formIntersection(activeIDs)
+        refreshing.formIntersection(activeIDs)
+        for id in Array(loginTasks.keys) where !activeIDs.contains(id) {
+            loginTasks.removeValue(forKey: id)?.cancel()
+        }
+        signingIn.formIntersection(activeIDs)
+        loginVerification.formIntersection(activeIDs)
+        loginMessages = loginMessages.filter { activeIDs.contains($0.key) }
+    }
+
+    private func validName(_ value: String) -> Bool {
+        !value.isEmpty && value == value.trimmingCharacters(in: .whitespacesAndNewlines)
+            && value.utf8.count <= 64 && !value.contains("@")
+            && !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+    }
+
+    private func validDirectory(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        return path.hasPrefix("/") && path.utf8.count <= 4096 && url.standardizedFileURL.path == path
+            && url.resolvingSymlinksInPath().path == path
+    }
+
+    private func regularFile(_ url: URL, executable: Bool) -> Bool {
+        var info = stat()
+        guard url.isFileURL, url.path.hasPrefix("/"),
+              url.standardizedFileURL.path == url.path,
+              url.resolvingSymlinksInPath().path == url.path,
+              lstat(url.path, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == 0 || info.st_uid == geteuid()
+        else { return false }
+        return !executable || info.st_mode & 0o111 != 0
+    }
+
+    private func isOfficialTRAESOLO(_ app: URL) -> Bool {
+        var info = stat()
+        guard app.isFileURL, app.path.hasPrefix("/"),
+              app.standardizedFileURL.path == app.path,
+              app.resolvingSymlinksInPath().path == app.path,
+              lstat(app.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+              let identifier = Bundle(url: app)?.bundleIdentifier?.lowercased()
+        else { return false }
+        return identifier == "cn.trae.solo.app" || identifier == "com.trae.solo.app"
+    }
+
+    private func validProfile(_ profile: LocalCLIProfile) -> Bool {
+        guard validName(profile.displayName), validDirectory(profile.configDirectory) else { return false }
+        if profile.isDefault {
+            return profile.id == "local-" + profile.kind.rawValue
+                && profile.configDirectory == profile.kind.defaultConfigDirectory(home: home).standardizedFileURL.path
+        }
+        return UUID(uuidString: profile.id) != nil
+            && profile.configDirectory != profile.kind.defaultConfigDirectory(home: home).standardizedFileURL.path
+    }
+
+    @discardableResult private func save(_ next: [LocalCLIProfile]) -> Bool {
+        do {
+            guard storageValid, next.count <= 64, Set(next.map(\.id)).count == next.count,
+                next.allSatisfy(validProfile) else { throw Failure.invalid }
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            var info = stat()
+            guard lstat(support.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+                info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else { throw Failure.invalid }
+            let fd = Darwin.open(support.appendingPathComponent(".local-cli-accounts.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { throw Failure.invalid }
+            defer { Darwin.close(fd) }
+            guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_nlink == 1,
+                info.st_mode & 0o077 == 0, flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw Failure.conflict }
+            defer { flock(fd, LOCK_UN) }
+            let current = try DispatchParticipationSync.readBoundedRegularFile(storageURL, maximumBytes: 256 * 1024, allowMissing: true)
+            guard current.map({ Data(SHA256.hash(data: $0)) }) == savedDigest else { throw Failure.conflict }
+            let data = try JSONEncoder().encode(next)
+            guard data.count <= 256 * 1024 else { throw Failure.invalid }
+            try DispatchParticipationSync.writeSnapshot(data, at: storageURL, replacing: current)
+            saved = next
+            savedDigest = Data(SHA256.hash(data: data))
+            rebuildProfiles()
+            message = nil
+            return true
+        } catch { fail(error); return false }
+    }
+
+    private func fail(_ error: Error) {
+        message = (error as? Failure) == .conflict
+            ? language.text("关联记录已在别处改变，请重新扫描后再保存。", "Account links changed elsewhere. Scan again before saving.")
+            : language.text("未保存：请使用简短名称和有效的独立配置目录。", "Not saved. Use a short name and a valid isolated configuration directory.")
+    }
+}
