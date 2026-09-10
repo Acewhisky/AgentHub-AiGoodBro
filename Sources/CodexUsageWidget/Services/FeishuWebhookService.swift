@@ -543,7 +543,7 @@ final class FeishuWebhookService {
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        Task {
+        Task { [request] in
             do {
                 let (bytes, response) = try await session.bytes(for: request)
                 defer { bytes.task.cancel() }
