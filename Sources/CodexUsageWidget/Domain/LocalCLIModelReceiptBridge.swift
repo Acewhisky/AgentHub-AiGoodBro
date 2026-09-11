@@ -44,9 +44,10 @@ enum LocalCLIModelReceiptBridge {
         expectation: Expectation,
         fileReader: LocalCLIModelAvailabilityStore.FileReader? = nil
     ) -> Outcome {
-        let reader = fileReader ?? { path, maximum in
-            try LocalCLIModelAvailabilityStore.readBoundedRegularFile(path, maximumBytes: maximum)
-        }
+        let reader =
+            fileReader ?? { path, maximum in
+                try LocalCLIModelAvailabilityStore.readBoundedRegularFile(path, maximumBytes: maximum)
+            }
         do {
             guard let data = try reader(url, maximumBytes) else { return .untested("missing") }
             return normalize(data: data, expectation: expectation)
