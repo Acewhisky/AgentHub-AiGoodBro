@@ -46,7 +46,8 @@ SHELL_CONTROL_TOKENS = {"&", "&&", "|", "||", ";", ";;", "(", ")", "{", "}",
 RUNNING_STATES = {"preparing", "starting", "running", "cancel_requested", "uncertain"}
 STRIPPED_ENV_PREFIXES = ("CODEX_", "OPENAI_", "CODEBUDDY_", "CBC_", "WORKBUDDY_",
                         "ANTHROPIC_", "OPENCODE_", "DASHSCOPE_", "XAI_", "GROK_", "ZAI_")
-STRIPPED_ENV_KEYS = {"AGENT_CLI_ALLOW_RUN", "AGENT_CLI_ALLOW_TEST_EXECUTABLE"}
+STRIPPED_ENV_KEYS = {"AGENT_CLI_ALLOW_RUN", "AGENT_CLI_ALLOW_TEST_EXECUTABLE",
+                     "AGENT_CLI_GROK_EXECUTABLE", "AGENT_CLI_GROK_MIN_RETURN_DIR"}
 
 
 class AgentCliError(RuntimeError):
@@ -278,6 +279,25 @@ def validate_executable(path: Path, maximum_bytes: int = 64 * 1024 * 1024) -> No
         os.close(fd)
     if not os.access(path, os.X_OK):
         raise Refusal("executable_not_executable")
+
+
+def converge_reservation_after_failure(registry: activity.Registry, lease: dict, owner: str) -> None:
+    """Truthfully settle a reservation whose runner failed before supervision
+    completed. A cancel that landed before launch converges to cancelled
+    (F-01B) instead of sticking in cancel_requested; any other still-ours,
+    still-unsettled lease becomes failed, degrading to uncertain only when a
+    concurrent write wins. Never relaunches and never frees an occupied lease."""
+    current = next((x for x in registry.read()["leases"] if x["leaseId"] == lease["leaseId"]), None)
+    if current and current["state"] in {"preparing", "starting", "running", "cancel_requested"} \
+            and current.get("runnerPID") in {None, os.getpid()}:
+        try:
+            registry.update(lease["leaseId"], owner, "cancelled"
+                            if current["state"] == "cancel_requested" else "failed")
+        except activity.ActivityError:
+            try:
+                registry.update(lease["leaseId"], owner, "uncertain")
+            except activity.ActivityError:
+                pass
 
 
 def run_workbuddy_task(registry: activity.Registry, lease: dict, *, argv: list[str],

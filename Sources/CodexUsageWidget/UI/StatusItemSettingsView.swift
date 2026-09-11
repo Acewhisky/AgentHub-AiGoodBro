@@ -158,8 +158,14 @@ private struct StatusItemPreviewRow: View {
     private let renderer = StatusItemRenderer()
 
     var body: some View {
-        VStack(spacing: 9) {
-            HStack {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                AHBrandMark(size: 14)
+                Text(AHBrandIdentity.displayName)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(AHBrandIdentity.shortName)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
                 Text(settings.language.text("实时预览", "Live preview"))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -169,11 +175,12 @@ private struct StatusItemPreviewRow: View {
                         .font(.system(size: 10, weight: .medium))
                 }
                 .buttonStyle(.borderless)
+                .foregroundStyle(visualTokens.accent.primary.color)
                 .help(settings.language.text("恢复单一 7 天剩余额度圆环", "Restore the single 7-day remaining-quota ring"))
                 .accessibilityLabel(settings.language.text("恢复菜单栏默认设置", "Restore menu bar defaults"))
             }
             ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
                     .fill(previewBackground)
                 Image(nsImage: renderer.render(presentation, tokens: visualTokens, appearance: previewAppearance))
                     .interpolation(.high)
@@ -182,11 +189,11 @@ private struct StatusItemPreviewRow: View {
                         height: presentation.imageSize.height
                     )
             }
-            .frame(maxWidth: .infinity, minHeight: 48)
-            .accessibilityLabel(settings.language.text("Next 菜单栏预览", "Next menu bar preview"))
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .accessibilityLabel(AHBrandIdentity.menuBarPreviewAccessibility(settings.language))
             .accessibilityValue(presentation.accessibilityValue)
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, 6)
     }
 
     private var source: StatusItemSourceSnapshot {

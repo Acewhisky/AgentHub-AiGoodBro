@@ -26,6 +26,8 @@ final class LocalCLIAccountStore: ObservableObject {
     private let support: URL
     private let applicationsDirectory: URL
     private let quotaLoader: QuotaLoader
+    private let grokObservationReader: GrokResetStatusObservationReader
+    private let clock: @Sendable () -> Date
 
     init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -40,12 +42,16 @@ final class LocalCLIAccountStore: ObservableObject {
             case .claudeCode, .grok, .openCode, .kimi, .trae, .workBuddy:
                 await LocalCLIQuotaReader().load(profile: profile)
             }
-        }
+        },
+        grokObservationReader: GrokResetStatusObservationReader = GrokResetStatusObservationReader(),
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.home = home
         self.support = support
         self.applicationsDirectory = applicationsDirectory
         self.quotaLoader = quotaLoader
+        self.grokObservationReader = grokObservationReader
+        self.clock = clock
     }
 
     static func preview(profiles: [LocalCLIProfile], quotas: [String: LocalCLIQuotaResult], root: URL) -> LocalCLIAccountStore {
@@ -129,6 +135,7 @@ final class LocalCLIAccountStore: ObservableObject {
             message = language.text("账号关联记录无法读取；原文件已保留。", "Account links could not be read. The existing file was preserved.")
         }
         rebuildProfiles()
+        mergeImportedGrokObservation()
     }
 
     func profiles(for kind: LocalCLIKind) -> [LocalCLIProfile] { profiles.filter { $0.kind == kind } }
@@ -348,13 +355,24 @@ final class LocalCLIAccountStore: ObservableObject {
         refreshing.insert(profile.id)
         tasks[profile.id] = Task { [weak self] in
             guard let self else { return }
-            let result = await self.quotaLoader(profile)
+            let loaded = await self.quotaLoader(profile)
             guard !Task.isCancelled, self.requests[profile.id] == request,
                 self.profiles.contains(where: { $0.id == profile.id && $0.configDirectory == profile.configDirectory })
             else { return }
             self.refreshing.remove(profile.id)
             self.tasks.removeValue(forKey: profile.id)
             let previous = self.quotas[profile.id]
+            let now = self.clock()
+            let observation =
+                profile.kind == .grok
+                ? self.grokObservationReader.load(from: self.support, now: now)
+                : nil
+            let result = GrokResetStatusMerger.merge(
+                previous: previous,
+                incoming: loaded,
+                profileKind: profile.kind,
+                observation: observation,
+                now: now)
             if self.loginVerification.remove(profile.id) != nil {
                 self.loginMessages[profile.id] =
                     result.state == .available
@@ -382,6 +400,20 @@ final class LocalCLIAccountStore: ObservableObject {
     private var storageURL: URL { support.appendingPathComponent("local-cli-accounts-v1.json") }
     private var language: WidgetLanguage { WidgetLanguage.storedOrAutomatic() }
     private enum Failure: Error, Equatable { case invalid, conflict }
+
+    private func mergeImportedGrokObservation() {
+        let now = clock()
+        guard let observation = grokObservationReader.load(from: support, now: now) else { return }
+        for profile in profiles where profile.kind == .grok {
+            guard let current = quotas[profile.id] else { continue }
+            quotas[profile.id] = GrokResetStatusMerger.merge(
+                previous: current,
+                incoming: current,
+                profileKind: .grok,
+                observation: observation,
+                now: now)
+        }
+    }
 
     private func rebuildProfiles() {
         var result: [LocalCLIProfile] = []

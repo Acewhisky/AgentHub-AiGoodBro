@@ -304,6 +304,8 @@ enum AppUpdateSelfTest {
         expect(AppUpdateStore.selfTest(), "late automatic callbacks must respect disabled state and newer checks")
         expect(AppArchitecture(assetName: "CodexAccountManagerNext-1.0.0-mac-arm64.dmg") == .arm64, "arm64 asset detection")
         expect(AppArchitecture(assetName: "CodexAccountManagerNext-1.0.0-mac-x86_64.dmg") == .x8664, "x86_64 asset detection")
+        expect(AppArchitecture(assetName: "AiGoodBro-1.0.0-mac-arm64.dmg") == .arm64, "AiGoodBro arm64 asset detection")
+        expect(AppArchitecture(assetName: "AiGoodBro-1.0.0-mac-x86_64.dmg") == .x8664, "AiGoodBro x86_64 asset detection")
 
         let fixture = """
             [

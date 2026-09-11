@@ -7,9 +7,9 @@
 	<key>CFBundleDisplayName</key>
 	<string>AiGoodBro</string>
 	<key>CFBundleExecutable</key>
-	<string>CodexAccountManagerNext</string>
+	<string>AiGoodBro</string>
 	<key>CFBundleIconFile</key>
-	<string>CodexAccountManagerNext</string>
+	<string>AiGoodBro</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.blackielf.codex-account-manager-next</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -19,11 +19,11 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>9.5.20</string>
+	<string>9.5.21</string>
 	<key>CFBundleVersion</key>
-	<string>34</string>
+	<string>35</string>
 	<key>CodexAccountManagerNextReleaseName</key>
-	<string>0911v2</string>
+	<string>0911v3</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>

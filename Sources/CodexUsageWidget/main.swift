@@ -152,6 +152,14 @@ struct CodexAccountManagerNextMain {
             exit(WorkspaceScreenshotSelfTest.run() ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--self-test-main-window-layout") {
+            exit(AccountCardGridLayout.selfTest() && CrossProviderQuotaSummary.selfTest() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-account-floating-panel") {
+            exit(AccountFloatingPanelStateStore.selfTest() ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-account-inspection") {
             // Preserve the test CLI contract after merging inspection into account cards.
             exit(AccountTaskStatusSelfTest.run() ? 0 : 1)

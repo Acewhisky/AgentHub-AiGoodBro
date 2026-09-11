@@ -54,12 +54,12 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: account-manager-next-macos-${{ needs.resolve-version.outputs.version }}
+          name: aigoodbro-macos-${{ needs.resolve-version.outputs.version }}
           path: |
-            dist/CodexAccountManagerNext-${{ needs.resolve-version.outputs.version }}-mac-arm64.dmg
-            dist/CodexAccountManagerNext-${{ needs.resolve-version.outputs.version }}-mac-arm64.dmg.sha256
-            dist/CodexAccountManagerNext-${{ needs.resolve-version.outputs.version }}-mac-x86_64.dmg
-            dist/CodexAccountManagerNext-${{ needs.resolve-version.outputs.version }}-mac-x86_64.dmg.sha256
+            dist/AiGoodBro-${{ needs.resolve-version.outputs.version }}-mac-arm64.dmg
+            dist/AiGoodBro-${{ needs.resolve-version.outputs.version }}-mac-arm64.dmg.sha256
+            dist/AiGoodBro-${{ needs.resolve-version.outputs.version }}-mac-x86_64.dmg
+            dist/AiGoodBro-${{ needs.resolve-version.outputs.version }}-mac-x86_64.dmg.sha256
           if-no-files-found: error
 
   windows:

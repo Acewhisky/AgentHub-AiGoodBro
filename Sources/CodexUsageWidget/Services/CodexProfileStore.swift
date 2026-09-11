@@ -558,7 +558,7 @@ enum SevenDayResetReminder {
 
     static func message(resetsAt: Date?, now: Date = Date(), language: WidgetLanguage = .zh) -> String? {
         remainingDays(resetsAt: resetsAt, now: now).map {
-            language.text("7 天额度 \($0) 天后重置，快使用额度", "Weekly limit resets in \($0) \($0 == 1 ? "day" : "days")")
+            language.text("7 天额度 \($0) 天后重置", "Weekly limit resets in \($0) \($0 == 1 ? "day" : "days")")
         }
     }
 }
@@ -2196,6 +2196,7 @@ enum CodexProfileStoreSelfTest {
             guard try testSystemSwitchObservationOrdering(root: root, fileManager: fileManager) else { return false }
             guard try testCrossInstanceStateTransactions(root: root, fileManager: fileManager) else { return false }
             guard try testStateTransactionFailures(root: root, fileManager: fileManager) else { return false }
+            guard try testIndependentMonitorSelection(root: root, fileManager: fileManager) else { return false }
             let home = root.appendingPathComponent("home", isDirectory: true)
             let support = root.appendingPathComponent("support", isDirectory: true)
             try fileManager.createDirectory(at: home, withIntermediateDirectories: true)
@@ -2288,7 +2289,7 @@ enum CodexProfileStoreSelfTest {
                 SevenDayResetReminder.message(
                     resetsAt: reminderNow.addingTimeInterval(1),
                     now: reminderNow
-                ) == "7 天额度 1 天后重置，快使用额度",
+                ) == "7 天额度 1 天后重置",
                 SevenDayResetReminder.remainingDays(
                     resetsAt: reminderNow.addingTimeInterval(72 * 60 * 60 + 1),
                     now: reminderNow
@@ -3865,6 +3866,15 @@ enum CodexProfileStoreSelfTest {
             return false
         } catch {}
         do {
+            try store.selectMonitor(profile.id)
+            print("Codex transaction failure self-test failed: monitor selection ignored persistence failure")
+            return false
+        } catch {}
+        guard store.selectedMonitorProfileID == "system" else {
+            print("Codex transaction failure self-test failed: monitor selection changed after persistence failure")
+            return false
+        }
+        do {
             _ = try store.addManagedProfile()
             print("Codex transaction failure self-test failed: add accepted missing state")
             return false
@@ -3890,6 +3900,132 @@ enum CodexProfileStoreSelfTest {
             return false
         }
         print("Codex state transaction failure self-test passed")
+        return true
+    }
+
+    private static func testIndependentMonitorSelection(root: URL, fileManager: FileManager) throws -> Bool {
+        let home = root.appendingPathComponent("independent-monitor-home", isDirectory: true)
+        let support = root.appendingPathComponent("independent-monitor-support", isDirectory: true)
+        let store = CodexProfileStore(
+            fileManager: fileManager,
+            homeDirectory: home,
+            applicationSupportDirectory: support
+        )
+        let independent = try store.addManagedProfile()
+        let desktopMatch = try store.addManagedProfile()
+        let manualSelection = try store.addManagedProfile()
+        try store.record(
+            testSnapshot(email: "monitor@example.invalid", usedPercent: 10, at: Date(timeIntervalSince1970: 1)),
+            for: independent.id
+        )
+        try store.record(
+            testSnapshot(email: "desktop@example.invalid", usedPercent: 20, at: Date(timeIntervalSince1970: 2)),
+            for: desktopMatch.id
+        )
+        try store.record(
+            testSnapshot(email: "manual@example.invalid", usedPercent: 30, at: Date(timeIntervalSince1970: 3)),
+            for: manualSelection.id
+        )
+        try store.record(
+            testSnapshot(email: "desktop@example.invalid", usedPercent: 20, at: Date(timeIntervalSince1970: 4)),
+            for: "system",
+            allowAccountOnly: true,
+            allowSystemAccountChange: true
+        )
+        try store.selectMonitor(independent.id)
+
+        let reloaded = CodexProfileStore(
+            fileManager: fileManager,
+            homeDirectory: home,
+            applicationSupportDirectory: support
+        )
+        let existingIDs = Set(reloaded.profiles.map(\.id))
+        guard reloaded.selectedMonitorProfileID == independent.id,
+            !UsageStore.shouldFollowDesktopIdentity(
+                selectedMonitorProfileID: reloaded.selectedMonitorProfileID,
+                systemProfileID: "system",
+                existingProfileIDs: existingIDs
+            )
+        else {
+            print("Codex monitor self-test failed: saved managed selection was not preserved")
+            return false
+        }
+
+        // A system selection follows the matching Desktop identity.
+        try reloaded.selectMonitor("system")
+        let followsDesktop = UsageStore.shouldFollowDesktopIdentity(
+            selectedMonitorProfileID: reloaded.selectedMonitorProfileID,
+            systemProfileID: "system",
+            existingProfileIDs: existingIDs
+        )
+        guard followsDesktop, try reloaded.selectMonitorForSystemAccount() == desktopMatch.id else {
+            print("Codex monitor self-test failed: system selection did not follow Desktop")
+            return false
+        }
+
+        // The identity read starts while system is selected. A manual choice
+        // made before its callback must be evaluated as the current choice.
+        try reloaded.selectMonitor("system")
+        let monitorWhenReadStarted = reloaded.selectedMonitorProfileID
+        try reloaded.selectMonitor(manualSelection.id)
+        guard monitorWhenReadStarted == "system",
+            reloaded.selectedMonitorProfileID == manualSelection.id,
+            !UsageStore.shouldFollowDesktopIdentity(
+                selectedMonitorProfileID: reloaded.selectedMonitorProfileID,
+                systemProfileID: "system",
+                existingProfileIDs: existingIDs
+            )
+        else {
+            print("Codex monitor self-test failed: explicit monitor selection was not independent")
+            return false
+        }
+        let keepsNoIdentitySelection = !UsageStore.shouldFollowDesktopIdentity(
+            selectedMonitorProfileID: manualSelection.id,
+            systemProfileID: "system",
+            existingProfileIDs: existingIDs
+        )
+        guard keepsNoIdentitySelection else {
+            print("Codex monitor self-test failed: no identity response cleared manual selection")
+            return false
+        }
+        let afterExplicitSelection = CodexProfileStore(
+            fileManager: fileManager,
+            homeDirectory: home,
+            applicationSupportDirectory: support
+        )
+        guard afterExplicitSelection.selectedMonitorProfileID == manualSelection.id else {
+            print("Codex monitor self-test failed: explicit monitor selection did not persist")
+            return false
+        }
+
+        // A successful explicit Desktop switch uses this existing selection
+        // write after identity verification; keep that behavior persistent.
+        try afterExplicitSelection.selectMonitor(desktopMatch.id)
+        let afterExplicitDesktopSelection = CodexProfileStore(
+            fileManager: fileManager,
+            homeDirectory: home,
+            applicationSupportDirectory: support
+        )
+        guard afterExplicitDesktopSelection.selectedMonitorProfileID == desktopMatch.id else {
+            print("Codex monitor self-test failed: explicit Desktop selection did not persist")
+            return false
+        }
+
+        try afterExplicitDesktopSelection.selectMonitor(manualSelection.id)
+        try afterExplicitDesktopSelection.discardManagedProfile(manualSelection.id)
+        let afterDeletionIDs = Set(afterExplicitDesktopSelection.profiles.map(\.id))
+        guard afterExplicitDesktopSelection.selectedMonitorProfileID == "system",
+            UsageStore.shouldFollowDesktopIdentity(
+                selectedMonitorProfileID: manualSelection.id,
+                systemProfileID: "system",
+                existingProfileIDs: afterDeletionIDs
+            ),
+            try afterExplicitDesktopSelection.selectMonitorForSystemAccount() == desktopMatch.id
+        else {
+            print("Codex monitor self-test failed: deleted selection did not recover")
+            return false
+        }
+        print("Codex independent monitor selection self-test passed")
         return true
     }
 

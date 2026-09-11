@@ -4,7 +4,7 @@ Only the latest default-branch version is supported. Report vulnerabilities thro
 
 ## Local trust boundary
 
-Codex Account Manager Next may read:
+AiGoodBro may read:
 
 - `~/.codex/auth.json` and saved-profile `auth.json` files for identity validation and account switching.
 - responses from the locally installed `codex app-server` for identity, quota, and task state.

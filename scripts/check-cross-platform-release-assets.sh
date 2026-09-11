@@ -14,7 +14,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
 fi
 
 mac_asset() {
-  printf '%s/%s' "$DIST_ROOT" "CodexAccountManagerNext-${VERSION}-mac-$1.dmg"
+  printf '%s/%s' "$DIST_ROOT" "AiGoodBro-${VERSION}-mac-$1.dmg"
 }
 
 windows_asset() {

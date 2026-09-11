@@ -491,7 +491,8 @@ struct LocalCLIQuotaReader {
             balanceCurrency: currency,
             sourceLabel: source,
             messageCode: validWindows ? messageCode : "local_cli_invalid_response",
-            resetCards: resetCards)
+            resetCards: resetCards,
+            resetCardsObservedAt: resetCards == nil ? nil : now)
     }
 
     private func sourceLabel(for kind: LocalCLIKind) -> String {
@@ -529,10 +530,11 @@ struct LocalCLIQuotaReader {
 
 extension LocalCLIQuotaReader {
     /// Parses the official `GET /v1/billing?format=credits` response. Per
-    /// review-inputs/grok-reset-schema-0911v1.json (HTTP 2026-09-10 snapshot) the
-    /// response carries no reset-card fields, so the returned resetCards stay `nil`.
-    /// `currentPeriod.end`, `billingPeriodEnd` and any quota reset value below feed
-    /// quota windows only; mapping them to a reset-card expiry is prohibited.
+    /// review-inputs/grok-reset-schema-0911v1.json, the current response carries
+    /// no reset-card fields, so resetCards remains nil (unknown). Website reset
+    /// status is merged separately after an exact account-fingerprint match.
+    /// `currentPeriod.end`, `billingPeriodEnd` and quota reset values feed quota
+    /// windows only; mapping them to a reset-card expiry is prohibited.
     static func parseGrok(_ data: Data) throws -> (plan: String?, windows: [LocalCLIQuotaWindow], resetCards: [LocalCLIResetCard]?) {
         let root = try object(data)
         guard let config = root["config"] as? [String: Any] else {

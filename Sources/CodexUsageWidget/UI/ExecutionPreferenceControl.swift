@@ -248,7 +248,10 @@ struct ExecutionPreferenceControl: View {
                 Button {
                     isModeInfoPresented.toggle()
                 } label: {
-                    Image(systemName: "info.circle").contentShape(Rectangle())
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)

@@ -13,8 +13,8 @@ make memory-risk-check
 [[ "$VERSION" == "$PLIST_VERSION" ]] || { echo "Info.plist version mismatch" >&2; exit 1; }
 [[ -f "$NOTES" ]] || { echo "Missing release notes: $NOTES" >&2; exit 1; }
 grep -Eq "^## ${VERSION//./\\.}( / [^ ]+)? -" CHANGELOG.md || { echo "CHANGELOG is missing $VERSION" >&2; exit 1; }
-grep -q "CodexAccountManagerNext-${VERSION}-mac-arm64.dmg" README.md || { echo "README.md artifact examples are stale" >&2; exit 1; }
-grep -q "CodexAccountManagerNext-${VERSION}-mac-arm64.dmg" README.en.md || { echo "README.en.md artifact examples are stale" >&2; exit 1; }
+grep -q "AiGoodBro-${VERSION}-mac-arm64.dmg" README.md || { echo "README.md artifact examples are stale" >&2; exit 1; }
+grep -q "AiGoodBro-${VERSION}-mac-arm64.dmg" README.en.md || { echo "README.en.md artifact examples are stale" >&2; exit 1; }
 
 if grep -q 'SHA256_PLACEHOLDER' "$NOTES"; then
   echo "Release notes still contain checksum placeholders" >&2
@@ -22,7 +22,7 @@ if grep -q 'SHA256_PLACEHOLDER' "$NOTES"; then
 fi
 
 for arch in arm64 x86_64; do
-  dmg="dist/CodexAccountManagerNext-${VERSION}-mac-${arch}.dmg"
+  dmg="dist/AiGoodBro-${VERSION}-mac-${arch}.dmg"
   checksum="${dmg}.sha256"
   [[ -f "$dmg" && -f "$checksum" ]] || { echo "Missing $arch release assets" >&2; exit 1; }
   shasum -a 256 -c "$checksum"

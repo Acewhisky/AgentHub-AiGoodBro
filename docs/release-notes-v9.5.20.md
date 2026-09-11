@@ -22,6 +22,6 @@ Build: 34 · macOS · 2026-09-11
 
 ## 源码安装
 
-本版提供源码，无公开 DMG、二进制 Release 或对应 checksum。按 README 构建后仍使用 CodexAccountManagerNext.app，在原位置备份覆盖并核对账号与设置。本地构建使用 ad-hoc 签名，未进行 Apple 公证。
+本版提供源码，无公开 DMG、二进制 Release 或对应 checksum。后续当前版构建产物为 `AiGoodBro.app`；旧名 `CodexAccountManagerNext.app` 仅用于升级识别。本地构建使用 ad-hoc 签名，未进行 Apple 公证。
 
 [README](../README.md) · [统一 CLI](agent-cli-entry-0911v1.md) · [消息通道](message-channels-0911v1.md) · [重置卡规则](grok-reset-cards-0911v2.md)

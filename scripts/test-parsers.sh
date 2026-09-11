@@ -46,7 +46,7 @@ OUTPUT="$TMP_DIR/out.json"
 CAMNEXT_HOME_OVERRIDE="$TMP_DIR" \
 CAMNEXT_CACHE_OVERRIDE="$CACHE_DIR" \
 CAMNEXT_RUNTIME_FILTER="claude-code" \
-  build/CodexAccountManagerNext.app/Contents/MacOS/CodexAccountManagerNext --dump-json > "$OUTPUT"
+  build/AiGoodBro.app/Contents/MacOS/AiGoodBro --dump-json > "$OUTPUT"
 
 grep -q '"schemaVersion" : 2' "$OUTPUT"
 grep -q '"id" : "claude-code"' "$OUTPUT"
@@ -84,7 +84,7 @@ MIGRATED_OUTPUT="$TMP_DIR/out-migrated.json"
 CAMNEXT_HOME_OVERRIDE="$TMP_DIR" \
 CAMNEXT_CACHE_OVERRIDE="$CACHE_DIR" \
 CAMNEXT_RUNTIME_FILTER="claude-code" \
-  build/CodexAccountManagerNext.app/Contents/MacOS/CodexAccountManagerNext --dump-json > "$MIGRATED_OUTPUT"
+  build/AiGoodBro.app/Contents/MacOS/AiGoodBro --dump-json > "$MIGRATED_OUTPUT"
 
 grep -q '"visibleTotalTokens" : 1900' "$MIGRATED_OUTPUT"
 grep -q '"version":2' "$CACHE_FILE"
@@ -96,7 +96,7 @@ WARM_OUTPUT="$TMP_DIR/out-warm.json"
 CAMNEXT_HOME_OVERRIDE="$TMP_DIR" \
 CAMNEXT_CACHE_OVERRIDE="$CACHE_DIR" \
 CAMNEXT_RUNTIME_FILTER="claude-code" \
-  build/CodexAccountManagerNext.app/Contents/MacOS/CodexAccountManagerNext --dump-json > "$WARM_OUTPUT"
+  build/AiGoodBro.app/Contents/MacOS/AiGoodBro --dump-json > "$WARM_OUTPUT"
 
 grep -q '"visibleTotalTokens" : 1900' "$WARM_OUTPUT"
 test "$FIRST_CACHE_MTIME" = "$(stat -f %m "$CACHE_FILE")"

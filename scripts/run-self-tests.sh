@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 MANIFEST="scripts/self-tests.txt"
 SWIFT_SOURCE="Sources/CodexUsageWidget/main.swift"
-EXPECTED_COUNT=26
+EXPECTED_COUNT=28
 BUILD_DIR="build"
 SKIP_BUILD=0
 SELECTED_TEST=""
@@ -104,7 +104,7 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
   make --no-print-directory verify-runtime-resources BUILD_DIR="$BUILD_DIR"
 fi
 
-BIN="$BUILD_DIR/CodexAccountManagerNext.app/Contents/MacOS/CodexAccountManagerNext"
+BIN="$BUILD_DIR/AiGoodBro.app/Contents/MacOS/AiGoodBro"
 [[ -x "$BIN" ]] || fail "built executable is missing; run without --skip-build or check --build-dir"
 
 run_count="$EXPECTED_COUNT"

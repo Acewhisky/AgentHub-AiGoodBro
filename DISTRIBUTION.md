@@ -1,6 +1,6 @@
 # Distribution
 
-Codex Account Manager Next supports macOS 13+ on Apple Silicon and Intel. The inherited Windows 10/11 x86_64 Tauri workspace is retained with a distinct product name, installer filename, cache directory, and application identifier so it cannot overwrite the legacy Windows App.
+AiGoodBro supports macOS 13+ on Apple Silicon and Intel. The inherited Windows 10/11 x86_64 Tauri workspace is retained with a distinct product name, installer filename, cache directory, and application identifier so it cannot overwrite the legacy Windows App.
 
 ## Local macOS package
 
@@ -12,8 +12,8 @@ make release-intel VERSION=8.24.1
 Artifacts:
 
 ```text
-dist/CodexAccountManagerNext-8.24.1-mac-arm64.dmg
-dist/CodexAccountManagerNext-8.24.1-mac-x86_64.dmg
+dist/AiGoodBro-8.24.1-mac-arm64.dmg
+dist/AiGoodBro-8.24.1-mac-x86_64.dmg
 ```
 
 Default builds are ad-hoc signed. Public distribution should use a Developer ID Application certificate, notarization, and checksum verification. The updater only opens a matching browser release page or asset; it never silently downloads or replaces the App.

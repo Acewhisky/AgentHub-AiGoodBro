@@ -1,4 +1,5 @@
-APP_NAME := CodexAccountManagerNext
+APP_NAME := AiGoodBro
+LEGACY_APP_NAME := CodexAccountManagerNext
 DISPLAY_NAME := AiGoodBro
 VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.1.0)
 BUILD_DIR := build
@@ -8,7 +9,7 @@ MACOS_DIR := $(APP_DIR)/Contents/MacOS
 RESOURCES_DIR := $(APP_DIR)/Contents/Resources
 SOURCES := $(shell find Sources/CodexUsageWidget -name '*.swift' | sort)
 APP_ICON_SOURCE := Resources/codexU.icns
-APP_ICON := CodexAccountManagerNext.icns
+APP_ICON := AiGoodBro.icns
 RUNTIME_PNG_RESOURCES := Resources/codexU-icon.png Resources/codex-color.png Resources/codex-template.png Resources/claudecode-color.png Resources/claudecode-template.png
 LEADERSHIP_BADGES := $(sort $(wildcard Resources/LeadershipBadges/leadership-badge-l*.png))
 SELF_TEST_RUNNER := ./scripts/run-self-tests.sh
@@ -187,8 +188,94 @@ phase-one-soak: build
 	./scripts/phase-one-soak.sh
 
 install: build
-	rm -rf "/Applications/$(APP_NAME).app"
-	cp -R "$(APP_DIR)" "/Applications/$(APP_NAME).app"
+	@if [ ! -d "$(APP_DIR)" ] || [ ! -x "$(MACOS_DIR)/$(APP_NAME)" ]; then \
+		echo "install: staged app bundle is missing or invalid." >&2; \
+		exit 1; \
+	fi
+	@codesign --verify --deep --strict "$(APP_DIR)"
+	@dest="/Applications/$(APP_NAME).app"; \
+	legacy="/Applications/$(LEGACY_APP_NAME).app"; \
+	prev="$$dest.previous"; \
+	if [ -e "$$dest" ] && { [ -L "$$dest" ] || [ ! -d "$$dest" ]; }; then \
+		echo "install: $$dest exists but is not a real app directory; refusing to replace." >&2; \
+		exit 1; \
+	fi; \
+	if [ -e "$$legacy" ] && { [ -L "$$legacy" ] || [ ! -d "$$legacy" ]; }; then \
+		echo "install: $$legacy exists but is not a real app directory; refusing to replace." >&2; \
+		exit 1; \
+	fi; \
+	if [ -d "$$dest" ] && [ -d "$$legacy" ]; then \
+		echo "install: both $$dest and $$legacy exist; keep one launchable copy before replacing." >&2; \
+		exit 1; \
+	fi; \
+	if [ -e "$$prev" ] && { [ -d "$$dest" ] || [ -d "$$legacy" ]; }; then \
+		echo "install: leftover $$prev exists; refusing to replace." >&2; \
+		exit 1; \
+	fi; \
+	if [ -e "$$prev" ] && { [ -L "$$prev" ] || [ ! -d "$$prev" ]; }; then \
+		echo "install: leftover $$prev exists but is not a real app directory; refusing to replace." >&2; \
+		exit 1; \
+	fi; \
+	staging=$$(/usr/bin/mktemp -d "$$dest.staging.XXXXXX") || { \
+		echo "install: could not create a unique staging directory." >&2; \
+		exit 1; \
+	}; \
+	if ! cp -R "$(APP_DIR)/." "$$staging"; then \
+		rm -rf "$$staging"; \
+		echo "install: staging copy failed; the live app was left untouched." >&2; \
+		exit 1; \
+	fi; \
+	if ! codesign --verify --deep --strict "$$staging"; then \
+		rm -rf "$$staging"; \
+		echo "install: staged copy failed codesign verification; the live app was left untouched." >&2; \
+		exit 1; \
+	fi; \
+	live=""; \
+	if [ -d "$$dest" ]; then live="$$dest"; elif [ -d "$$legacy" ]; then live="$$legacy"; fi; \
+	if [ -n "$$live" ] && [ ! -f "$$live/Contents/MacOS/$(APP_NAME)" ] && [ ! -f "$$live/Contents/MacOS/$(LEGACY_APP_NAME)" ]; then \
+		rm -rf "$$staging"; \
+		echo "install: existing app is missing its executable; refusing to replace without an idle check." >&2; \
+		exit 1; \
+	fi; \
+	for bundle in "$$dest" "$$legacy"; do \
+		for exe in "$(APP_NAME)" "$(LEGACY_APP_NAME)"; do \
+			if [ -f "$$bundle/Contents/MacOS/$$exe" ]; then \
+				python3 scripts/check-build-target-idle.py "$$bundle/Contents/MacOS/$$exe" || { \
+					rm -rf "$$staging"; \
+					exit 1; \
+				}; \
+			fi; \
+		done; \
+	done; \
+	if [ -d "$$live" ]; then \
+		if ! mv "$$live" "$$prev"; then \
+			rm -rf "$$staging"; \
+			echo "install: could not move the live app aside; it was left in place." >&2; \
+			exit 1; \
+		fi; \
+	fi; \
+	if ! mv "$$staging" "$$dest"; then \
+		rm -rf "$$staging"; \
+		if [ -d "$$prev" ]; then \
+			restore="$$dest"; \
+			if [ -n "$$live" ] && [ "$$live" = "$$legacy" ]; then restore="$$legacy"; fi; \
+			if mv "$$prev" "$$restore" && [ -d "$$restore" ] && [ ! -L "$$restore" ]; then \
+				echo "install: promote failed; the previous installation was restored." >&2; \
+			else \
+				echo "install: promote failed and the previous installation could not be restored at $$restore (left at $$prev)." >&2; \
+			fi; \
+		else \
+			echo "install: promote failed; there was no previous installation to restore." >&2; \
+		fi; \
+		exit 1; \
+	fi; \
+	if [ ! -d "$$dest" ] || [ -L "$$dest" ]; then \
+		echo "install: promote reported success but $$dest is not a real app directory." >&2; \
+		exit 1; \
+	fi; \
+	if [ -d "$$prev" ]; then \
+		rm -rf "$$prev"; \
+	fi
 	open "/Applications/$(APP_NAME).app"
 
 dmg: build

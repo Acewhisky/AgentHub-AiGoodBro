@@ -130,14 +130,19 @@ struct LocalCLIWorkspaceView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
                     LocalCLIIcon(kind: kind).frame(width: 20, height: 20)
-                    Text(profile.displayName).font(.headline).lineLimit(1)
+                    Text(profile.displayName).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text(kind.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 }
                 if let plan = result?.planLabel { Text(plan).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
-                    Label(summary, systemImage: "creditcard").font(.caption2).foregroundStyle(expiring ? Color.red : Color.secondary).lineLimit(2)
+                if layout == .rows {
+                    if kind == .grok, result?.resetCards == nil, let officialUsageURL {
+                        grokResetLookupLink(destination: officialUsageURL)
+                            .font(.caption2)
+                    } else if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
+                        Label(summary, systemImage: "creditcard").font(.caption2).foregroundStyle(expiring ? Color.red : Color.secondary).lineLimit(2)
+                    }
+                    if expiring { Text(ResetCardPresentation.expiringLabelText(language: language)).font(.caption2.weight(.semibold)).foregroundStyle(.red) }
                 }
-                if expiring { Text(ResetCardPresentation.expiringLabelText(language: language)).font(.caption2.weight(.semibold)).foregroundStyle(.red) }
                 if let result {
                     Text(fresh ? result.sourceLabel : language.text("上次快照 · 请刷新", "Previous snapshot · Refresh needed"))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
@@ -145,17 +150,16 @@ struct LocalCLIWorkspaceView: View {
             }.frame(minWidth: layout == .rows ? 170 : nil, maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 6) {
                 if let result, !result.windows.isEmpty {
-                    ForEach(result.windows.prefix(2)) { window in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(window.label).font(.caption.weight(.semibold)).lineLimit(1)
-                                Spacer()
-                                Text(QuotaAvailabilityPresentation.percentText(100 - window.usedPercent))
-                                    .font(layout == .cards ? .system(size: 23, weight: .semibold, design: .rounded) : .subheadline.weight(.bold))
-                                    .monospacedDigit()
+                    if layout == .cards {
+                        HStack(alignment: .top, spacing: 12) {
+                            ForEach(result.windows.prefix(2)) { window in
+                                embeddedQuotaWindow(window, layout: layout)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            QuotaProgressTrack(percent: 100 - window.usedPercent)
-                            if let date = window.resetsAt { Text(language.dateTime(date)).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                        }
+                    } else {
+                        ForEach(result.windows.prefix(2)) { window in
+                            embeddedQuotaWindow(window, layout: layout)
                         }
                     }
                 } else if let balance = result?.balance {
@@ -163,9 +167,25 @@ struct LocalCLIWorkspaceView: View {
                 } else {
                     Text(statusText(result)).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                 }
-            }.frame(width: layout == .rows ? 168 : nil).frame(maxWidth: layout == .cards ? .infinity : nil)
-            VStack(alignment: .leading, spacing: 6) {
+            }
+            .frame(width: layout == .rows ? 168 : nil)
+            // Mirrors ProfileRow's Spacer: the quota block absorbs the row height
+            // AccountCardGridLayout proposes so every card in a row shares one height
+            // and footer controls share one baseline.
+            // maxWidth 弹性仅限 cards；rows 必须保持 168 固定列，
+            // 否则会与头部列分摊剩余宽度，额度列起点左移、与 ProfileRow 列不对齐。
+            .frame(maxWidth: layout == .cards ? .infinity : nil, maxHeight: layout == .cards ? .infinity : nil, alignment: .topLeading)
+            VStack(alignment: .leading, spacing: layout == .cards ? 5 : 6) {
                 if layout == .cards { Divider().opacity(0.4) }
+                if layout == .cards {
+                    // Codex's compact execution-preference row occupies the
+                    // first footer slot even when a local provider has no
+                    // equivalent control. Keeping it empty preserves the
+                    // first action baseline without changing functionality.
+                    Color.clear
+                        .frame(maxWidth: .infinity, minHeight: AccountCardFooterSlots.preferenceRow)
+                        .accessibilityHidden(true)
+                }
                 HStack(spacing: 6) {
                     Button {
                         model.refresh(profile)
@@ -194,15 +214,88 @@ struct LocalCLIWorkspaceView: View {
                         Image(systemName: "ellipsis")
                     }
                     .menuStyle(.borderlessButton).frame(width: 20)
-                }.buttonStyle(.bordered).controlSize(.small)
-                if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
-                if let date = result?.fetchedAt { Text(date, style: .time).font(.caption2).foregroundStyle(.secondary) }
-            }.frame(width: layout == .rows ? 280 : nil).frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(minHeight: layout == .cards ? AccountCardFooterSlots.firstActionRow : nil, alignment: .leading)
+                if layout == .cards {
+                    // Codex keeps dispatch participation in a secondary row;
+                    // local cards do not have that control, but the slot stays
+                    // present so provider cards share the same footer geometry.
+                    Color.clear
+                        .frame(maxWidth: .infinity, minHeight: AccountCardFooterSlots.secondaryRow)
+                        .accessibilityHidden(true)
+                }
+                if layout == .cards {
+                    // Keep refresh progress beside the timestamp slot. This
+                    // avoids moving the action baseline while the read runs,
+                    // and the minimum still expands for real content.
+                    HStack(spacing: 6) {
+                        if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
+                        if let date = result?.fetchedAt {
+                            Text(date, style: .time).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: AccountCardFooterSlots.timestamp, alignment: .leading)
+                } else {
+                    if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
+                    if let date = result?.fetchedAt { Text(date, style: .time).font(.caption2).foregroundStyle(.secondary) }
+                }
+                if layout == .cards {
+                    // 共同页脚槽位：镜像 ProfileRow 的 officialResetSummary 沉底区，
+                    // 重置卡/到期警示信息保留但不占头部槽位. The minimum
+                    // allows the parent's official-link/reset additions to grow.
+                    Group {
+                        if kind == .grok, result?.resetCards == nil, let officialUsageURL {
+                            grokResetLookupLink(destination: officialUsageURL)
+                                .font(.caption2)
+                        } else if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
+                            Label(summary, systemImage: "creditcard")
+                                .font(.caption2)
+                                .foregroundStyle(expiring ? Color.red : Color.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if expiring {
+                            Text(ResetCardPresentation.expiringLabelText(language: language))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: AccountCardFooterSlots.resetSummary, alignment: .topLeading)
+                }
+            }
+            .frame(width: layout == .rows ? 290 : nil)
+            .frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .leading)
         }
-        .padding(layout == .cards ? 10 : 12)
-        .sectionBackground()
+        .padding(.horizontal, layout == .cards ? 10 : 12)
+        .padding(.vertical, 10)
+        .cardBackground(cornerRadius: layout == .cards ? 14 : 12)
         .overlay {
-            if expiring { RoundedRectangle(cornerRadius: 12).strokeBorder(.red, lineWidth: 2).allowsHitTesting(false) }
+            if expiring {
+                RoundedRectangle(cornerRadius: layout == .cards ? 14 : 12)
+                    .strokeBorder(.red, lineWidth: 1.5).allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Same slot anatomy as ProfileRow.quotaWindow: label left, large percent on a
+    /// shared first-text-baseline, track, then the reset date as the caption line.
+    private func embeddedQuotaWindow(_ window: LocalCLIQuotaWindow, layout: AccountWorkspaceLayout) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(window.label).font(.caption.weight(.semibold)).lineLimit(1)
+                Spacer()
+                Text(QuotaAvailabilityPresentation.percentText(100 - window.usedPercent))
+                    .font(layout == .cards ? .system(size: 23, weight: .semibold, design: .rounded).monospacedDigit() : .subheadline.weight(.bold).monospacedDigit())
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minHeight: layout == .cards ? 28 : nil, alignment: .bottom)
+            }
+            QuotaProgressTrack(percent: 100 - window.usedPercent)
+            if let date = window.resetsAt {
+                Text(language.dateTime(date)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
         }
     }
 
@@ -308,7 +401,10 @@ struct LocalCLIWorkspaceView: View {
                 Label(statusText(result), systemImage: "gauge.with.dots.needle.33percent")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            if kind == .grok,
+            if kind == .grok, result?.resetCards == nil, let officialUsageURL {
+                grokResetLookupLink(destination: officialUsageURL)
+                    .font(.caption)
+            } else if kind == .grok,
                 let summary = ResetCardPresentation.summaryText(
                     result?.resetCards, now: Date(), timeZone: TimeZone.current, language: language)
             {
@@ -405,9 +501,16 @@ struct LocalCLIWorkspaceView: View {
         }
     }
 
+    private func grokResetLookupLink(destination: URL) -> some View {
+        Link(destination: destination) {
+            Label(language.text("重置卡 · 官网查询", "Reset credits · View on Grok"), systemImage: "arrow.up.right.square")
+        }
+        .help(language.text("在 Grok 官网核对对应账号的可用重置和到期时间。", "Check available resets and expiry for the matching account on Grok."))
+    }
+
     private var officialUsageURL: URL? {
         switch kind {
-        case .grok: return URL(string: "https://grok.com")
+        case .grok: return URL(string: "https://grok.com/?_s=usage")
         case .mimo: return URL(string: "https://platform.xiaomimimo.com/token-plan")
         case .zcode: return URL(string: "https://zcode.z.ai")
         default: return nil
@@ -495,35 +598,48 @@ struct LocalCLIWorkspaceView: View {
 }
 
 /// Small monochrome marks designed for the CLI selector; text supplies the name.
+///
+/// Visual-weight contract: every mark is constrained to one shared content box
+/// (size * 0.78) so rendered bounds match at any frame size. SF Symbols use
+/// resizable + scaledToFit inside that box (brand aspect ratio preserved);
+/// text glyphs are sized so cap height ≈ the content box (~1.05× size), so
+/// letters never render smaller than symbol marks.
 struct LocalCLIIcon: View {
     let kind: LocalCLIKind
     var body: some View {
         GeometryReader { proxy in
             let size = min(proxy.size.width, proxy.size.height)
+            let box = size * 0.78
             ZStack {
                 switch kind {
                 case .claudeCode:
                     ForEach(0..<12) { index in
-                        Capsule().frame(width: size * 0.095, height: size * 0.82)
+                        Capsule().frame(width: size * 0.088, height: box)
                             .rotationEffect(.degrees(Double(index) * 15))
                     }
                 case .grok:
-                    Circle().trim(from: 0.08, to: 0.86).stroke(lineWidth: size * 0.09)
+                    Circle().trim(from: 0.08, to: 0.86).stroke(lineWidth: size * 0.10)
                         .padding(size * 0.11).rotationEffect(.degrees(-30))
-                    Capsule().frame(width: size * 0.09, height: size * 1.04).rotationEffect(.degrees(39))
+                    Capsule().frame(width: size * 0.10, height: size * 1.04).rotationEffect(.degrees(39))
                 case .openCode:
-                    Image(systemName: "chevron.left.forwardslash.chevron.right").font(.system(size: size * 0.68, weight: .bold))
+                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                        .resizable().scaledToFit()
+                        .frame(width: box, height: box)
                 case .trae:
-                    Text("T").font(.system(size: size * 0.93, weight: .black, design: .rounded))
+                    Text("T").font(.system(size: size * 1.05, weight: .black, design: .rounded))
                 case .workBuddy:
-                    Image(systemName: "bubble.left.and.bubble.right.fill").font(.system(size: size * 0.68, weight: .bold))
-                case .kimi: Text("K").font(.system(size: size * 0.95, weight: .black, design: .rounded))
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .resizable().scaledToFit()
+                        .frame(width: box, height: box)
+                case .kimi: Text("K").font(.system(size: size * 1.05, weight: .black, design: .rounded))
                 case .mimo:
-                    RoundedRectangle(cornerRadius: size * 0.24).stroke(lineWidth: size * 0.075)
-                    Text("mi").font(.system(size: size * 0.55, weight: .bold, design: .rounded))
-                case .zcode: Text("Z").font(.system(size: size * 0.93, weight: .black, design: .monospaced))
+                    RoundedRectangle(cornerRadius: size * 0.24).stroke(lineWidth: size * 0.085).padding(size * 0.11)
+                    Text("mi").font(.system(size: size * 0.48, weight: .bold, design: .rounded))
+                case .zcode: Text("Z").font(.system(size: size * 1.05, weight: .black, design: .monospaced))
                 case .gemini:
-                    Image(systemName: "sparkle").font(.system(size: size * 0.92, weight: .medium))
+                    Image(systemName: "sparkle")
+                        .resizable().scaledToFit()
+                        .frame(width: box, height: box)
                 }
             }.frame(width: proxy.size.width, height: proxy.size.height)
         }.accessibilityHidden(true)

@@ -160,11 +160,11 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
     func detail(_ language: WidgetLanguage) -> String {
         switch self {
-        case .appearance: return language.text("让 Next 看起来、用起来都适合你。", "Make Next feel like your workspace.")
-        case .menuBar: return language.text("重要的额度，抬头就能看见。", "Keep the numbers that matter in sight.")
-        case .automation: return language.text("按你的节奏运行，由你决定是否开启。", "Your schedule. Automation stays opt-in.")
+        case .appearance: return language.text("主题、语言、透明度与额度环动效。", "Theme, language, opacity and ring motion.")
+        case .menuBar: return language.text("选择展示模式、额度口径与可见指标。", "Choose display mode, usage display and visible metrics.")
+        case .automation: return language.text("按窗口预约暖号，默认关闭。", "Schedule warm-up per window. Off by default.")
         case .workspace: return language.text("数据口径、窗口行为与快捷入口。", "Data, window behavior and shortcuts.")
-        case .about: return language.text("本地优先。账号隔离。你保持控制。", "Local first. Isolated accounts. Your control.")
+        case .about: return language.text("版本、更新与开源来源。", "Version, updates and open-source attribution.")
         }
     }
 
@@ -181,41 +181,43 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
 struct NextSettingsHeader: View {
     let language: WidgetLanguage
-    var onBack: (() -> Void)?
+    var currentPage: SettingsPage? = nil
+    var onBack: (() -> Void)? = nil
+    @ObservedObject private var pageContext = AHSettingsHeaderContext.shared
+    @Environment(\.visualTokens) private var visualTokens
+
+    private var resolvedPage: SettingsPage? { currentPage ?? pageContext.currentPage }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("AiGoodBro")
-                        .font(.system(size: 23, weight: .black, design: .rounded))
-                        .tracking(0.4)
-                    Text(language.text("设置", "Settings"))
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                Text("MAKE IT YOURS")
-                    .font(.system(size: 8, weight: .semibold))
-                    .tracking(1.8)
+        HStack(alignment: .center, spacing: 8) {
+            AHBrandMark(size: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(AHBrandIdentity.displayName)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(AHBrandIdentity.headerDetail(page: resolvedPage, language: language))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 8)
             if let onBack {
                 Button(action: onBack) {
                     Label(language.text("返回", "Back"), systemImage: "arrow.left")
                         .font(.system(size: 11, weight: .medium))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(visualTokens.accent.primary.color)
                 .help(language.text("返回账号概览", "Back to account overview"))
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 17)
-        .padding(.bottom, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(AHBrandIdentity.displayName) \(AHBrandIdentity.headerDetail(page: resolvedPage, language: language))")
     }
 }
 
@@ -253,14 +255,14 @@ struct SettingsPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             if showsHeader {
-                NextSettingsHeader(language: language)
+                NextSettingsHeader(language: language, currentPage: selectedPage)
             }
             pageNavigation
             ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(selectedPage.title(language))
-                            .font(.system(size: 20, weight: .bold))
+                            .font(.system(size: 15, weight: .semibold))
                         Text(selectedPage.detail(language))
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
@@ -270,7 +272,7 @@ struct SettingsPanelView: View {
                     pageContent
                 }
                 .padding(.horizontal, 20)
-                .padding(.vertical, 16)
+                .padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("next.settings.page.\(selectedPage.rawValue)")
             }
@@ -283,27 +285,32 @@ struct SettingsPanelView: View {
             appearance: PaletteAppearance(colorScheme)
         )
         .readableForegroundHierarchy(colorScheme)
+        .onAppear { AHSettingsHeaderContext.shared.currentPage = selectedPage }
+        .onChange(of: selectedPage) { page in
+            AHSettingsHeaderContext.shared.currentPage = page
+        }
+        .onDisappear { AHSettingsHeaderContext.shared.currentPage = nil }
     }
 
     private var pageNavigation: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 2) {
             ForEach(SettingsPage.allCases) { page in
                 Button {
                     selectedPage = page
                 } label: {
-                    VStack(spacing: 6) {
+                    VStack(spacing: 4) {
                         Image(systemName: page.symbol)
-                            .font(.system(size: 15, weight: .medium))
-                            .frame(height: 18)
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(height: 16)
                         Text(page.title(language))
                             .font(.system(size: 9.5, weight: selectedPage == page ? .semibold : .medium))
                             .lineLimit(1)
                     }
                     .foregroundStyle(selectedPage == page ? visualTokens.accent.primary.color : Color.secondary)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 8)
                     .background(
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
                             .fill(selectedPage == page ? visualTokens.accent.primary.color.opacity(0.10) : Color.clear)
                     )
                     .contentShape(Rectangle())
@@ -315,9 +322,9 @@ struct SettingsPanelView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.bottom, 10)
+        .padding(.bottom, 8)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
+            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
                 .padding(.horizontal, 20)
         }
     }
@@ -336,7 +343,7 @@ struct SettingsPanelView: View {
     }
 
     private var appearancePage: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             SettingsAppearanceChooser(selection: $settings.themeMode, language: language)
                 .padding(.bottom, 4)
             PaletteSettingsView(settings: settings, onOpenLibrary: onOpenPaletteLibrary)
@@ -385,7 +392,7 @@ struct SettingsPanelView: View {
     }
 
     private var automationPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
             SettingsWarmUpCard(
                 interval: "5h",
                 title: language.text("5 小时暖号", "5-hour warm-up"),
@@ -403,6 +410,7 @@ struct SettingsPanelView: View {
             )
             Label(language.text("先确认空闲，再自动运行", "Runs only after idle-state checks"), systemImage: "lock.shield")
                 .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(visualTokens.accent.primary.color)
             Text(
                 language.text(
                     "暖号会发送最小请求并消耗额度。以官方返回的窗口时间为准；账号忙碌、映射缺失或状态不明确时，不会启动。打开这个分区不会触发暖号。",
@@ -416,7 +424,7 @@ struct SettingsPanelView: View {
     }
 
     private var workspacePage: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             SettingsPickerRow(
                 title: language.text("数据来源", "Data sources"),
                 detail: language.text("至少保留一个 Runtime；不重复导入历史记录", "Keep at least one source. Existing history is not counted twice.")
@@ -501,19 +509,22 @@ struct SettingsPanelView: View {
     }
 
     private var aboutPage: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("AiGoodBro")
-                    .font(.system(size: 32, weight: .black, design: .rounded))
-                    .tracking(0.4)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                AHBrandMark(size: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(AHBrandIdentity.displayName)
+                        .font(.system(size: 16, weight: .semibold))
+                    Text(AHBrandIdentity.workspaceName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Text(updateStore.result.currentVersion)
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
-            Text("AiGoodBro")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
             SettingsValueRow(
                 title: language.text("当前 Runtime", "Current runtime"),
                 detail: language.text("当前工作台的数据范围", "Data scope of the current workspace"),
@@ -525,15 +536,10 @@ struct SettingsPanelView: View {
                 value: store.snapshot.account?.planType?.uppercased() ?? "LOCAL"
             )
             AppUpdateSettingsRows(settings: settings, updateStore: updateStore, language: language)
-            Text(
-                language.text(
-                    "独立开源项目，非 OpenAI 官方产品。\n基于 codexU，遵循 MIT 许可。",
-                    "An independent open-source project, not an official OpenAI product.\nBased on codexU, under the MIT license."
-                )
-            )
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(AHBrandIdentity.aboutAttribution(language))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -577,32 +583,35 @@ private struct SettingsAppearanceChooser: View {
     let language: WidgetLanguage
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             ForEach(WidgetThemeMode.allCases, id: \.rawValue) { mode in
                 Button {
                     selection = mode
                 } label: {
-                    VStack(spacing: 7) {
+                    VStack(spacing: 6) {
                         preview(mode)
-                            .frame(height: 44)
-                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                            .frame(height: 40)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         HStack(spacing: 4) {
                             Text(title(mode))
                             Image(systemName: selection == mode ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 10))
+                                .font(.system(size: 11))
                         }
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(selection == mode ? visualTokens.accent.primary.color : Color.secondary)
                     }
-                    .padding(8)
+                    .padding(7)
                     .frame(maxWidth: .infinity)
                     .background(
-                        RoundedRectangle(cornerRadius: 11)
+                        RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
                             .fill(Color.primary.opacity(selection == mode ? 0.06 : 0.025))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 11)
-                            .strokeBorder(selection == mode ? visualTokens.accent.primary.color : Color.primary.opacity(0.08), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
+                            .strokeBorder(
+                                selection == mode ? visualTokens.accent.primary.color : Color.primary.opacity(0.08),
+                                lineWidth: 1
+                            )
                     )
                     .contentShape(Rectangle())
                 }
@@ -653,11 +662,12 @@ private struct SettingsWarmUpCard: View {
     let isOn: Binding<Bool>
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
                 Text(interval)
-                    .font(.system(size: 26, weight: .light, design: .rounded))
+                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
                     .foregroundStyle(visualTokens.accent.primary.color)
+                    .frame(width: 28, alignment: .leading)
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
@@ -669,8 +679,11 @@ private struct SettingsWarmUpCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 14).fill(visualTokens.accent.primary.color.opacity(0.065)))
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
+                .fill(visualTokens.accent.primary.color.opacity(0.065))
+        )
     }
 }
 
@@ -830,9 +843,8 @@ struct SettingsValueRow: View {
     var body: some View {
         SettingsBaseRow(title: title, detail: detail) {
             Text(value)
-                .font(.system(size: settingsControlFontSize, weight: .semibold, design: .rounded))
+                .font(.system(size: settingsControlFontSize, weight: .semibold).monospacedDigit())
                 .foregroundStyle(.secondary)
-                .monospacedDigit()
                 .lineLimit(1)
         }
     }
@@ -861,9 +873,8 @@ struct SettingsErrorRow: View {
                     .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(currentValue)
-                    .font(.system(size: settingsRowDetailFontSize, weight: .semibold, design: .rounded))
+                    .font(.system(size: settingsRowDetailFontSize, weight: .semibold).monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .monospacedDigit()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -895,7 +906,7 @@ struct SettingsBaseRow<Accessory: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .center, spacing: 12) {
                 Text(title)
                     .font(.system(size: settingsRowTitleFontSize, weight: .semibold))
@@ -911,8 +922,13 @@ struct SettingsBaseRow<Accessory: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.06))
+                .frame(height: 1)
+        }
     }
 }
 

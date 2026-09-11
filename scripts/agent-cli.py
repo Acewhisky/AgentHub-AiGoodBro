@@ -6,9 +6,10 @@ double-switched WorkBuddy run. Codex plan is delegated in-process to the
 managed entry (next_dispatch_activity.main) verbatim; status/result/cancel
 reuse the same shared Registry. This file is a thin layer, not a second
 scheduler: it contains no process launching, no shell, no network, and never
-reads credentials. The only run path it owns is WorkBuddy behind --allow-run
-AND AGENT_CLI_ALLOW_RUN=1, and the child launch itself is delegated to the
-managed activity.supervise() supervisor.
+reads credentials. It owns the WorkBuddy run path and a Grok adapter whose
+production launch remains fail-closed until the native quota bridge exists.
+Both retain the --allow-run AND AGENT_CLI_ALLOW_RUN=1 gate, and any eventual
+child launch is delegated to the managed activity.supervise() supervisor.
 
 Exit codes: 0 ok (including an idempotent re-cancel), 1 managed error reason,
 2 usage, 3 safety refusal, 4 unsupported capability.
@@ -30,6 +31,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import next_dispatch_activity as activity          # noqa: E402 (managed module, reused)
 import next_dispatch_invocation as invocation      # noqa: E402 (managed module, reused)
 import agent_cli_capabilities as capabilities      # noqa: E402
+import agent_cli_grok as grok                      # noqa: E402 (thin grok candidate)
 import agent_cli_support as support                # noqa: E402
 from agent_cli_support import AgentCliError, Refusal, Unsupported  # noqa: E402
 
@@ -110,7 +112,7 @@ def cmd_plan(args, registry) -> int:
         result = activity.main(managed)
         return EXIT_OK if result in (None, 0) else int(result)
     if args.product == "grok":
-        raise Unsupported("grok_plan_entry_missing")
+        return grok.plan(args, registry)
     if args.product == "workbuddy":
         return plan_workbuddy(args, registry)
     print(f"USAGE_ERROR: unknown product '{args.product}'", file=sys.stderr)
@@ -164,6 +166,8 @@ def cmd_run(args, registry) -> int:
             managed.append("--refresh")
         result = activity.main(managed)
         return EXIT_OK if result in (None, 0) else int(result)
+    if args.product == "grok":
+        return grok.run(args, registry)
     if args.product != "workbuddy":
         raise Unsupported("run_not_authorized_for_product")
     model = args.model or WORKBUDDY_MODEL
@@ -201,23 +205,15 @@ def cmd_run(args, registry) -> int:
         output_identity = support.create_exclusive_output(output)
         result = support.run_workbuddy_task(
             registry, lease, argv=argv, cwd=cwd, brief_path=brief_path, output=output,
-            timeout=float(args.timeout_seconds), capture_limit=support.MAX_CHILD_CAPTURE_BYTES,
+            timeout=float(args.timeout_seconds) if args.timeout_seconds is not None
+            else support.DEFAULT_RUN_TIMEOUT_SECONDS,
+            capture_limit=support.MAX_CHILD_CAPTURE_BYTES,
             output_identity=output_identity)
     except BaseException:
         # Preserve the reservation truthfully; never relaunch over an occupied
         # lease. A cancel that landed before launch must converge to cancelled
         # here instead of sticking in cancel_requested (F-01B).
-        current = next((x for x in registry.read()["leases"] if x["leaseId"] == lease["leaseId"]), None)
-        if current and current["state"] in {"preparing", "starting", "running", "cancel_requested"} \
-                and current.get("runnerPID") in {None, os.getpid()}:
-            try:
-                registry.update(lease["leaseId"], args.owner, "cancelled"
-                                if current["state"] == "cancel_requested" else "failed")
-            except activity.ActivityError:
-                try:
-                    registry.update(lease["leaseId"], args.owner, "uncertain")
-                except activity.ActivityError:
-                    pass
+        support.converge_reservation_after_failure(registry, lease, args.owner)
         raise
     lease_after = next((x for x in registry.read()["leases"] if x["leaseId"] == lease["leaseId"]), None)
     emit({"schemaVersion": 1, "run": result,
@@ -335,7 +331,7 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--model")
     plan.add_argument("--effort")
     plan.add_argument("--sandbox", choices=["read-only", "workspace-write"], default="workspace-write")
-    plan.add_argument("--executable", help="workbuddy executable override (used by offline tests)")
+    plan.add_argument("--executable", help="workbuddy/grok executable override (Grok overrides require the offline test switch)")
     plan.add_argument("--print-argv-only", action="store_true",
                       help="print the managed-entry argv without executing it")
     plan.set_defaults(needs_args=True)
@@ -354,8 +350,8 @@ def parser() -> argparse.ArgumentParser:
     cancel.add_argument("--owner", required=True)
     cancel.add_argument("--product", choices=sorted(capabilities.CATALOG))
 
-    run = sub.add_parser("run", help="managed Codex delegation or native WorkBuddy run")
-    run.add_argument("--product", choices=["codex", "workbuddy"], required=True)
+    run = sub.add_parser("run", help="managed Codex delegation, native WorkBuddy run, or fail-closed Grok adapter")
+    run.add_argument("--product", choices=["codex", "grok", "workbuddy"], required=True)
     run.add_argument("--owner", required=True)
     run.add_argument("--task-id", required=True)
     run.add_argument("--brief-file", type=Path, required=True)
@@ -369,7 +365,10 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--sandbox", choices=["read-only", "workspace-write"], default="workspace-write")
     run.add_argument("--refresh", action="store_true")
     run.add_argument("--executable")
-    run.add_argument("--timeout-seconds", default=support.DEFAULT_RUN_TIMEOUT_SECONDS)
+    run.add_argument("--quota-evidence", type=Path,
+                     help="grok bridge input; caller JSON is rejected until the native producer is wired")
+    run.add_argument("--timeout-seconds", default=None,
+                     help="run deadline in seconds; grok requires it explicitly")
     run.add_argument("--allow-run", action="store_true",
                      help="requires AGENT_CLI_ALLOW_RUN=1 in the environment as well")
     return p

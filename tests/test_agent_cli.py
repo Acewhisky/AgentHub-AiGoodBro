@@ -31,6 +31,8 @@ def run_cli(argv, env_extra=None, cwd=None):
     env = dict(os.environ)
     env.pop("AGENT_CLI_ALLOW_RUN", None)
     env.pop("AGENT_CLI_ALLOW_TEST_EXECUTABLE", None)
+    env.pop("AGENT_CLI_GROK_EXECUTABLE", None)
+    env.pop("AGENT_CLI_GROK_MIN_RETURN_DIR", None)
     if env_extra:
         env.update(env_extra)
     return subprocess.run([sys.executable, str(AGENT_CLI)] + argv, capture_output=True,
@@ -132,7 +134,14 @@ class AgentCliTests(unittest.TestCase):
         done = run_cli(["capabilities", "--product", "grok"])
         self.assertEqual(done.returncode, 0, done.stderr)
         payload = json.loads(done.stdout)
-        self.assertFalse(payload["capabilities"]["grok"]["plan"]["supported"])
+        # 0911v8: Grok plan is reviewable, while the missing authenticated
+        # native quota bridge keeps production run explicitly unavailable.
+        self.assertTrue(payload["capabilities"]["grok"]["plan"]["supported"])
+        self.assertFalse(payload["capabilities"]["grok"]["run"]["supported"])
+        self.assertEqual(payload["capabilities"]["grok"]["run"]["reason"],
+                         "grok_quota_bridge_missing")
+        self.assertFalse(payload["capabilities"]["grok"]["quotaKnown"]["value"])
+        self.assertEqual(set(payload["capabilities"]), {"grok"})
 
     def test_capabilities_unknown_product_is_usage_error(self):
         done = run_cli(["--state-dir", str(self.state), "capabilities", "--product", "nonsense"])
@@ -180,13 +189,16 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(done.returncode, 3)
         self.assertIn("output_inside_activity_state_refused", done.stderr)
 
-    def test_plan_grok_is_unsupported_without_fake_entry(self):
+    def test_plan_grok_executable_override_requires_test_switch(self):
         brief = self.work / "brief.md"
         brief.write_text("x", encoding="utf-8")
+        fake = make_fake(self.work, "fake-grok", "#!/bin/sh\nexit 0\n")
         done = run_cli(["--state-dir", str(self.state), "plan", "--product", "grok",
-                        "--brief-file", str(brief), "--output", str(self.work / "o.md")])
-        self.assertEqual(done.returncode, 4)
-        self.assertIn("grok_plan_entry_missing", done.stderr)
+                        "--brief-file", str(brief), "--output", str(self.work / "o.md"),
+                        "--cwd", str(self.work), "--model", "grok-4.6-build",
+                        "--executable", str(fake)])
+        self.assertEqual(done.returncode, 3)
+        self.assertIn("executable_override_requires_test_switch", done.stderr)
 
     def test_plan_codex_print_argv_only_is_a_plain_array(self):
         brief = self.work / "brief with space.md"

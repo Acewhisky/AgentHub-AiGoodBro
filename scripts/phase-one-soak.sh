@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 OUTPUT_DIR="${CAMNEXT_PHASE_ONE_OUTPUT_DIR:-$ROOT_DIR/build/phase-one}"
-BIN="$ROOT_DIR/build/CodexAccountManagerNext.app/Contents/MacOS/CodexAccountManagerNext"
+BIN="$ROOT_DIR/build/AiGoodBro.app/Contents/MacOS/AiGoodBro"
 DURATION_SECONDS="${DURATION_SECONDS:-28800}"
 SAMPLE_INTERVAL_SECONDS="${SAMPLE_INTERVAL_SECONDS:-60}"
 mkdir -p "$OUTPUT_DIR"

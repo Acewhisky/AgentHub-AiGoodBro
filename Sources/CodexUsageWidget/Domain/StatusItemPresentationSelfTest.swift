@@ -19,6 +19,46 @@ enum StatusItemPresentationSelfTest {
             }
         }
 
+        func writeLabeledStatusItem(
+            _ image: NSImage,
+            caption: String,
+            appearance: NSAppearance,
+            to url: URL
+        ) -> Bool {
+            let canvas = NSSize(width: max(280, image.size.width + 24), height: image.size.height + 32)
+            let output = NSImage(size: canvas)
+            var wrote = false
+            appearance.performAsCurrentDrawingAppearance {
+                output.lockFocus()
+                NSColor.windowBackgroundColor.setFill()
+                NSBezierPath(rect: NSRect(origin: .zero, size: canvas)).fill()
+                let captionAttributes: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 9, weight: .medium),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+                (caption as NSString).draw(at: NSPoint(x: 8, y: canvas.height - 16), withAttributes: captionAttributes)
+                image.draw(
+                    at: NSPoint(x: 8, y: 8),
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: 1
+                )
+                output.unlockFocus()
+                wrote = true
+            }
+            guard wrote,
+                let tiff = output.tiffRepresentation,
+                let bitmap = NSBitmapImageRep(data: tiff),
+                let png = bitmap.representation(using: .png, properties: [:])
+            else { return false }
+            do {
+                try png.write(to: url, options: .atomic)
+                return true
+            } catch {
+                return false
+            }
+        }
+
         expect(TokenFormatter.format(nil) == "--", "missing tokens should remain unavailable")
         expect(TokenFormatter.format(999) == "999", "sub-thousand tokens should remain unabridged")
         expect(TokenFormatter.format(1_000) == "1.0K", "thousands should use K")
@@ -775,6 +815,78 @@ enum StatusItemPresentationSelfTest {
             uncertainTopology.quotaMetrics.count == 2,
             "non-authoritative local-only data must not redefine the quota topology"
         )
+
+        expect(used.tooltip.hasPrefix("\(AHBrandIdentity.displayName) · "), "menu bar tooltip must use the AiGoodBro display name")
+        expect(!used.tooltip.contains("Codex Control"), "menu bar tooltip must not keep the old Codex Control name")
+        expect(used.tooltip.contains("Codex"), "quota tooltip must keep the Codex provider identity")
+        expect(used.accessibilityValue.contains("Codex"), "VoiceOver must keep the Codex provider identity")
+        expect(
+            unavailable.quotaMetrics.allSatisfy { $0.value == "--" && !$0.isAvailable },
+            "unknown quota values must stay -- and must not be filled with 0"
+        )
+        expect(clamped.todayMetric?.value == "--", "missing token totals must stay --")
+
+        let claudeRichSource = StatusItemSourceSnapshot(
+            runtime: .claudeCode,
+            fiveHourRemainingPercent: 64,
+            fiveHourResetsAt: now.addingTimeInterval(90 * 60),
+            sevenDayRemainingPercent: 41,
+            sevenDayResetsAt: now.addingTimeInterval(26 * 60 * 60),
+            todayTokens: 999_949
+        )
+        var claudeRichPreferences = StatusItemPreferences.default
+        claudeRichPreferences.visibleMetrics.insert(.todayTokens)
+        let claudeRich = builder.build(source: claudeRichSource, preferences: claudeRichPreferences, language: .en, now: now)
+        expect(claudeRich.tooltip.contains("Claude Code"), "Claude quota must keep its provider identity")
+        expect(claudeRich.todayMetric?.value == "999.9K", "long token values must stay compact without promoting early")
+        let claudeRichImage = renderer.render(claudeRich, tokens: lightTokens, appearance: NSAppearance(named: .aqua))
+        expect(claudeRichImage.size == claudeRich.imageSize, "Claude rich render must keep its layout size")
+        if let bitmap = claudeRichImage.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)) {
+            let scaleX = CGFloat(bitmap.pixelsWide) / claudeRichImage.size.width
+            let scaleY = CGFloat(bitmap.pixelsHigh) / claudeRichImage.size.height
+            let logoSample = bitmap.colorAt(
+                x: Int((11 * scaleX).rounded(.down)),
+                y: Int((11 * scaleY).rounded(.down))
+            )
+            expect((logoSample?.alphaComponent ?? 0) > 0.05, "rich mode must keep the provider icon and must not replace it with an AH mark")
+            expect(
+                CGFloat(bitmap.pixelsWide) >= claudeRich.imageSize.width,
+                "long rich values must not clip the rendered menu bar bitmap"
+            )
+        } else {
+            failures.append("Claude rich status item render should produce a readable bitmap")
+        }
+
+        let outputRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("review-outputs/0911v11", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+            var remainingCapture = remainingPreferences
+            remainingCapture.displayMode = .classic
+            var usedCapture = usedPreferences
+            usedCapture.displayMode = .classic
+            let captures: [(String, StatusItemPresentation, NSAppearance.Name)] = [
+                ("synthetic-menubar-minimal-remaining-light", builder.build(source: source, preferences: minimalPreferences, language: .zh, now: now), .aqua),
+                ("synthetic-menubar-classic-remaining-light", builder.build(source: source, preferences: remainingCapture, language: .zh, now: now), .aqua),
+                ("synthetic-menubar-classic-used-dark", builder.build(source: source, preferences: usedCapture, language: .en, now: now), .darkAqua),
+                ("synthetic-menubar-rich-remaining-light", remaining, .aqua),
+                ("synthetic-menubar-rich-claude-light", claudeRich, .aqua),
+                ("synthetic-menubar-unknown-classic-light", unavailable, .aqua),
+            ]
+            for (name, presentation, appearanceName) in captures {
+                guard let appearance = NSAppearance(named: appearanceName) else {
+                    failures.append("missing appearance \(appearanceName.rawValue) for \(name)")
+                    continue
+                }
+                let image = renderer.render(presentation, tokens: appearanceName == .darkAqua ? darkTokens : lightTokens, appearance: appearance)
+                let caption = AHBrandIdentity.syntheticCaption("\(presentation.mode.rawValue) \(presentation.quotaMode.rawValue) \(presentation.runtime.displayName)")
+                if !writeLabeledStatusItem(image, caption: caption, appearance: appearance, to: outputRoot.appendingPathComponent("\(name)@2x.png")) {
+                    failures.append("could not write synthetic capture \(name)")
+                }
+            }
+        } catch {
+            failures.append("could not create synthetic capture directory")
+        }
 
         if failures.isEmpty {
             print("status item self-test passed")

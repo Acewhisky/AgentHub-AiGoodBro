@@ -1,18 +1,18 @@
 # AiGoodBro · AgentHub
 
-原 **Codex Account Manager Next**，现更名为 **AiGoodBro**，主页工作台为 **AgentHub**。升级保留已有账号与设置。
+**AiGoodBro** 是原生 macOS 多账号与任务工作台，主页名为 **AgentHub**。从旧版升级会保留已有账号与设置。
 
 **中文** | [English](README.en.md)
 
-![Codex Next：重置消息，及时提醒](docs/images/0910v1/01-reset-announcements-cover-zh.png)
+![AiGoodBro：重置消息，及时提醒](docs/images/0910v1/01-reset-announcements-cover-zh.png)
 
 每天开工前，先回答四个问题：还剩多少额度、几点恢复、这个账号现在能不能用、任务进行到哪一步。
 
 AiGoodBro 把额度、官方重置时间、账号可用性和任务进展放进一张原生 macOS 工作台。单账号可以只读查看，多账号可以分别保存隔离的 CLI 环境与执行偏好。
 
-**当前源码预览：0911v2 · 9.5.20 (34)。** 可按下方口令从源码构建和安装；本版尚无 Release 安装包，多 CLI 的支持范围见下方说明。[候选改动与验证边界](docs/release-notes-v9.5.20.md)
+**当前源码预览：0911v3 · 9.5.21 (35)。** 可按下方口令从源码构建和安装；本版尚无 Release 安装包，多 CLI 的支持范围见下方说明。[候选改动与验证边界](docs/release-notes-v9.5.21.md)
 
-一句话安装口令和 4 个调用模板都在下面。9.5.20 尚未发布到 GitHub Releases；源码构建或本地候选包都不代表公开下载已经发布。
+一句话安装口令和 4 个调用模板都在下面。9.5.21 尚未发布到 GitHub Releases；当前请从源码构建。
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -23,10 +23,10 @@ AiGoodBro 把额度、官方重置时间、账号可用性和任务进展放进�
 把下面整段发给有本机执行能力的 Agent：
 
 ```text
-请从 https://github.com/BLACKIELF/AgentHub-AiGoodBro 安装或升级 AiGoodBro（原 Codex Account Manager Next）。先读 README，检查系统、依赖和现有 CodexAccountManagerNext.app；记录当前设置，等待应用自己的操作结束，备份后在原路径覆盖，不改名或新增第二份 App。保留账号、调度参与状态、模型偏好和当前 Codex 登录，安装后逐项核对设置与实际运行版本。不要终止其他 CLI 任务，也不要为验证而启动真实任务、切号或发送通知。需要官方登录时由我手动完成。
+请从 https://github.com/BLACKIELF/AgentHub-AiGoodBro 安装或升级 AiGoodBro。先读 README，检查系统、依赖和现有安装；记录当前设置，等待应用自己的操作结束，把旧版备份到专用回滚目录，再迁移为唯一的 AiGoodBro.app。保留账号、调度参与状态、模型偏好和当前 Codex 登录，安装后逐项核对应用名称、实际运行版本与设置。不要留下两份可启动 App，不要终止其他 CLI 任务，也不要为验证而启动真实任务、切号或发送通知。需要官方登录时由我手动完成。
 ```
 
-需要 macOS 13+、已正常登录的 Codex，以及 Xcode Command Line Tools。只有一个账号也能先用只读监控。CLI 与暖号还需要配置本机 Hub 和账号映射；没有配置时，相关入口保持关闭并提示原因。首次引导会检查现有 Python 3.9+ 和 Codex CLI，按需准备配套 Skill；依赖由用户安装，Next 不内置外部 Python 或 Codex。配套 Hub 在确认项目和账号后单独设置，已存在的服务会保留。
+需要 macOS 13+、已正常登录的 Codex，以及 Xcode Command Line Tools。只有一个账号也能先用只读监控。CLI 与暖号还需要配置本机 Hub 和账号映射；没有配置时，相关入口保持关闭并提示原因。首次引导会检查现有 Python 3.9+ 和 Codex CLI，按需准备配套 Skill；依赖由用户安装，AiGoodBro 不内置外部 Python 或 Codex。配套 Hub 在确认项目和账号后单独设置，已存在的服务会保留。
 
 自己构建：
 
@@ -36,9 +36,9 @@ cd AgentHub-AiGoodBro
 make build
 ```
 
-应用仍位于 `build/CodexAccountManagerNext.app`，Finder 中显示 AiGoodBro。构建不会自动安装或启动；已有版本先备份，再在原位置替换，不要改成 `AiGoodBro.app`。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；9.5.20 没有已发布的 Apple 公证下载包。
+构建结果应为 `build/AiGoodBro.app`。构建不会自动安装或启动；升级时先备份旧版，再迁移为唯一的 `AiGoodBro.app`，不要留下两个可启动副本。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；9.5.21 没有已发布的 Apple 公证下载包。
 
-后续若发布，兼容资产名仍为 `CodexAccountManagerNext-9.5.20-mac-arm64.dmg` 与 `CodexAccountManagerNext-9.5.20-mac-x86_64.dmg`；当前没有可下载的 9.5.20 安装包。
+后续若发布，安装包名称应为 `AiGoodBro-<version>-mac-<arch>.dmg`；当前没有可下载的 9.5.21 安装包。
 
 ## 打开后，先看这张工作台
 
@@ -54,6 +54,8 @@ make build
 
 > 以下界面图保留自 0910v1，由当时的生产 SwiftUI 组件原生渲染，使用演示账号、额度和日期，不读取个人凭据。图中的“状态待确认”表示未连接 Hub。[图片来源与制作提示词](docs/images/0910v1/README.md)
 
+> 图片可能展示早期布局，仅用于介绍界面；本次不新增图片。
+
 ## 选择 CLI、执行档位和消息内容
 
 工作台顶部可选择本机已安装的 Codex、Grok、Kimi Code、Claude Code、OpenCode、Gemini CLI、MiMo 和 ZCode。每个 CLI 可关联已有登录目录，分别命名和刷新；支持范围见[账号与额度说明](docs/local-cli-accounts.md)。MiMo 与 ZCode 原生订阅的额度暂未接通，界面会明确提示。
@@ -62,13 +64,13 @@ make build
 
 飞书设置可选择账号备注、额度、重置时间、重置卡数量及最近或全部到期时间；Agent 名称和官方余额可选。默认省去长编号。主界面余额四舍五入为整数，发生取整时显示“≈”；点击说明可看精确原值、来源与时间。接口未提供币种和换算时不标为美元。
 
-自动化中心新增 [Telegram 与企业微信](docs/message-channels-0911v1.md)，分别开启和配置；默认关闭，保存后可发送测试。Codex 任务完成提醒要求实时观察到同一任务从运行到完成，归档和历史快照不会触发。凭据存入 Next 独立 Keychain；本版离线回归没有发送真实消息。
+自动化中心新增 [Telegram 与企业微信](docs/message-channels-0911v1.md)，分别开启和配置；默认关闭，保存后可发送测试。Codex 任务完成提醒要求实时观察到同一任务从运行到完成，归档和历史快照不会触发。凭据存入 AiGoodBro 独立 Keychain；本版离线回归没有发送真实消息。
 
 选中账号后可看到“使用重置卡”。此入口仅供用户手动操作，Agent 不得主动使用。它要求三次明确确认，发送前重新核对账号、卡片、期限和占用。**本次没有执行或测试重置流程**；未确认结果会保留原尝试，禁止自动重试。详见[实现和验证边界](docs/reset-credit-control.md)。
 
 ## 不用守着倒计时等暖号
 
-5 小时与 7 天暖号分别设置。Next 到时先刷新官方额度，再核实账号身份和占用，条件满足才发送一次最小请求，尝试开启下一轮窗口。
+5 小时与 7 天暖号分别设置。AiGoodBro 到时先刷新官方额度，再核实账号身份和占用，条件满足才发送一次最小请求，尝试开启下一轮窗口。
 
 需要 AiGoodBro 持续运行、电脑唤醒并联网。暖号会消耗少量额度；账号忙碌、任一已知订阅窗口用尽或状态不明时会等待复核。有额外余额也不会因此继续暖号。到重置时间先只读刷新，确认额度恢复后再继续；普通失败按间隔重试。成功后即使额度仍显示 100%，也不会因此每分钟重复暖号。
 
@@ -76,7 +78,7 @@ make build
 
 ## 准备调用时，就让其他任务知道
 
-通过配套调度协议调用时，先预约账号和工作目录，再做环境检查和启动。其他遵守协议的调用可以立即读到占用，Next 界面约每 10 秒更新。
+通过配套调度协议调用时，先预约账号和工作目录，再做环境检查和启动。其他遵守协议的调用可以立即读到占用，AiGoodBro 界面约每 10 秒更新。
 
 | 你看到的状态 | 含义 |
 |---|---|
@@ -92,7 +94,7 @@ AiGoodBro 的终端按钮会登记占用并等待启动回执；退出码 0 只�
 
 ## 重置消息来了，先收到提醒再核对账号
 
-“接收重置消息”默认开启。Next 运行时每 5 分钟查询 [Codex Resets](https://codex-resets.com/) 的公开记录，不消耗账号额度，也不用选择账号或配置飞书。首次检查记住已有记录，不补发历史消息；后续新消息使用 macOS 通知，需在系统中允许 Next 通知。
+“接收重置消息”默认开启。AiGoodBro 运行时每 5 分钟查询 [Codex Resets](https://codex-resets.com/) 的公开记录，不消耗账号额度，也不用选择账号或配置飞书。首次检查记住已有记录，不补发历史消息；后续新消息使用 macOS 通知，需在系统中允许 AiGoodBro 通知。
 
 工作台底部“自动化中心”的第一项就是“重置消息”，可以看最新内容、刷新或关闭。没有通知权限时，消息仍可在这里查看。需要转发到飞书，再展开“同时发送到飞书（可选）”。升级保留已有关闭选择。
 
@@ -114,30 +116,30 @@ AiGoodBro 的终端按钮会登记占用并等待启动回执；退出码 0 只�
 
 ## 装好后，挑一个真实场景
 
-这些口令交给能操作本机、且已配置相应工具的 Agent；它们不是 Next 内置的聊天指令。
+这些口令交给能操作本机、且已配置相应工具的 Agent；它们不是 AiGoodBro 内置的聊天指令。
 
 **① 开工前看一眼**
 
 ```text
-检查 Next 当前账号的 5 小时和 7 天剩余额度、上海时区重置时间、任务占用与模型偏好。先只读检查，区分新鲜数据、旧快照和未知状态。
+检查 AiGoodBro 当前账号的 5 小时和 7 天剩余额度、上海时区重置时间、任务占用与模型偏好。先只读检查，区分新鲜数据、旧快照和未知状态。
 ```
 
 **② 用指定账号做事**
 
 ```text
-用账号 A 完成当前已授权任务。先核对目标环境所需工具、工作目录和账号身份，准备调用时立即占位，再刷新额度并验证占用。使用 Next 保存的执行偏好；不可用时不要静默换号。实际结束后及时读取成果、验收并释放占用。
+用账号 A 完成当前已授权任务。先核对目标环境所需工具、工作目录和账号身份，准备调用时立即占位，再刷新额度并验证占用。使用 AiGoodBro 保存的执行偏好；不可用时不要静默换号。实际结束后及时读取成果、验收并释放占用。
 ```
 
 **③ 排查暖号没有执行**
 
 ```text
-检查 Next 的暖号开关、最近成功和失败记录、官方重置时间、周额度及账号占用。把本次发现按日期追加到同一运行问题日志，先给出最小验证，不通过真实请求反复试错。
+检查 AiGoodBro 的暖号开关、最近成功和失败记录、官方重置时间、周额度及账号占用。把本次发现按日期追加到同一运行问题日志，先给出最小验证，不通过真实请求反复试错。
 ```
 
 **④ 升级后恢复原状**
 
 ```text
-升级 Next 前保存当前设置、账号顺序、参与状态和模型偏好。先等待已有调用结束，再做维护占位和原位覆盖。完成后核对版本、恢复原设置、恢复接单开关并释放占位，不启动测试任务。
+升级 AiGoodBro 前保存当前设置、账号顺序、参与状态和模型偏好。先等待已有调用结束，再做维护占位，备份旧版并迁移为唯一的 AiGoodBro.app。完成后核对名称与版本、恢复原设置、恢复接单开关并释放占位，不启动测试任务。
 ```
 
 ## 新用户打开后的默认设置
@@ -158,17 +160,17 @@ AiGoodBro 的终端按钮会登记占用并等待启动回执；退出码 0 只�
 
 0910v1 的既有改动：重置消息默认通过本机提醒，飞书成为可选转发；Desktop 切换改为后台执行和阶段反馈。修复终端启动路径、工作目录与启动状态误报，增加私有回执、参与时段和登录维护占用，保留暖号成功与失败历史。登录子进程未确认退出时继续保留占用。
 
-9.5.20 为源码预览；本轮实际完成的离线验证与未验证边界以[候选记录](docs/release-notes-v9.5.20.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据。
+9.5.21 为源码预览；本轮实际完成的离线验证与未验证边界以[候选记录](docs/release-notes-v9.5.21.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据。
 
-既有打包流程会在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；9.5.20 尚未打包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
+既有打包流程会在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；9.5.21 尚未打包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
 
-[9.5.20 候选记录](docs/release-notes-v9.5.20.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
+[9.5.21 候选记录](docs/release-notes-v9.5.21.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
 
 ## 还有哪些功能
 
 单账号菜单栏、完整 PNG 长截图、账号备注与排序、模型与思考强度选择、Standard/Fast、批量应用偏好、独立 Chrome 登录、显式 Desktop 切换、低额度推荐、飞书提醒、配色与工作区设置均保留。
 
-Next 是独立的第三方开源项目。它不提供账号、不增加额度；独立 CLI 不改变当前 Desktop 登录，显式“切换 Desktop”才走身份切换事务。Webhook 保存在 Keychain。提交问题前请移除凭据、账号资料、任务正文和私有路径。
+AiGoodBro 是独立的第三方开源项目。它不提供账号、不增加额度；独立 CLI 不改变当前 Desktop 登录，显式“切换 Desktop”才走身份切换事务。Webhook 保存在隔离的 Keychain 命名空间。提交问题前请移除凭据、账号资料、任务正文和私有路径。
 
 开发检查：
 

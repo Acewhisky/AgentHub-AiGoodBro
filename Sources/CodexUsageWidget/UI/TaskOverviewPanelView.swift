@@ -143,7 +143,7 @@ struct TaskOverviewPanelView: View {
                 .font(.system(size: 18, weight: .semibold, design: .rounded))
                 .foregroundStyle(tint)
             Text(label)
-                .font(.system(size: 9, weight: .medium))
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
@@ -179,7 +179,7 @@ struct TaskOverviewPanelView: View {
                 }
                 Spacer(minLength: 6)
                 Image(systemName: "arrow.up.right")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
             .contentShape(Rectangle())

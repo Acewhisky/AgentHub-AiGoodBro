@@ -28,7 +28,7 @@ make release-all BUILD_DIR="$BUILD_DIR" DIST_DIR="$DIST_DIR" BUNDLE_COMPANION=1
 verify_asset() {
   local arch="$1"
   local expected_arch="$2"
-  local dmg="$DIST_DIR/CodexAccountManagerNext-${VERSION}-mac-${arch}.dmg"
+  local dmg="$DIST_DIR/AiGoodBro-${VERSION}-mac-${arch}.dmg"
   local checksum="${dmg}.sha256"
   local mount_dir
 
@@ -39,9 +39,9 @@ verify_asset() {
 
   mount_dir="$(mktemp -d)"
   hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg" >/dev/null
-  file "$mount_dir/CodexAccountManagerNext.app/Contents/MacOS/CodexAccountManagerNext" | grep -q "$expected_arch"
-  codesign --verify --deep --strict "$mount_dir/CodexAccountManagerNext.app"
-  local resources="$mount_dir/CodexAccountManagerNext.app/Contents/Resources"
+  file "$mount_dir/AiGoodBro.app/Contents/MacOS/AiGoodBro" | grep -q "$expected_arch"
+  codesign --verify --deep --strict "$mount_dir/AiGoodBro.app"
+  local resources="$mount_dir/AiGoodBro.app/Contents/Resources"
   local hub="$resources/CompanionHub/agent-remote-control"
   [[ -x "$hub" ]] || { echo "Missing bundled Companion Hub" >&2; exit 1; }
   file "$hub" | grep -q "$expected_arch"
@@ -84,6 +84,6 @@ PY
 verify_asset arm64 arm64
 verify_asset x86_64 x86_64
 
-echo "Release artifacts verified for Codex Account Manager Next $VERSION"
-cat "$DIST_DIR/CodexAccountManagerNext-${VERSION}-mac-arm64.dmg.sha256"
-cat "$DIST_DIR/CodexAccountManagerNext-${VERSION}-mac-x86_64.dmg.sha256"
+echo "Release artifacts verified for AiGoodBro $VERSION"
+cat "$DIST_DIR/AiGoodBro-${VERSION}-mac-arm64.dmg.sha256"
+cat "$DIST_DIR/AiGoodBro-${VERSION}-mac-x86_64.dmg.sha256"

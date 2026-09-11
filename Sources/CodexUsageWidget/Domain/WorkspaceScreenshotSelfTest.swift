@@ -65,6 +65,8 @@ enum WorkspaceScreenshotSelfTest {
         expect(AccountCardGridLayout.columnCount(width: 944, itemCount: 9) == 3, "the default window must fit three cards")
         expect(AccountCardGridLayout.columnCount(width: 1_244, itemCount: 9) == 4, "a wide window must fit four cards")
         expect(AccountCardGridLayout.columnCount(width: .infinity, itemCount: 9) == 1, "nonfinite probes must be safe")
+        expect(AccountCardGridLayout.selfTest(), "all card rows must share one global measured size at 720 and 980 points")
+        expect(CrossProviderQuotaSummary.selfTest(), "provider summaries must preserve unknown values and never add unrelated percentages")
         expect(ProfileReorderMotion.animation(reduceMotion: true) == nil, "reordering must respect reduced motion")
         let originalOrder = ["one", "two", "three", "four"]
         expect(ProfileReorderSession(sourceID: "missing", order: originalOrder) == nil, "unknown drag sources must be rejected")
@@ -157,6 +159,8 @@ enum WorkspaceScreenshotSelfTest {
 
             let catalog = PaletteCatalog.loadFromMainBundle()
             let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
+            settings.workspaceDisplayMode = .simple
+            settings.simpleWorkspacePreset = .overview
             var previousHeight: CGFloat = 0
             for count in 1...9 {
                 let store = WorkspacePreviewRenderer.fixtureStore(

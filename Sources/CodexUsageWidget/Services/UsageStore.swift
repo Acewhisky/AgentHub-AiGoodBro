@@ -4370,7 +4370,7 @@ final class UsageStore: ObservableObject {
                     kind: .update,
                     runtimeScope: nil,
                     threadID: nil,
-                    title: updateResult.latestVersionLabel ?? "Codex Control",
+                    title: updateResult.latestVersionLabel ?? "AiGoodBro",
                     since: updateResult.checkedAt
                 ))
         }
@@ -4498,6 +4498,18 @@ final class UsageStore: ObservableObject {
         selectedRuntimeScope = nextScope
         snapshot = reconciledSnapshot.displaySnapshot(for: nextScope)
         updateLocalLifetimeHighWater()
+    }
+
+    /// Desktop sign-in and the account used for quota monitoring are separate
+    /// choices. Follow the live Desktop identity only while monitoring the
+    /// system profile itself or when the saved choice no longer exists.
+    static func shouldFollowDesktopIdentity(
+        selectedMonitorProfileID: String,
+        systemProfileID: String,
+        existingProfileIDs: Set<String>
+    ) -> Bool {
+        !existingProfileIDs.contains(selectedMonitorProfileID)
+            || selectedMonitorProfileID == systemProfileID
     }
 
     @discardableResult
@@ -4660,7 +4672,7 @@ final class UsageStore: ObservableObject {
             let systemSnapshot = CodexUsageReader().load(context: context)
             let officialProfile = CodexOfficialProfileReader.load(codexHomeURL: systemProfile.codexHomeURL)
             DispatchQueue.main.async {
-                let previousMonitorID = self.selectedMonitorProfileID
+                let previousMonitorID = self.profileStore.selectedMonitorProfileID
                 do {
                     if systemSnapshot.account?.email?.isEmpty == false {
                         try self.profileStore.record(
@@ -4678,9 +4690,18 @@ final class UsageStore: ObservableObject {
                             self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                                 "同账号凭据同步失败：\(error.localizedDescription)", "Could not sync the matching account's sign-in: \(error.localizedDescription)")
                         }
-                        _ = try self.profileStore.selectMonitorForSystemAccount()
-                    } else {
-                        try self.profileStore.selectMonitor(systemProfile.id)
+                    }
+                    let shouldFollow = Self.shouldFollowDesktopIdentity(
+                        selectedMonitorProfileID: self.profileStore.selectedMonitorProfileID,
+                        systemProfileID: systemProfile.id,
+                        existingProfileIDs: Set(self.profileStore.profiles.map(\.id))
+                    )
+                    if shouldFollow {
+                        if systemSnapshot.account?.email?.isEmpty == false {
+                            _ = try self.profileStore.selectMonitorForSystemAccount()
+                        } else {
+                            try self.profileStore.selectMonitor(systemProfile.id)
+                        }
                     }
                     self.syncProfiles()
                     self.configureAuthMonitoring()

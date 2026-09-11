@@ -28,6 +28,7 @@ swiftc \
   Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift \
   Sources/CodexUsageWidget/Domain/ResetCardPresentation.swift \
   Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
+  Sources/CodexUsageWidget/Services/GrokResetStatusObservationReader.swift \
   Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift \
   tests/GrokResetCardsFixture.swift \
   -o "$OUTPUT"

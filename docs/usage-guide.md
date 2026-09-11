@@ -1,6 +1,6 @@
 # AiGoodBro 使用说明 · 0911v1
 
-本页保留 README 之外的配置和行为说明。当前源码预览为 0911v1 · 9.5.19 (33)，macOS 13+；尚无本版 Release 安装包。多 CLI 登录和真实调用尚未全部通过，不能用离线检查替代。
+本页保留 README 之外的配置和行为说明。当前源码预览见 README 版本行，macOS 13+；没有已发布安装包时不要编造下载链接。多 CLI 登录和真实调用尚未全部通过，不能用离线检查替代。
 
 ## 安装与配置
 
@@ -10,20 +10,20 @@
 git clone https://github.com/BLACKIELF/AgentHub-AiGoodBro.git
 cd AgentHub-AiGoodBro
 make build
-codesign --verify --deep --strict build/CodexAccountManagerNext.app
+codesign --verify --deep --strict build/AiGoodBro.app
 ```
 
-构建产物不会自动安装或启动。确认没有已有 Next 时，可以选择安装到当前用户目录：
+构建产物不会自动安装或启动。确认没有已有副本在运行时，可以选择安装到当前用户目录：
 
 ```sh
 mkdir -p "$HOME/Applications"
-ditto build/CodexAccountManagerNext.app "$HOME/Applications/CodexAccountManagerNext.app"
-open "$HOME/Applications/CodexAccountManagerNext.app"
+ditto build/AiGoodBro.app "$HOME/Applications/AiGoodBro.app"
+open "$HOME/Applications/AiGoodBro.app"
 ```
 
-软件在 Finder 中显示为 AiGoodBro，但应用包与执行文件仍是 `CodexAccountManagerNext`。已有版本时，先记录实际运行路径、设置和账号偏好，等待自己的操作结束，正常退出并备份后在原路径覆盖。不要改名为 `AiGoodBro.app`、新增第二份 App，也不要覆盖名称不同的旧管理器。构建脚本会拒绝覆盖正在运行的目标二进制；开发时可以指定独立 `BUILD_DIR`。
+软件包、执行文件和 Finder 显示名均为 AiGoodBro。已有旧名 `CodexAccountManagerNext.app` 时，先记录实际运行路径、设置和账号偏好，等待自己的操作结束并正常退出，再迁移为唯一的 `AiGoodBro.app`。不要留下两份可启动 App，也不要覆盖其他产品。构建脚本会拒绝覆盖正在运行的目标二进制；开发时可以指定独立 `BUILD_DIR`。账号目录、Application Support、defaults 和 Keychain 仍用原隔离名。
 
-仓库的 `make install` 会删除 `/Applications/CodexAccountManagerNext.app`、复制新构建并立即打开，只适合用户明确批准且已完成备份的现场安装；普通构建和本轮离线验证不运行它。完整保留项见[品牌与安装兼容表](brand-compat-0911v1.md)。
+仓库的 `make install` 会把 `/Applications/AiGoodBro.app` 原子替换并打开；若只有旧名安装包，会在空闲检查后迁到新名。只适合用户明确批准且已完成备份的现场安装；普通构建和本轮离线验证不运行它。完整保留项见[品牌与安装兼容表](brand-compat-0911v1.md)。
 
 第一次打开会显示包含环境准备的五步引导，可以跳过、续看和重新进入。通用偏好采用 README 中的默认值；账号、当前登录、机器人配置与“已完成引导”状态不会从其他用户复制。
 

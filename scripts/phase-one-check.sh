@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 OUTPUT_DIR="${CAMNEXT_PHASE_ONE_OUTPUT_DIR:-$ROOT_DIR/build/phase-one}"
-BIN="$ROOT_DIR/build/CodexAccountManagerNext.app/Contents/MacOS/CodexAccountManagerNext"
+BIN="$ROOT_DIR/build/AiGoodBro.app/Contents/MacOS/AiGoodBro"
 mkdir -p "$OUTPUT_DIR/logs"
 
 if [[ ! -x "$BIN" ]]; then

@@ -1,18 +1,18 @@
 # AiGoodBro · AgentHub
 
-Formerly **Codex Account Manager Next**, now **AiGoodBro**, with **AgentHub** as its Home workspace. Upgrades preserve existing accounts and settings.
+**AiGoodBro** is a native macOS workspace for accounts and tasks, with **AgentHub** as its Home view. Upgrades preserve existing accounts and settings.
 
 [中文](README.md) | **English**
 
-![Codex Next: quota, warm-up and accounts in one workspace](docs/images/0909v4/01-readme-cover-en.png)
+![AiGoodBro: quota, warm-up and accounts in one workspace](docs/images/0909v4/01-readme-cover-en.png)
 
 Before starting work, answer four questions: how much quota remains, when it resets, whether the account is usable now, and how far the task has progressed.
 
 AiGoodBro puts quota, official reset times, account availability, and task progress in one native macOS workspace. A single account can use read-only monitoring; multiple accounts can keep isolated CLI environments and execution preferences.
 
-**Current source preview: 0911v2 · 9.5.20 (34).** Build and install using the prompt below. This version has no binary Release yet; provider coverage is described below. [Candidate changes and validation boundaries](docs/release-notes-v9.5.20.md)
+**Current source preview: 0911v3 · 9.5.21 (35).** Build and install using the prompt below. This version has no binary Release yet; provider coverage is described below. [Candidate changes and validation boundaries](docs/release-notes-v9.5.21.md)
 
-An installation prompt and four practical task prompts are below. Version 9.5.20 has not been published to GitHub Releases; a source build or local candidate package is not a published download.
+An installation prompt and four practical task prompts are below. Version 9.5.21 has not been published to GitHub Releases; build it from source for now.
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -21,7 +21,7 @@ An installation prompt and four practical task prompts are below. Version 9.5.20
 ## Install it with your local agent
 
 ```text
-Install or upgrade AiGoodBro (formerly Codex Account Manager Next) from https://github.com/BLACKIELF/AgentHub-AiGoodBro. Read the README and check the system, dependencies and any existing CodexAccountManagerNext.app first. Record current settings, wait for the app's own operations to finish, back it up, then replace it at the same path without renaming it or creating a second copy. Preserve accounts, dispatch participation, execution preferences and the current Codex sign-in. Verify the actual running version and restored settings. Do not terminate other CLI tasks or start real tasks, switch accounts or send notifications just to test the installation. Let me complete any official sign-in manually.
+Install or upgrade AiGoodBro from https://github.com/BLACKIELF/AgentHub-AiGoodBro. Read the README and check the system, dependencies and existing installation first. Record current settings, wait for the app's own operations to finish, move the old build to a dedicated rollback folder, then migrate to one AiGoodBro.app. Preserve accounts, dispatch participation, execution preferences and the current Codex sign-in. Verify the app name, running version and restored settings. Do not leave two launchable copies, terminate other CLI tasks, start real tasks, switch accounts or send notifications just to test the installation. Let me complete any official sign-in manually.
 ```
 
 Requires macOS 13+, a working Codex sign-in and Xcode Command Line Tools. A single account can start with read-only monitoring. CLI launch and warm-up also require a configured local Hub and account mapping; those controls remain blocked when required evidence is missing. Setup checks existing Python 3.9+ and Codex CLI and can prepare the companion Skill. External Python and Codex are not bundled. Companion Hub setup requires a selected project and accounts and preserves existing services.
@@ -34,9 +34,9 @@ cd AgentHub-AiGoodBro
 make build
 ```
 
-The result remains `build/CodexAccountManagerNext.app`, displayed as AiGoodBro in Finder. Building does not install or launch it. Back up an existing installation and replace it at its original path; do not rename it to `AiGoodBro.app`. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 9.5.20 download has been published.
+The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 9.5.21 download has been published.
 
-If a release is later published, its compatible asset names remain `CodexAccountManagerNext-9.5.20-mac-arm64.dmg` and `CodexAccountManagerNext-9.5.20-mac-x86_64.dmg`. Neither is available for 9.5.20 yet.
+Future installer assets should use `AiGoodBro-<version>-mac-<arch>.dmg`. No 9.5.21 installer is currently available.
 
 ## Start with the workspace
 
@@ -52,6 +52,8 @@ Refresh each account, set its model and open an isolated CLI environment. Saved 
 
 > Workspace screenshots are retained native renders of the 0910v1 production SwiftUI views using synthetic accounts, quota and dates. “Unverified” means that the demo is not connected to a Hub. The English header illustration is retained from 0909v4. [Image provenance and prompts](docs/images/0910v1/README.md)
 
+> Images may show an earlier layout and are included only to introduce the interface. This update adds no images.
+
 ## Choose a CLI, preset and message fields
 
 The workspace can show installed Codex, Grok, Kimi Code, Claude Code, OpenCode, Gemini CLI, MiMo and ZCode environments. Link existing signed-in directories, name them and refresh their individual quota. See the [coverage table](docs/local-cli-accounts.md); native MiMo and ZCode subscription quota is not connected yet.
@@ -62,20 +64,20 @@ Feishu fields include the account label, quota, reset times, card count and near
 
 The selected account exposes a reset-card button with three confirmations, fresh account/card checks and shared activity protection. **The reset flow was not executed or tested.** Unknown outcomes preserve the original attempt and never trigger an automatic retry. See the [implementation boundary](docs/reset-credit-control.md).
 
-Telegram and WeCom can be configured separately in Automation Center and default to off. Codex completion alerts require an observed running-to-completed transition; archived and initial historical snapshots do not trigger them. Credentials use the isolated Next Keychain namespace. Offline tests do not prove delivery. [Channel details](docs/message-channels-0911v1.md)
+Telegram and WeCom can be configured separately in Automation Center and default to off. Codex completion alerts require an observed running-to-completed transition; archived and initial historical snapshots do not trigger them. Credentials use AiGoodBro's isolated Keychain namespace. Offline tests do not prove delivery. [Channel details](docs/message-channels-0911v1.md)
 
 
 ## Stop watching the reset countdown
 
-Five-hour and weekly warm-up have separate switches. Next refreshes official quota first, checks identity and occupancy, then sends one minimal request when the checks pass.
+Five-hour and weekly warm-up have separate switches. AiGoodBro refreshes official quota first, checks identity and occupancy, then sends one minimal request when the checks pass.
 
-Next must remain running on an awake, connected Mac. Warm-up consumes quota. Busy accounts, exhausted weekly quota or uncertain state defer the attempt; failures are rechecked after a delay. A successful request followed by 100% remaining quota no longer causes repeated warm-up every minute.
+AiGoodBro must remain running on an awake, connected Mac. Warm-up consumes quota. Busy accounts, exhausted weekly quota or uncertain state defer the attempt; failures are rechecked after a delay. A successful request followed by 100% remaining quota no longer causes repeated warm-up every minute.
 
 Dispatch participation only controls new task eligibility. Excluded accounts still refresh and follow the global warm-up switches. Warm-up does not add quota or redeem reset credits.
 
 ## Reserve before starting
 
-With the companion coordination protocol, a new call reserves its account and real project directory before environment checks and process launch. Other cooperating calls can read that reservation immediately; Next refreshes its view roughly every ten seconds.
+With the companion coordination protocol, a new call reserves its account and real project directory before environment checks and process launch. Other cooperating calls can read that reservation immediately; AiGoodBro refreshes its view roughly every ten seconds.
 
 | State | Meaning |
 |---|---|
@@ -91,7 +93,7 @@ AiGoodBro's Terminal button registers occupancy and waits for a private launch r
 
 ## Receive public reset announcements
 
-“Receive reset updates” is on by default. While Next is running, it checks [Codex Resets](https://codex-resets.com/) every five minutes without consuming account quota, choosing an account or configuring Feishu. The first check establishes a baseline without sending old announcements. Later updates use macOS notifications, subject to system permission.
+“Receive reset updates” is on by default. While AiGoodBro is running, it checks [Codex Resets](https://codex-resets.com/) every five minutes without consuming account quota, choosing an account or configuring Feishu. The first check establishes a baseline without sending old announcements. Later updates use macOS notifications, subject to system permission.
 
 “Reset updates” is the first section in the workspace's Automation center. Read the latest update there even without notification permission. Expand “Also send to Feishu (optional)” only if you want that delivery channel. Upgrades preserve an existing off setting.
 
@@ -115,30 +117,30 @@ Changing the actual identity still requires Codex to exit and reopen. Network an
 
 ## Four prompts to use after setup
 
-Give these to an agent with the necessary local tools and configuration. They are not a built-in chat interface in Next.
+Give these to an agent with the necessary local tools and configuration. They are not a built-in chat interface in AiGoodBro.
 
 **1. Check before work**
 
 ```text
-Read Next's current 5-hour and weekly remaining quota, reset times in my time zone, task occupancy and execution preferences. Distinguish fresh evidence, old snapshots and unknown state. Do not start a task.
+Read AiGoodBro's current 5-hour and weekly remaining quota, reset times in my time zone, task occupancy and execution preferences. Distinguish fresh evidence, old snapshots and unknown state. Do not start a task.
 ```
 
 **2. Use a specific account**
 
 ```text
-Use account A for the currently authorized task. Verify the required tools, project directory and identity; reserve the account as soon as preparation starts, then refresh quota and check occupancy. Use Next's saved execution preferences and do not silently substitute another account. Collect and validate the output as soon as execution ends, then release the reservation.
+Use account A for the currently authorized task. Verify the required tools, project directory and identity; reserve the account as soon as preparation starts, then refresh quota and check occupancy. Use AiGoodBro's saved execution preferences and do not silently substitute another account. Collect and validate the output as soon as execution ends, then release the reservation.
 ```
 
 **3. Diagnose missing warm-up**
 
 ```text
-Check Next's warm-up switches, recent success and failure records, official reset times, weekly quota and occupancy. Append the findings with today's date to the same issue journal. Start with the smallest diagnostic check instead of repeatedly sending real warm-up requests.
+Check AiGoodBro's warm-up switches, recent success and failure records, official reset times, weekly quota and occupancy. Append the findings with today's date to the same issue journal. Start with the smallest diagnostic check instead of repeatedly sending real warm-up requests.
 ```
 
 **4. Restore settings after an upgrade**
 
 ```text
-Record Next's settings, account order, participation and model preferences before upgrading. Wait for existing calls to finish, reserve the accounts for maintenance and replace the app at the same path. Verify the version, restore settings and admission controls, and release all maintenance reservations. Do not start test tasks.
+Record AiGoodBro's settings, account order, participation and model preferences before upgrading. Wait for existing calls to finish, reserve the accounts for maintenance, back up the old build and migrate to one AiGoodBro.app. Verify the name and version, restore settings and admission controls, and release all maintenance reservations. Do not start test tasks.
 ```
 
 ## Defaults for a new installation
@@ -159,17 +161,17 @@ Saved choices take precedence, including disabled features. New users still rece
 
 0910v1 enables local reset updates by default, with optional Feishu forwarding, and moves Desktop switching into the background with visible stage progress. It fixes Terminal executable and directory selection, adds private launch receipts and dispatch schedules, and preserves warm-up history. Sign-in reservations remain occupied until the login child process has actually stopped.
 
-Version 9.5.20 is a source preview. The [candidate notes](docs/release-notes-v9.5.20.md) list the offline checks actually run in this round and the remaining runtime boundaries. A full official reset cycle, multi-CLI sign-in and real calls, Desktop switching, and notification delivery require separate evidence.
+Version 9.5.21 is a source preview. The [candidate notes](docs/release-notes-v9.5.21.md) list the offline checks actually run in this round and the remaining runtime boundaries. A full official reset cycle, multi-CLI sign-in and real calls, Desktop switching, and notification delivery require separate evidence.
 
-The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.5.20 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
+The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.5.21 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
 
-[9.5.20 candidate notes](docs/release-notes-v9.5.20.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
+[9.5.21 candidate notes](docs/release-notes-v9.5.21.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
 
 ## The rest of the workspace
 
 Single-account menus, full PNG exports, labels and ordering, model and reasoning selection, Standard/Fast, apply-to-all preferences, isolated Chrome sign-in, explicit Desktop switching, low-quota suggestions, Feishu alerts, palettes and workspace settings remain available.
 
-Next is an independent third-party open-source project. It does not supply accounts or increase quota. An isolated CLI leaves the current Desktop sign-in unchanged; explicit Desktop switching uses a separate identity transaction. Webhooks are stored in Keychain. Remove credentials, account details, task content and private paths before sharing diagnostics.
+AiGoodBro is an independent third-party open-source project. It does not supply accounts or increase quota. An isolated CLI leaves the current Desktop sign-in unchanged; explicit Desktop switching uses a separate identity transaction. Webhooks are stored in an isolated Keychain namespace. Remove credentials, account details, task content and private paths before sharing diagnostics.
 
 Development checks:
 

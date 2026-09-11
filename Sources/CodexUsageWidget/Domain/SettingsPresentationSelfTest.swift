@@ -1,4 +1,5 @@
 import Cocoa
+import SwiftUI
 
 /// UI reorganization must keep the existing preference keys and round trips.
 enum SettingsPresentationSelfTest {
@@ -15,10 +16,24 @@ enum SettingsPresentationSelfTest {
         }
 
         expect(SettingsPage.allCases == [.appearance, .menuBar, .automation, .workspace, .about], "all five direct settings pages remain reachable")
+        expect(AHBrandIdentity.displayName == "AiGoodBro", "settings chrome uses the AiGoodBro display name")
+        expect(AHBrandIdentity.shortName == "AH", "settings chrome uses the AH short name")
+        expect(AHBrandIdentity.workspaceName == "AgentHub", "the in-app workspace name remains AgentHub")
         for language in WidgetLanguage.allCases {
             let titles = SettingsPage.allCases.map { $0.title(language) }
             expect(Set(titles).count == titles.count, "settings pages have unique localized labels")
             expect(SettingsPage.allCases.allSatisfy { !$0.detail(language).isEmpty && !$0.symbol.isEmpty }, "settings pages have labels and descriptions")
+            expect(
+                SettingsPage.allCases.allSatisfy { !$0.detail(language).contains("MAKE IT YOURS") && !$0.detail(language).contains("Next") },
+                "settings page copy must not keep CodexU slogans or Next as a display name"
+            )
+            let header = AHBrandIdentity.headerDetail(page: .menuBar, language: language)
+            expect(header.contains(AHBrandIdentity.shortName), "settings header must show the AH short name")
+            expect(header.contains(SettingsPage.menuBar.title(language)), "settings header must show the current page")
+            expect(!header.contains("MAKE IT YOURS"), "settings header must drop the MAKE IT YOURS decoration")
+            let attribution = AHBrandIdentity.aboutAttribution(language)
+            expect(attribution.contains("codexU") && attribution.uppercased().contains("MIT"), "About must keep the codexU MIT attribution")
+            expect(!attribution.contains("Codex Control"), "About must not use the old Codex Control display name")
         }
 
         let catalog = PaletteCatalog.loadFromMainBundle()
@@ -56,6 +71,72 @@ enum SettingsPresentationSelfTest {
         expect(!restored.automaticUpdateChecksEnabled, "update opt-out survives reopen")
         expect(restored.themeMode == settings.themeMode && restored.language == settings.language, "appearance and language survive reopen")
         expect(restored.globalShortcut == nil, "a saved shortcut opt-out survives the new defaults")
+
+        let outputRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("review-outputs/0911v11", isDirectory: true)
+        let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("ah-settings-0911v11-\(UUID().uuidString)")
+        do {
+            try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+            let store = WorkspacePreviewRenderer.fixtureStore(accountCount: 0, root: fixtureRoot, language: .zh)
+            let updateStore = AppUpdateStore(settings: settings)
+            settings.language = .zh
+            settings.themeMode = .dark
+            AHSettingsHeaderContext.shared.currentPage = .menuBar
+            for (name, page, scheme) in [
+                ("synthetic-settings-header-menubar-zh-dark", SettingsPage.menuBar, ColorScheme.dark),
+                ("synthetic-settings-header-appearance-zh-light", SettingsPage.appearance, ColorScheme.light),
+            ] as [(String, SettingsPage, ColorScheme)] {
+                let header = NextSettingsHeader(language: .zh, currentPage: page)
+                    .frame(width: 420, height: 52)
+                    .padding(8)
+                    .overlay(alignment: .bottomLeading) {
+                        Text(AHBrandIdentity.syntheticCaption(page.title(.zh)))
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 8)
+                            .padding(.bottom, 2)
+                    }
+                    .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
+                    .environment(\.colorScheme, scheme)
+                    .preferredColorScheme(scheme)
+                    .appVisualEnvironment(
+                        catalog: catalog,
+                        paletteID: settings.paletteID,
+                        appearance: PaletteAppearance(scheme)
+                    )
+                try WorkspacePreviewRenderer.renderView(
+                    header,
+                    size: NSSize(width: 436, height: 68),
+                    scheme: scheme,
+                    to: outputRoot.appendingPathComponent("\(name)@2x.png")
+                )
+            }
+            let panel = SettingsPanelView(
+                settings: settings,
+                store: store,
+                updateStore: updateStore,
+                onOpenPaletteLibrary: {},
+                compact: true,
+                showsHeader: true,
+                initialPage: .menuBar
+            )
+            .overlay(alignment: .bottomLeading) {
+                Text(AHBrandIdentity.syntheticCaption("菜单栏"))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+            }
+            try WorkspacePreviewRenderer.renderView(
+                panel,
+                size: NSSize(width: CodexAccountMenuView.preferredSize.width, height: 420),
+                scheme: .dark,
+                to: outputRoot.appendingPathComponent("synthetic-settings-menubar-zh-dark@2x.png")
+            )
+            AHSettingsHeaderContext.shared.currentPage = nil
+        } catch {
+            failures.append("could not write synthetic settings captures")
+        }
+        try? FileManager.default.removeItem(at: fixtureRoot)
 
         if failures.isEmpty {
             print("settings presentation self-test passed")

@@ -81,7 +81,7 @@ final class MainAppWindow: NSWindow {
         hasShadow = true
         isMovableByWindowBackground = true
         acceptsMouseMovedEvents = true
-        collectionBehavior = [.fullScreenAuxiliary]
+        collectionBehavior = [.fullScreenPrimary]
     }
 }
 
@@ -95,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var window: MainAppWindow?
     private var paletteLibraryWindow: NSWindow?
     private var taskOverviewController: TaskOverviewPanelController?
+    private var accountFloatingPanelController: AccountFloatingPanelController?
     private weak var taskOverviewMenuItem: NSMenuItem?
     private var titlebarToolbarController: NSTitlebarAccessoryViewController?
     private let screenshotRequests = PassthroughSubject<NSWindow, Never>()
@@ -218,6 +219,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func applicationWillTerminate(_ notification: Notification) {
         taskOverviewController?.shutdown()
         taskOverviewController = nil
+        accountFloatingPanelController?.shutdown()
+        accountFloatingPanelController = nil
         closeStatusPopover()
         statusItemAppearanceObservation = nil
         if let activeSpaceObserver {
@@ -353,7 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 visibilityDidChange: { [weak self] isVisible in
                     guard let self else { return }
                     self.taskOverviewMenuItem?.state = isVisible ? .on : .off
-                    self.store.setTaskOverviewVisible(isVisible)
+                    self.updateTaskBoardPollingActivity()
                 }
             )
         }
@@ -416,6 +419,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 keyEquivalent: "q"
             ))
 
+        let viewMenuItem = NSMenuItem()
+        mainMenu.addItem(viewMenuItem)
+        let viewMenu = NSMenu(title: language.text("显示", "View"))
+        viewMenuItem.submenu = viewMenu
+        let fullScreenItem = NSMenuItem(
+            title: language.text("进入全屏", "Enter Full Screen"),
+            action: #selector(NSWindow.toggleFullScreen(_:)),
+            keyEquivalent: "f"
+        )
+        fullScreenItem.keyEquivalentModifierMask = [.command, .control]
+        viewMenu.addItem(fullScreenItem)
+
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)
         let windowMenu = NSMenu(title: language.text("窗口", "Window"))
@@ -449,6 +464,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func openSettingsWindow() {
+        accountFloatingPanelController?.close()
         closeStatusPopover()
         showStatusPopover(initialScreen: .settings)
     }
@@ -595,6 +611,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 },
                 quit: {
                     NSApp.terminate(nil)
+                },
+                onOpenFloatingPanel: { [weak self] initialScreen in
+                    self?.openFloatingAccountPanel(initialScreen: initialScreen)
                 }
             )
         )
@@ -621,10 +640,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func openMainWindow(selecting scope: RuntimeScope?) {
+        accountFloatingPanelController?.close()
         if let scope {
             store.selectRuntime(scope)
         }
         showMainWindow()
+    }
+
+    private func openFloatingAccountPanel(initialScreen: CodexAccountMenuView.Screen? = nil) {
+        closeStatusPopover()
+        window?.orderOut(nil)
+        if accountFloatingPanelController == nil {
+            accountFloatingPanelController = AccountFloatingPanelController(
+                store: store,
+                settings: settings,
+                updateStore: updateStore,
+                paletteCatalog: paletteCatalog,
+                openFullWindow: { [weak self] in
+                    self?.openMainWindow(selecting: nil)
+                },
+                openPaletteLibrary: { [weak self] in
+                    guard let self else { return }
+                    self.accountFloatingPanelController?.close()
+                    self.openPaletteLibraryWindow()
+                },
+                quit: {
+                    NSApp.terminate(nil)
+                },
+                visibilityDidChange: { [weak self] _ in
+                    self?.updateTaskBoardPollingActivity()
+                }
+            )
+        }
+        accountFloatingPanelController?.show(initialScreen: initialScreen)
     }
 
     private var currentPopoverAttention: TaskAttentionItem? {
@@ -669,6 +717,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func updateTaskBoardPollingActivity() {
+        store.setTaskOverviewVisible(
+            taskOverviewController?.isVisible == true
+                || accountFloatingPanelController?.isVisible == true
+                || statusPopover?.isShown == true
+        )
         guard let window else {
             store.setMainWindowActive(false)
             return

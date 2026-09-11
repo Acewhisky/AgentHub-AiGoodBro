@@ -11,6 +11,11 @@ enum WorkspacePreviewRenderer {
         let resetBackfillCheckedAt: Date
     }
 
+    private struct AcceptanceFixtures {
+        let codex: UsageStore
+        let localCLI: LocalCLIAccountStore
+    }
+
     static func fixtureStore(accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false) -> UsageStore {
         let now = Date()
         let fiveHour = RateWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: now.addingTimeInterval(10_800))
@@ -38,7 +43,7 @@ enum WorkspacePreviewRenderer {
                 ).path,
                 isSystemProfile: accountCount == 0, createdAt: now,
                 lastSnapshot: CodexAccountSnapshot(
-                    accountType: "chatgpt", planType: isPro ? "pro" : "plus", email: "preview-\(index)@example.invalid",
+                    accountType: "chatgpt", planType: isPro ? "pro" : "plus", email: nil,
                     limitId: "codex", limitName: "Codex", fiveHour: profileFiveHour,
                     sevenDay: profileSevenDay, monthly: nil,
                     availableResetCredits: 2, resetCreditExpiries: [now.addingTimeInterval(864_000)],
@@ -84,6 +89,258 @@ enum WorkspacePreviewRenderer {
             ),
             isolatedRoot: root
         )
+    }
+
+    /// A compact cross-provider matrix that follows each production adapter's
+    /// actual evidence contract. In particular, Grok reset-card data remains
+    /// unknown, OpenCode uses only its Go quota windows, and WorkBuddy remains
+    /// unsupported because no official quota interface has been confirmed.
+    @MainActor private static func acceptanceFixtures(root: URL, language: WidgetLanguage) -> AcceptanceFixtures {
+        let now = Date()
+        func window(usedPercent: Double, minutes: Int, resetOffset: TimeInterval) -> CodexQuotaWindowSnapshot {
+            CodexQuotaWindowSnapshot(
+                RateWindow(
+                    usedPercent: usedPercent,
+                    windowDurationMins: minutes,
+                    resetsAt: now.addingTimeInterval(resetOffset)))
+        }
+        func codexProfile(
+            id: String,
+            name: String,
+            fiveHour: CodexQuotaWindowSnapshot?,
+            sevenDay: CodexQuotaWindowSnapshot?,
+            resetCredits: Int?,
+            resetExpiries: [Date]?,
+            quotaReadSucceeded: Bool
+        ) -> CodexProfile {
+            CodexProfile(
+                id: id,
+                name: name,
+                remark: name,
+                codexHomePath: root.appendingPathComponent("home/.codex-account-manager-next/profiles/\(id)").path,
+                isSystemProfile: false,
+                createdAt: now,
+                lastSnapshot: CodexAccountSnapshot(
+                    accountType: "chatgpt",
+                    planType: "plus",
+                    email: nil,
+                    limitId: "codex",
+                    limitName: "Codex",
+                    fiveHour: fiveHour,
+                    sevenDay: sevenDay,
+                    monthly: nil,
+                    availableResetCredits: resetCredits,
+                    resetCreditExpiries: resetExpiries,
+                    fetchedAt: now,
+                    appServerVersion: nil,
+                    quotaReadSucceeded: quotaReadSucceeded),
+                officialProfile: CodexOfficialProfileSnapshot(
+                    accountEmail: nil,
+                    displayName: nil,
+                    username: nil,
+                    lifetimeTokens: 12_345_678,
+                    peakDailyTokens: nil,
+                    planType: "plus",
+                    subscriptionActiveUntil: now.addingTimeInterval(21 * 86_400),
+                    statsAsOf: now,
+                    fetchedAt: now),
+                executionPreference: .defaultValue)
+        }
+
+        var codexUnknown = codexProfile(
+            id: "acceptance-codex-short",
+            name: language.text("合成 Codex A", "Synthetic Codex A"),
+            fiveHour: nil,
+            sevenDay: nil,
+            resetCredits: nil,
+            resetExpiries: nil,
+            quotaReadSucceeded: false)
+        // Absence of a snapshot is the production representation for an account
+        // whose quota and reset-credit evidence are both still unknown.
+        codexUnknown.lastSnapshot = nil
+        let codexProfiles = [
+            codexUnknown,
+            codexProfile(
+                id: "acceptance-codex-long",
+                name: language.text("很长的 Codex 预览账号名称用于检查省略与列对齐", "A very long Codex preview account name for truncation"),
+                fiveHour: window(usedPercent: 100, minutes: 300, resetOffset: 3_600),
+                sevenDay: window(usedPercent: 40, minutes: 10_080, resetOffset: 4 * 86_400),
+                resetCredits: 2,
+                resetExpiries: [now.addingTimeInterval(8 * 86_400)],
+                quotaReadSucceeded: true),
+            codexProfile(
+                id: "acceptance-codex-expiring",
+                name: language.text("到期预览", "Expiry preview"),
+                fiveHour: window(usedPercent: 0, minutes: 300, resetOffset: 10_800),
+                sevenDay: window(usedPercent: 0, minutes: 10_080, resetOffset: 6 * 86_400),
+                resetCredits: 1,
+                resetExpiries: [now.addingTimeInterval(24 * 3_600)],
+                quotaReadSucceeded: true),
+        ]
+
+        do {
+            let support = root.appendingPathComponent("support").appendingPathComponent(DispatchParticipationPaths.supportDirectoryName)
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let state = FixtureState(
+                profiles: codexProfiles,
+                selectedMonitorProfileID: codexProfiles[0].id,
+                selectedLaunchProfileID: codexProfiles[0].id,
+                resetBackfillCheckedAt: now)
+            try JSONEncoder().encode(state).write(
+                to: support.appendingPathComponent(DispatchParticipationPaths.snapshotFileName),
+                options: .atomic)
+        } catch {
+            preconditionFailure("Could not create isolated acceptance fixtures")
+        }
+
+        let selected = codexProfiles[0].lastSnapshot
+        let codexStore = UsageStore(
+            previewProfiles: codexProfiles,
+            snapshot: UsageSnapshot(
+                refreshedAt: now,
+                account: AccountInfo(type: "chatgpt", planType: selected?.planType, emailPresent: false),
+                limitId: "codex",
+                limitName: "Codex",
+                quotaReadSucceeded: selected?.quotaReadSucceeded == true,
+                fiveHourQuota: selected?.fiveHour.map {
+                    RateWindow(usedPercent: $0.usedPercent, windowDurationMins: $0.windowDurationMins, resetsAt: $0.resetsAt)
+                },
+                sevenDayQuota: selected?.sevenDay.map {
+                    RateWindow(usedPercent: $0.usedPercent, windowDurationMins: $0.windowDurationMins, resetsAt: $0.resetsAt)
+                },
+                monthlyQuota: nil,
+                credits: CreditsInfo(
+                    hasCredits: false,
+                    unlimited: false,
+                    balance: nil,
+                    resetCredits: selected?.availableResetCredits,
+                    resetCreditDetails: selected?.resetCreditExpiries?.enumerated().map {
+                        ResetCreditDetail(id: "acceptance-reset-\($0.offset)", expiresAt: $0.element)
+                    }),
+                cloudLifetimeTokens: 12_345_678,
+                local: nil,
+                taskBoard: nil,
+                messages: []),
+            isolatedRoot: root)
+
+        func localProfile(_ id: String, kind: LocalCLIKind, name: String) -> LocalCLIProfile {
+            LocalCLIProfile(
+                id: id,
+                kind: kind,
+                displayName: name,
+                configDirectory: root.appendingPathComponent("local-cli/\(id)").path,
+                isDefault: id.hasSuffix("short"))
+        }
+        func quota(
+            state: LocalCLIQuotaState,
+            identity: String?,
+            plan: String?,
+            windows: [LocalCLIQuotaWindow],
+            source: String,
+            messageCode: String? = nil
+        ) -> LocalCLIQuotaResult {
+            LocalCLIQuotaResult(
+                state: state,
+                fetchedAt: now,
+                maskedIdentity: identity,
+                identityFingerprint: nil,
+                planLabel: plan,
+                windows: windows,
+                balance: nil,
+                balanceCurrency: nil,
+                sourceLabel: source,
+                messageCode: messageCode,
+                resetCards: nil)
+        }
+
+        let grokShort = localProfile("acceptance-grok-short", kind: .grok, name: "G preview")
+        let grokLong = localProfile(
+            "acceptance-grok-long",
+            kind: .grok,
+            name: language.text("很长的 Grok 预览账号名称用于检查省略", "A very long Grok preview account name for truncation"))
+        let openCodeShort = localProfile("acceptance-opencode-short", kind: .openCode, name: "O preview")
+        let openCodeLong = localProfile(
+            "acceptance-opencode-long",
+            kind: .openCode,
+            name: language.text("很长的 OpenCode 预览账号名称用于检查省略", "A very long OpenCode preview account name for truncation"))
+        let workBuddyShort = localProfile("acceptance-workbuddy-short", kind: .workBuddy, name: "W preview")
+        let workBuddyLong = localProfile(
+            "acceptance-workbuddy-long",
+            kind: .workBuddy,
+            name: language.text("很长的 WorkBuddy 预览账号名称用于检查省略", "A very long WorkBuddy preview account name for truncation"))
+        let localProfiles = [grokShort, grokLong, openCodeShort, openCodeLong, workBuddyShort, workBuddyLong]
+        let localQuotas: [String: LocalCLIQuotaResult] = [
+            grokShort.id: quota(
+                state: .available,
+                identity: "g***@example.invalid",
+                plan: "Synthetic preview",
+                windows: [
+                    LocalCLIQuotaWindow(
+                        id: "credits",
+                        label: "Credits",
+                        usedPercent: 100,
+                        resetsAt: now.addingTimeInterval(2 * 86_400))
+                ],
+                source: "Grok CLI billing"),
+            grokLong.id: quota(
+                state: .available,
+                identity: "l***@example.invalid",
+                plan: "Synthetic preview",
+                windows: [
+                    LocalCLIQuotaWindow(
+                        id: "credits",
+                        label: "Credits",
+                        usedPercent: 0,
+                        resetsAt: now.addingTimeInterval(6 * 86_400))
+                ],
+                source: "Grok CLI billing"),
+            openCodeShort.id: quota(
+                state: .available,
+                identity: "o***@example.invalid",
+                plan: "OpenCode Go",
+                windows: [
+                    LocalCLIQuotaWindow(
+                        id: "rolling",
+                        label: "Rolling",
+                        usedPercent: 100,
+                        resetsAt: now.addingTimeInterval(7_200)),
+                    LocalCLIQuotaWindow(
+                        id: "weekly",
+                        label: "7-day",
+                        usedPercent: 0,
+                        resetsAt: now.addingTimeInterval(5 * 86_400)),
+                    LocalCLIQuotaWindow(
+                        id: "monthly",
+                        label: "Monthly",
+                        usedPercent: 63,
+                        resetsAt: now.addingTimeInterval(18 * 86_400)),
+                ],
+                source: "OpenCode Go API"),
+            openCodeLong.id: quota(
+                state: .unsupported,
+                identity: nil,
+                plan: nil,
+                windows: [],
+                source: "OpenCode Go API",
+                messageCode: "local_cli_opencode_go_not_connected"),
+            workBuddyShort.id: quota(
+                state: .unsupported,
+                identity: nil,
+                plan: nil,
+                windows: [],
+                source: "WorkBuddy CLI",
+                messageCode: "local_cli_unsupported"),
+            workBuddyLong.id: quota(
+                state: .unsupported,
+                identity: nil,
+                plan: nil,
+                windows: [],
+                source: "WorkBuddy CLI",
+                messageCode: "local_cli_unsupported"),
+        ]
+        return AcceptanceFixtures(
+            codex: codexStore,
+            localCLI: LocalCLIAccountStore.preview(profiles: localProfiles, quotas: localQuotas, root: root))
     }
 
     @MainActor static func render(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
@@ -208,7 +465,7 @@ enum WorkspacePreviewRenderer {
                             label: language.text("每周", "Weekly"), usedPercent: 25, resetsAt: providerNow.addingTimeInterval(360000))
                     ],
                     balance: nil, balanceCurrency: nil, sourceLabel: language.text("合成数据", "Synthetic data"), messageCode: nil,
-                    resetCards: [LocalCLIResetCard(id: "fixture-card", expiresAt: providerNow.addingTimeInterval(48 * 3600))])
+                    resetCards: nil)
                 let local = LocalCLIAccountStore.preview(profiles: [grok], quotas: [grok.id: quota], root: fixtureRoot)
                 settings.pinnedAccountKey = ResetCardPresentation.codexKey("preview-0")
                 for layout in [AccountWorkspaceLayout.rows, .cards] {
@@ -220,6 +477,56 @@ enum WorkspacePreviewRenderer {
                 }
                 settings.pinnedAccountKey = nil
                 settings.accountWorkspaceLayout = .rows
+
+                let acceptanceRoot = root.appendingPathComponent("acceptance-\(theme)")
+                let acceptance = acceptanceFixtures(root: acceptanceRoot, language: language)
+                settings.workspaceDisplayMode = .simple
+                settings.simpleWorkspacePreset = .accountCards
+                settings.pinnedAccountKey = nil
+                for layout in [AccountWorkspaceLayout.rows, .cards] {
+                    settings.accountWorkspaceLayout = layout
+                    let matrix = CodexAccountManagerView(
+                        store: acceptance.codex,
+                        settings: settings,
+                        paletteCatalog: catalog,
+                        localCLIAccounts: acceptance.localCLI)
+                    let narrowSize = CGSize(width: 720, height: 900)
+                    try renderView(
+                        matrix.frame(width: narrowSize.width, height: narrowSize.height),
+                        size: narrowSize,
+                        scheme: scheme,
+                        to: directory.appendingPathComponent(
+                            "acceptance-matrix-\(layout.rawValue)-\(theme)-720x900.png"))
+                    let fullCapture = try WorkspaceScreenshotExporter.render(
+                        matrix.screenshotContent,
+                        width: 980,
+                        scheme: scheme)
+                    try fullCapture.png.write(
+                        to: directory.appendingPathComponent(
+                            "acceptance-matrix-\(layout.rawValue)-\(theme)-full.png"),
+                        options: .atomic)
+                }
+
+                for kind in [LocalCLIKind.grok, .openCode, .workBuddy] {
+                    let provider = LocalCLIWorkspaceView(
+                        model: acceptance.localCLI,
+                        settings: settings,
+                        kind: kind,
+                        language: language
+                    )
+                    .padding(24)
+                    .environment(\.widgetLanguage, language)
+                    .environment(\.locale, language.locale)
+                    .environment(\.visualTokens, tokens)
+                    .environment(\.colorScheme, scheme)
+                    .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
+                    try renderView(
+                        provider,
+                        size: CGSize(width: 760, height: 640),
+                        scheme: scheme,
+                        to: directory.appendingPathComponent(
+                            "acceptance-provider-\(kind.rawValue)-\(theme)-760x640.png"))
+                }
             }
             return true
         } catch {

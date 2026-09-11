@@ -24,3 +24,5 @@
 --self-test-performance-monitor
 --self-test-phase-one-gate
 --self-test-workspace-screenshot
+--self-test-main-window-layout
+--self-test-account-floating-panel

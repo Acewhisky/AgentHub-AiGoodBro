@@ -281,7 +281,7 @@ struct StatusItemPresentationBuilder {
             itemLength: imageWidth + StatusItemLayoutMetrics.itemOuterPadding,
             showsNoActiveQuota: showsNoActiveQuota,
             metrics: metrics,
-            tooltip: "Codex Control · \(description) · \(action)",
+            tooltip: AHBrandIdentity.statusItemTooltip(description: description, action: action),
             accessibilityValue: description
         )
     }
