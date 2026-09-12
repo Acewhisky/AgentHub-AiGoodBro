@@ -33,6 +33,62 @@ enum DispatchParticipationSync {
     static func main() {
         let store = DispatchActivityStore(directory: URL(fileURLWithPath: CommandLine.arguments[1]))
         do {
+            if CommandLine.arguments[2] == "--audit" {
+                var failures: [String] = []
+                do {
+                    let ids = try store.reserveMaintenance(accounts: [("different-account", "  FIXTURE-ALIAS-FIXTURE-A  ")])
+                    failures.append("batch-alias-conflict")
+                    for id in ids { try store.finishMaintenance(id, succeeded: false) }
+                } catch DispatchActivityStore.Failure.busy {}
+                let lease = DispatchActivityStore.Lease(
+                    leaseId: "fixture", ownerThreadId: "fixture-owner", taskId: "fixture-task",
+                    accountKey: DispatchActivityStore.hash("a"), aliasKey: DispatchActivityStore.hash("a"),
+                    projectKey: DispatchActivityStore.hash("p"), code: nil, route: "maintenance",
+                    state: "cancel_requested", createdAt: 100, updatedAt: 100, heartbeatDueAt: 220)
+                if lease.taskStatus(now: Date(timeIntervalSince1970: 101)).phase != .cancelRequested {
+                    failures.append("maintenance-cancel-mapping")
+                }
+                let phases: [(String, HubAccountTaskPhase)] = [
+                    ("preparing", .starting), ("starting", .starting), ("running", .running),
+                    ("cancel_requested", .cancelRequested), ("uncertain", .uncertain),
+                    ("awaiting_acceptance", .awaitingAcceptance), ("accepted", .succeeded),
+                    ("rejected", .failed), ("failed", .failed), ("cancelled", .cancelled)
+                ]
+                for route in ["direct", "hub", "terminal", "warmup", "maintenance"] {
+                    for (state, phase) in phases {
+                        for (updated, now) in [(100.0, 100.0), (100, 220), (100, 221), (105, 100), (106, 100)] {
+                            let value = DispatchActivityStore.Lease(
+                                leaseId: "fixture", ownerThreadId: "fixture-owner", taskId: "fixture-task",
+                                accountKey: lease.accountKey, aliasKey: lease.aliasKey, projectKey: lease.projectKey,
+                                code: nil, route: route, state: state, createdAt: 90, updatedAt: updated, heartbeatDueAt: 220)
+                            let stale = value.occupied && (now > 220 || updated > now + 5)
+                            let maintenance = ["warmup", "maintenance"].contains(route) && ["preparing", "starting", "running"].contains(state)
+                            let expected: HubAccountTaskPhase = stale ? .uncertain : maintenance ? .maintenance : phase
+                            if value.taskStatus(now: Date(timeIntervalSince1970: now)).phase != expected {
+                                failures.append("state-time-mapping")
+                            }
+                        }
+                    }
+                }
+                let journalURL = store.directory.appendingPathComponent(DispatchActivityStore.issueName)
+                let journalBefore = try Data(contentsOf: journalURL)
+                for (id, phase, summary, code) in [
+                    ("bad id", "observed", "Safe observation", Optional<String>.none),
+                    ("fixture", "bad phase", "Safe observation", nil),
+                    ("fixture", "observed", "", nil),
+                    ("fixture", "observed", "Safe observation", "AB"),
+                    ("fixture", "observed", "https:" + "//fixture.invalid/hook", nil)
+                ] {
+                    do {
+                        try store.appendIssue(id: id, phase: phase, summary: summary, code: code)
+                        failures.append("journal-invalid-field")
+                    } catch DispatchActivityStore.Failure.invalidState {}
+                }
+                if try Data(contentsOf: journalURL) != journalBefore { failures.append("invalid-journal-mutated") }
+                if !DispatchActivityStoreSelfTest.run() { failures.append("store-self-test") }
+                print(failures.isEmpty ? "AUDIT-PASSED" : failures.joined(separator: ","))
+                return
+            }
             let alias = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : "fixture-alias-" + CommandLine.arguments[2]
             let id = try store.reserveWarmUp(account: CommandLine.arguments[2], alias: alias)
             try store.finishWarmUp(id, succeeded: true)
@@ -85,4 +141,6 @@ with tempfile.TemporaryDirectory(prefix='next-activity-interop-') as temporary:
     lines = [json.loads(line) for line in (registry.root / activity.ISSUE_NAME).read_text().splitlines()]
     assert len(lines) == 2 and all('dateShanghai' in line for line in lines)
     assert lines[0]['code'] == 'B'
-    print('Interop passed: shared account reservation, system lock, schema preservation, two-language journal append')
+    audit = subprocess.run([str(binary), str(registry.root), '--audit'], capture_output=True, text=True, check=True)
+    assert audit.stdout.strip().splitlines()[-1] == 'AUDIT-PASSED', audit.stdout.strip()
+    print('Interop passed: shared account reservation, system lock, schema preservation, two-language journal append, alias normalization, state/time matrix, journal validation, store self-test')

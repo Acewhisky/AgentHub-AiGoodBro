@@ -80,8 +80,9 @@ struct AutomaticSwitchQuotaState: Equatable {
 
     init(snapshot: UsageSnapshot) {
         self.init(
-            fiveHourRemaining: snapshot.fiveHourQuota?.remainingPercent,
-            sevenDayRemaining: snapshot.sevenDayQuota?.remainingPercent
+            // Validate raw values before the presentation layer clamps them.
+            fiveHourRemaining: snapshot.fiveHourQuota.map { 100 - $0.usedPercent },
+            sevenDayRemaining: snapshot.sevenDayQuota.map { 100 - $0.usedPercent }
         )
     }
 
@@ -105,8 +106,8 @@ struct AutomaticSwitchQuotaState: Equatable {
     }
 
     private static func valid(_ value: Double?) -> Double? {
-        guard let value, value.isFinite else { return nil }
-        return max(0, min(100, value))
+        guard let value, value.isFinite, (0...100).contains(value) else { return nil }
+        return value
     }
 }
 
@@ -180,6 +181,8 @@ enum CodexAutomaticSwitchPolicy {
         guard enabled,
             quotaAge >= -5,
             quotaAge <= quotaSnapshotMaximumAge,
+            sourceQuota.fiveHourRemaining != nil,
+            sourceQuota.sevenDayRemaining != nil,
             !sourceQuota.triggeredWindows(thresholds: thresholds).isEmpty,
             hasSafeTaskState(
                 taskSnapshot,
@@ -207,6 +210,11 @@ enum CodexAutomaticSwitchPolicy {
     ) -> Candidate? {
         guard !triggeredWindows.isEmpty else { return nil }
         return candidates.compactMap { candidate -> (Candidate, Double)? in
+            // A healthy triggered window cannot compensate for an exhausted
+            // or unknown other window. Keep ranking on the triggered windows.
+            guard let fiveHour = candidate.quota.fiveHourRemaining, fiveHour > 0,
+                let sevenDay = candidate.quota.sevenDayRemaining, sevenDay > 0
+            else { return nil }
             let remaining = triggeredWindows.compactMap(candidate.quota.remaining(for:))
             guard remaining.count == triggeredWindows.count,
                 let score = remaining.min(),

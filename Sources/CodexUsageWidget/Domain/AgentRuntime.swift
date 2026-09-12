@@ -85,9 +85,10 @@ struct RuntimeUsageSnapshot: Identifiable, Equatable {
     var displayName: String { scope.displayName }
 
     var todayTokens: Int64? {
-        preferredRuntimeTodayTokens(
-            detailed: snapshot.local?.detailedUsage?.today.tokens.visibleTotalTokens,
-            fallback: snapshot.local?.todayTokens
+        guard let local = snapshot.local, local.hasCompleteTotals else { return nil }
+        return preferredRuntimeTodayTokens(
+            detailed: local.detailedUsage?.today.tokens.visibleTotalTokens,
+            fallback: local.todayTokens
         )
     }
 

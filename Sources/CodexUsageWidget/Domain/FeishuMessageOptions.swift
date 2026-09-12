@@ -33,8 +33,7 @@ enum FeishuQuotaValue: Equatable {
         if let window {
             return .finite(remainingPercent: window.remainingPercent, resetsAt: window.resetsAt)
         }
-        return confirmedPlan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "pro"
-            ? .unlimited : .unknown
+        return .unknown
     }
 
     static func finiteWindow(_ window: RateWindow?) -> FeishuQuotaValue {

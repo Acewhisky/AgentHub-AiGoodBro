@@ -16,14 +16,14 @@ AiGoodBro puts quota alerts and reset news first, so you can see when work can c
 | Hear about resets | Public announcements from [Codex Resets](https://codex-resets.com/), distinguishing regular resets from banked reset credits, with event times and original-source links. Account-specific reset countdowns remain separate. |
 | Receive notifications | Native macOS notifications, optional Feishu alerts, and configurable Telegram / WeCom group bots. Permissions, configuration and supported event types apply to each channel; see below. |
 | Switch accounts | Start a Desktop switch from an account card and follow preparation, graceful exit, write, relaunch and verification. Isolated CLIs can use other accounts independently. |
-| Continue after low quota | The published source provides alerts and account recommendations. Automatic execution wiring is being repaired and validated and is not yet a completed feature. The candidate automatic path requires opt-in, Codex to have exited and safe task state. |
+| Continue after low quota | Quota alerts, account recommendations and automatic switching. The automatic path requires its setting to be enabled, Codex to have exited, safe task state, and freshly rechecked identity and both quota windows before writing. Manual and automatic switching share transaction protection. |
 | Coordinate and troubleshoot | Per-account CLI environments and model preferences, reservations before launch, task states, execution receipts and operational issue logs. |
 
 A single account can use read-only monitoring. A public announcement, an account's recovered quota and its available reset credits are separate facts: an announcement neither spends a credit nor replaces an account refresh. The WeChat integration is a **WeCom group bot**; personal WeChat is not connected.
 
-**Current source preview: 0911v3 · 9.5.21 (35).** Build and install using the prompt below. This version has no binary Release yet; provider coverage is described below. [Candidate changes and validation boundaries](docs/release-notes-v9.5.21.md)
+**Current source preview: 0912v1 · 9.5.22 (36).** Build and install using the prompt below. This version has no binary Release yet; provider coverage is described below. [Candidate changes and validation boundaries](docs/release-notes-v9.5.22.md)
 
-An installation prompt and four practical task prompts are below. Version 9.5.21 has not been published to GitHub Releases; build it from source for now.
+An installation prompt and four practical task prompts are below. Version 9.5.22 has not been published to GitHub Releases; build it from source for now.
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -45,9 +45,9 @@ cd AgentHub-AiGoodBro
 make build
 ```
 
-The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 9.5.21 download has been published.
+The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 9.5.22 download has been published.
 
-Future installer assets should use `AiGoodBro-<version>-mac-<arch>.dmg`. No 9.5.21 installer is currently available.
+Future installer assets should use `AiGoodBro-<version>-mac-<arch>.dmg`. No 9.5.22 installer is currently available.
 
 ## Start with the workspace
 
@@ -172,11 +172,11 @@ Saved choices take precedence, including disabled features. New users still rece
 
 0910v1 enables local reset updates by default, with optional Feishu forwarding, and moves Desktop switching into the background with visible stage progress. It fixes Terminal executable and directory selection, adds private launch receipts and dispatch schedules, and preserves warm-up history. Sign-in reservations remain occupied until the login child process has actually stopped.
 
-Version 9.5.21 is a source preview. The [candidate notes](docs/release-notes-v9.5.21.md) list the offline checks actually run in this round and the remaining runtime boundaries. A full official reset cycle, multi-CLI sign-in and real calls, Desktop switching, and notification delivery require separate evidence.
+Version 9.5.22 is a source preview. The [candidate notes](docs/release-notes-v9.5.22.md) list the offline checks actually run in this round and the remaining runtime boundaries. A full official reset cycle, multi-CLI sign-in and real calls, Desktop switching, and notification delivery require separate evidence.
 
-The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.5.21 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
+The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.5.22 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
 
-[9.5.21 candidate notes](docs/release-notes-v9.5.21.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
+[9.5.22 candidate notes](docs/release-notes-v9.5.22.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
 
 ## The rest of the workspace
 

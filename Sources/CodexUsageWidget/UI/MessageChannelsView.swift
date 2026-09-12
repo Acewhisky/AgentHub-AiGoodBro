@@ -27,17 +27,49 @@ struct MessageChannelsView: View {
 
     var body: some View {
         Form {
+            if actionInFlight {
+                Section {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text(language.text("正在处理，请稍候…", "Working, please wait…"))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            if let statusText {
+                Section(language.text("操作结果", "Action result")) {
+                    Text(statusText)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+
             Section(language.text("Telegram Bot", "Telegram Bot")) {
                 phaseRow(telegramPhase)
                 if case .unavailable(let reason) = telegramPhase {
                     Text(reason.summary(language))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Toggle(language.text("启用 Telegram 通知", "Enable Telegram messages"), isOn: $telegramEnabled)
-                    SecureField(language.text("Bot Token", "Bot token"), text: $telegramTokenDraft)
-                    TextField(language.text("Chat ID 或 @频道用户名", "Chat ID or @channel username"), text: $telegramTargetDraft)
-                    HStack {
+                        .disabled(actionInFlight)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(language.text("Bot Token", "Bot token"))
+                        SecureField(language.text("输入新令牌", "Enter a new token"), text: $telegramTokenDraft)
+                            .accessibilityLabel(language.text("Bot Token", "Bot token"))
+                    }
+                    .disabled(actionInFlight)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(language.text("Chat ID 或 @频道用户名", "Chat ID or @channel username"))
+                        TextField(language.text("输入接收目标", "Enter a recipient"), text: $telegramTargetDraft)
+                            .accessibilityLabel(language.text("Chat ID 或 @频道用户名", "Chat ID or @channel username"))
+                    }
+                    .disabled(actionInFlight)
+                    VStack(alignment: .leading, spacing: 8) {
                         Button(language.text("保存凭据", "Save credential"), action: onSaveTelegram)
                         Button(language.text("发送测试消息", "Send test message"), action: onTestTelegram)
                             .disabled(telegramPhase != .pendingVerification && telegramPhase != .ready)
@@ -50,25 +82,32 @@ struct MessageChannelsView: View {
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             Section(language.text("微信", "WeChat")) {
                 ForEach(weChatCapabilities, id: \.variant) { capability in
                     VStack(alignment: .leading, spacing: 4) {
-                        HStack {
+                        VStack(alignment: .leading, spacing: 4) {
                             Text(capability.variant.displayName(language))
-                            Spacer()
                             phaseBadge(capability.phase)
                         }
                         Text(capability.summary(language))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if capability.variant == .workGroupBot, isConfigurable(capability.phase) {
                         Toggle(language.text("启用企业微信通知", "Enable WeCom messages"), isOn: $weChatEnabled)
-                        SecureField(language.text("群机器人 Webhook Key", "Group-robot webhook key"), text: $weChatKeyDraft)
-                        HStack {
+                            .disabled(actionInFlight)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(language.text("群机器人 Webhook Key", "Group-robot webhook key"))
+                            SecureField(language.text("输入新密钥", "Enter a new key"), text: $weChatKeyDraft)
+                                .accessibilityLabel(language.text("群机器人 Webhook Key", "Group-robot webhook key"))
+                        }
+                        .disabled(actionInFlight)
+                        VStack(alignment: .leading, spacing: 8) {
                             Button(language.text("保存凭据", "Save credential"), action: onSaveWeChat)
                             Button(language.text("发送测试消息", "Send test message"), action: onTestWeChat)
                                 .disabled(capability.phase != .pendingVerification && capability.phase != .ready)
@@ -90,15 +129,7 @@ struct MessageChannelsView: View {
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            }
-
-            if let statusText {
-                Section {
-                    Text(statusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped)
@@ -126,9 +157,9 @@ struct MessageChannelsView: View {
     private func phaseBadge(_ phase: MessageChannelPhase) -> some View {
         switch phase {
         case .disabled:
-            Text(language.text("默认关闭", "Disabled")).foregroundStyle(.secondary)
+            Text(language.text("已关闭", "Disabled")).foregroundStyle(.secondary)
         case .needsSetup:
-            Text(language.text("可配置", "Needs setup")).foregroundStyle(.orange)
+            Text(language.text("待配置", "Needs setup")).foregroundStyle(.orange)
         case .pendingVerification:
             Text(language.text("已配置待验证", "Pending verification")).foregroundStyle(.blue)
         case .ready:

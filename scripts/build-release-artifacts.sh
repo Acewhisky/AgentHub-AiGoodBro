@@ -67,16 +67,39 @@ for forbidden in ('__pycache__', '.pytest_cache', 'node_modules'):
 for forbidden in ('python', 'python3', 'codex'):
     assert not list(resources.rglob(forbidden)), forbidden
 PY
-  while IFS= read -r relative; do
-    cmp ".agents/skills/multi-agent-management/$relative" "$resources/CompanionSkill/$relative"
-  done < <(python3 - <<'PY'
-import runpy
-print('\n'.join(runpy.run_path('scripts/prepare-companion-resources.py')['SKILL_FILES']))
+  python3 - "$resources/CompanionSkill" <<'PY'
+import pathlib, runpy, subprocess, sys
+source = pathlib.Path(sys.argv[1])
+if not source.is_dir() or source.is_symlink():
+    raise SystemExit('Missing reviewed app CompanionSkill resources')
+definition = runpy.run_path('scripts/prepare-companion-resources.py')
+public = definition['ROOT'] / '.agents/skills/multi-agent-management'
+for relative in definition['SKILL_FILES']:
+    bundled = source / relative
+    reviewed = definition['SKILL_SOURCE_OVERRIDES'].get(relative, public / relative)
+    if (not bundled.is_file() or bundled.is_symlink()
+            or any((source / parent).is_symlink() for parent in pathlib.Path(relative).parents)
+            or not reviewed.is_file() or reviewed.is_symlink()):
+        raise SystemExit(f'Missing reviewed companion Skill file: {relative}')
+    if subprocess.run(['/usr/bin/cmp', '-s', str(reviewed), str(bundled)]).returncode:
+        raise SystemExit(f'App companion Skill differs from reviewed source: {relative}')
 PY
-)
-  for relative in SKILL.md 使用说明.md config/dispatch-codes-v1.json config/dispatch-policy-v1.json references/coordination.md references/dispatch-brief.md references/local-runtime.md scripts/next_dispatch_activity.py scripts/next_dispatch_preflight.py; do
-    cmp ".agents/skills/multi-agent-management/$relative" "$mount_dir/Companion Skill/multi-agent-management/$relative"
-  done
+  python3 - "$resources/CompanionSkill" "$mount_dir/Companion Skill/multi-agent-management" <<'PY'
+import pathlib, runpy, subprocess, sys
+source, attachment = map(pathlib.Path, sys.argv[1:])
+for folder in (source, attachment):
+    if not folder.is_dir() or folder.is_symlink():
+        raise SystemExit('Missing reviewed companion Skill resources')
+definition = runpy.run_path('scripts/prepare-companion-resources.py')
+for relative in definition['SKILL_FILES']:
+    for folder in (source, attachment):
+        item = folder / relative
+        if (not item.is_file() or item.is_symlink()
+                or any((folder / parent).is_symlink() for parent in pathlib.Path(relative).parents)):
+            raise SystemExit(f'Missing reviewed companion Skill file: {relative}')
+    if subprocess.run(['/usr/bin/cmp', '-s', str(source / relative), str(attachment / relative)]).returncode:
+        raise SystemExit(f'DMG companion Skill differs from verified app resources: {relative}')
+PY
   hdiutil detach "$mount_dir" >/dev/null
   rmdir "$mount_dir"
 }

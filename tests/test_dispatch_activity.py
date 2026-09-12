@@ -77,6 +77,85 @@ class ActivityTests(unittest.TestCase):
             self.assertEqual(process.exitcode, 0)
         return results
 
+    def test_alias_conflict_blocks_distinct_identity_and_project(self):
+        self.reserve()
+        before = self.registry.path.read_bytes()
+        with self.assertRaisesRegex(activity.ActivityError, "account_or_project_reserved"):
+            self.registry.reserve(account_key=activity.digest("other-account"),
+                                  alias_key=activity.digest("account-a"), code="B",
+                                  project=activity.digest("other-project"), owner="other-owner",
+                                  task="other-task", route="direct")
+        self.assertEqual(self.registry.path.read_bytes(), before)
+
+    def test_preflight_alias_conflict_blocks_changed_identity(self):
+        snapshot, report = self.report_fixture()
+        self.registry.reserve(account_key=activity.digest("previous-identity"),
+                              alias_key=activity.digest("fixture-a"), code="A",
+                              project=activity.digest("other-project"), owner="other-owner",
+                              task="other-task", route="direct")
+        result = activity.merge_preflight(report("A"), snapshot, self.registry.read(), self.work)
+        self.assertFalse(result["preflightPassed"])
+        self.assertIn("local_reserved", next(x for x in result["excluded"] if x["code"] == "A")["reasons"])
+
+    def test_short_issue_write_does_not_poison_next_append(self):
+        args = dict(issue_id="fixture", component="cli", phase="observed", summary="Safe observation")
+        self.registry.issue(**args)
+        journal = self.registry.root / activity.ISSUE_NAME
+        before = journal.read_bytes()
+        real_write = os.write
+        with patch.object(activity.os, "write", side_effect=lambda fd, data: real_write(fd, data[:7])):
+            with self.assertRaisesRegex(activity.ActivityError, "issue_write_incomplete"):
+                self.registry.issue(**args)
+        self.assertEqual(journal.read_bytes(), before)
+        self.registry.issue(**args)
+        self.assertEqual(len([json.loads(line) for line in journal.read_text().splitlines()]), 2)
+
+    def test_effective_state_time_boundaries(self):
+        for state in sorted(activity.ACTIVE | activity.TERMINAL):
+            lease = dict(state=state, createdAt=90, updatedAt=100, heartbeatDueAt=220)
+            for now in (100, 220, 221):
+                expected = "uncertain" if state in activity.ACTIVE and now > 220 else state
+                self.assertEqual(activity.effective_state(lease, now), expected)
+            self.assertEqual(activity.effective_state({**lease, "updatedAt": 105}, 100), state)
+            expected = "uncertain" if state in activity.ACTIVE else state
+            self.assertEqual(activity.effective_state({**lease, "updatedAt": 106}, 100), expected)
+
+    def test_issue_fsync_failure_preserves_history(self):
+        args = dict(issue_id="fixture", component="cli", phase="observed", summary="Safe observation")
+        self.registry.issue(**args)
+        journal = self.registry.root / activity.ISSUE_NAME
+        before = journal.read_bytes()
+        real_fsync = os.fsync
+        calls = []
+        def failing_once(fd):
+            calls.append(fd)
+            if len(calls) == 1:
+                raise OSError("synthetic-storage-failure")
+            return real_fsync(fd)
+        with patch.object(activity.os, "fsync", side_effect=failing_once):
+            with self.assertRaises(OSError):
+                self.registry.issue(**args)
+        self.assertEqual(journal.read_bytes(), before)
+
+    def test_command_journal_failure_keeps_original_error_and_fixed_diagnostic(self):
+        import contextlib
+        import io
+        diagnostic = io.StringIO()
+        with patch.object(activity.Registry, "issue", side_effect=OSError("synthetic-storage-failure")), contextlib.redirect_stderr(diagnostic):
+            with self.assertRaisesRegex(activity.ActivityError, "reservation_owner_mismatch"):
+                activity.main(["--state-dir", str(self.registry.root), "heartbeat", "--lease-id", "missing", "--owner", "owner"])
+        self.assertIn("issue_journal_write_failed", diagnostic.getvalue())
+        self.assertNotIn("synthetic-storage-failure", diagnostic.getvalue())
+
+    def test_unavailable_group_evidence_blocks_terminal_mutation(self):
+        lease = self.reserve()
+        self.registry.update(lease["leaseId"], "owner-one", "running", processGroupID=99999)
+        before = self.registry.path.read_bytes()
+        with patch.object(activity, "group_has_live_process", side_effect=activity.ActivityError("process_group_evidence_unavailable")):
+            with self.assertRaisesRegex(activity.ActivityError, "process_group_evidence_unavailable"):
+                self.registry.update(lease["leaseId"], "owner-one", "awaiting_acceptance")
+        self.assertEqual(self.registry.path.read_bytes(), before)
+
     def test_same_account_only_one_writer_wins(self):
         results = self.race(["a", "a"], ["project-a", "project-b"])
         self.assertEqual(sum(ok for ok, _ in results), 1)
@@ -397,6 +476,98 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(report("A")["selected"]["code"], "A")
         snapshot["profiles"][1]["lastSnapshot"]["fiveHour"]["usedPercent"] = 95
         self.assertEqual(report()["selected"]["code"], "A")
+
+    def run_fixture(self, name):
+        """Synthetic run/plan fixtures; no real account, provider or Home is used."""
+        case = self.root / name
+        case.mkdir()
+        work = case / "work"; work.mkdir()
+        home = case / "profile-home"; home.mkdir()
+        brief = case / "brief.txt"; brief.write_text("Synthetic brief.\n")
+        cli = case / "codex"
+        cli.write_text('#!/bin/sh\ntouch "$EXECUTION_MARKER"\n')
+        cli.chmod(0o700)
+        marker = case / "executed"
+        profile = {"id": "fixture-profile", "name": "fixture-identity", "codexHomePath": str(home),
+                   "executionPreference": {"model": "gpt-6-astra", "reasoningEffort": "low", "serviceTier": "default"},
+                   "lastSnapshot": {"email": "fixture-identity", "planType": "plus", "quotaReadSucceeded": True}}
+        mapping = {"accounts": [{"code": "A", "alias": "fixture-a"}]}
+
+        def account_context(_pre, _code):
+            return mapping, {"profiles": [profile]}, mapping["accounts"][0], profile
+
+        common = ["--code", "A", "--cwd", str(work), "--codex-bin", str(cli),
+                  "--brief-file", str(brief), "--output", str(case / "result.txt"),
+                  "--subagent-mode", "standard"]
+        return case, work, marker, profile, mapping, account_context, common
+
+    def test_bad_capability_report_fails_before_claim_and_keeps_the_lease(self):
+        case, work, marker, profile, mapping, account_context, common = self.run_fixture("bad-capability")
+        registry = activity.Registry(case / "state")
+        lease = registry.reserve(account_key=activity.identity_key(profile), alias_key=activity.digest("fixture-a"),
+                                 code="A", project=activity.project_key(work), owner="fixture-owner",
+                                 task="fixture-task-bad-capability", route="direct")
+        absent = case / "absent.json"
+
+        with patch.object(activity, "account_context", side_effect=account_context), \
+             patch.dict(os.environ, {"EXECUTION_MARKER": str(marker)}, clear=False):
+            with self.assertRaisesRegex(activity.ActivityError, "capability_report_unavailable"):
+                activity.main(["--state-dir", str(registry.root), "run"] + common +
+                              ["--lease-id", lease["leaseId"], "--owner", "fixture-owner",
+                               "--capability-report", str(absent)])
+            # The reservation stays usable: the operator can fix the file and retry
+            # with the same lease instead of re-reserving.
+            saved = next(x for x in registry.read()["leases"] if x["leaseId"] == lease["leaseId"])
+            self.assertEqual(saved["state"], "preparing")
+            self.assertNotIn("runnerPID", saved)
+            self.assertNotIn("childPID", saved)
+            self.assertFalse(marker.exists())
+            self.assertFalse((case / "result.txt").exists())
+
+            # plan dry-run reports the same input problem without any reservation.
+            with self.assertRaisesRegex(activity.ActivityError, "capability_report_unavailable"):
+                activity.main(["--state-dir", str(case / "plan-state"), "plan"] + common +
+                              ["--capability-report", str(absent)])
+        self.assertFalse((case / "plan-state").exists())
+
+    def test_unparseable_capability_report_is_named_and_does_not_launch(self):
+        case, work, marker, profile, mapping, account_context, common = self.run_fixture("broken-capability")
+        registry = activity.Registry(case / "state")
+        lease = registry.reserve(account_key=activity.identity_key(profile), alias_key=activity.digest("fixture-a"),
+                                 code="A", project=activity.project_key(work), owner="fixture-owner",
+                                 task="fixture-task-broken-capability", route="direct")
+        broken = case / "capability.json"
+        broken.write_text("{not json")
+
+        with patch.object(activity, "account_context", side_effect=account_context), \
+             patch.dict(os.environ, {"EXECUTION_MARKER": str(marker)}, clear=False):
+            with self.assertRaisesRegex(activity.ActivityError, "capability_report_invalid"):
+                activity.main(["--state-dir", str(registry.root), "run"] + common +
+                              ["--lease-id", lease["leaseId"], "--owner", "fixture-owner",
+                               "--capability-report", str(broken)])
+        saved = next(x for x in registry.read()["leases"] if x["leaseId"] == lease["leaseId"])
+        self.assertEqual(saved["state"], "preparing")
+        self.assertFalse(marker.exists())
+
+    def test_terminal_lease_reports_preparing_reservation_required(self):
+        case, work, marker, profile, mapping, account_context, common = self.run_fixture("terminal-lease")
+        registry = activity.Registry(case / "state")
+        lease = registry.reserve(account_key=activity.identity_key(profile), alias_key=activity.digest("fixture-a"),
+                                 code="A", project=activity.project_key(work), owner="fixture-owner",
+                                 task="fixture-task-terminal", route="direct")
+        valid = case / "capability.json"
+        valid.write_text('{"status": "passed"}')
+        registry.update(lease["leaseId"], "fixture-owner", "failed")
+
+        with patch.object(activity, "account_context", side_effect=account_context), \
+             patch.dict(os.environ, {"EXECUTION_MARKER": str(marker)}, clear=False):
+            with self.assertRaisesRegex(activity.ActivityError, "preparing_reservation_required"):
+                activity.main(["--state-dir", str(registry.root), "run"] + common +
+                              ["--lease-id", lease["leaseId"], "--owner", "fixture-owner",
+                               "--capability-report", str(valid)])
+        self.assertEqual(next(x for x in registry.read()["leases"]
+                              if x["leaseId"] == lease["leaseId"])["state"], "failed")
+        self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

@@ -169,12 +169,139 @@ struct MessageChannelTaskLabel: Equatable {
     }
 }
 
+/// Constructible only from an announcement accepted by the existing source rules.
+struct PublicResetContext: Equatable {
+    let announcementID: String
+    let kind: PublicResetAnnouncement.Kind
+    let announcedAt: Date
+    let publicText: String
+    let sourceURL: URL
+
+    init(announcement: PublicResetAnnouncement, now: Date = Date()) throws {
+        guard announcement.isValid(now: now) else { throw MessageChannelError.invalidStatus }
+        announcementID = announcement.id
+        kind = announcement.resetType
+        announcedAt = announcement.announcedAt
+        if let url = announcement.source.url,
+            let parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        {
+            sourceURL = URL(string: "https://x.com" + parts.path)!
+        } else {
+            sourceURL = URL(string: "https://codex-resets.com/")!
+        }
+        // Preserve word boundaries from ordinary whitespace controls, while
+        // removing invisible controls. Emoji joiners remain displayable.
+        let clean = String(
+            String.UnicodeScalarView(
+                announcement.text.unicodeScalars.compactMap { scalar -> Unicode.Scalar? in
+                    guard CharacterSet.controlCharacters.contains(scalar) else { return scalar }
+                    if CharacterSet.whitespacesAndNewlines.contains(scalar) { return " " }
+                    return scalar.value == 0x200C || scalar.value == 0x200D ? scalar : nil
+                }))
+        // A separator before a domain dot must not turn an obfuscated link
+        // (evil\t.invalid) into two harmless-looking retained words. Spaces
+        // after sentence punctuation remain normal word boundaries.
+        let splitDestination = try NSRegularExpression(
+            pattern:
+                #"\S+\s+[\x{200C}\x{200D}]*[.．｡。][\x{200C}\x{200D}]*[\p{L}\p{N}_-]+\S*"#)
+        let display = splitDestination.stringByReplacingMatches(
+            in: clean,
+            range: NSRange(clean.startIndex..<clean.endIndex, in: clean), withTemplate: " ")
+        let detector = try NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        // Supplement native detection for unknown TLDs, Unicode dot variants,
+        // arbitrary schemes, email and relative/markdown destinations.
+        let destination = try NSRegularExpression(
+            pattern:
+                #"[\p{L}\p{N}_-]+[.．｡][\p{L}\p{N}_-]+|[A-Za-z0-9_-]+。[A-Za-z0-9_-]+|[@/\\]|[\p{L}][\p{L}\p{N}+.-]*:"#)
+        let words = display.components(separatedBy: .whitespacesAndNewlines).filter { token in
+            let probe = token.precomposedStringWithCompatibilityMapping
+                .replacingOccurrences(of: "\u{200C}", with: "")
+                .replacingOccurrences(of: "\u{200D}", with: "")
+            let range = NSRange(probe.startIndex..<probe.endIndex, in: probe)
+            return !token.isEmpty && detector.firstMatch(in: probe, range: range) == nil
+                && destination.firstMatch(in: probe, range: range) == nil
+        }
+        var bounded = String(words.joined(separator: " ").prefix(240))
+        while bounded.utf8.count > 720 { bounded.removeLast() }
+        publicText = bounded
+    }
+}
+
+/// Safe observable delivery metadata; never carries remote or announcement text.
+struct PublicResetChannelResult: Equatable {
+    enum State: String { case accepted, failed, uncertain, ledgerFailed }
+    enum ErrorCategory: String { case admission, rejected, transport, response, duplicate, ledger, interrupted }
+    let channel: MessageChannelKind
+    let state: State
+    let checkedAt: Date
+    let errorCategory: ErrorCategory?
+
+    var statusText: String { summary(WidgetLanguage.storedOrAutomatic()) }
+
+    func summary(_ language: WidgetLanguage) -> String {
+        let detail: String
+        switch state {
+        case .accepted:
+            detail = language.text("仅 API 已接受；不代表已送达或已读。", "API accepted only; delivery or reading is not confirmed.")
+        case .failed:
+            detail = language.text("发送失败；不会自动重发。", "Delivery failed; no automatic resend.")
+        case .uncertain:
+            detail = language.text("发送结果不确定；需要核验，不会自动重发。", "Delivery uncertain; verification required, no automatic resend.")
+        case .ledgerFailed:
+            detail = language.text("投递记录读取或写入失败；投递已暂停。", "Delivery ledger read/write failure; delivery paused.")
+        }
+        return language.text("公共重置 / ", "Public reset / ") + channel.displayName(language) + ": " + detail
+    }
+
+    var safeIssueCode: String {
+        "public-reset/" + channel.rawValue + "/" + state.rawValue
+            + "/" + (errorCategory?.rawValue ?? "none")
+    }
+
+    static func delivery(
+        _ result: Result<MessageDeliveryOutcome, MessageChannelError>,
+        channel: MessageChannelKind
+    ) -> Self {
+        let state: State
+        let category: ErrorCategory?
+        switch result {
+        case .success(.accepted):
+            state = .accepted
+            category = nil
+        case .success(.duplicateSkipped):
+            state = .uncertain
+            category = .duplicate
+        case .failure(let error):
+            switch error {
+            case .transportFailed:
+                state = .uncertain
+                category = .transport
+            case .invalidResponse, .redirected:
+                state = .uncertain
+                category = .response
+            case .cancelled:
+                state = .uncertain
+                category = .interrupted
+            case .httpStatus, .rateLimited, .rejected:
+                state = .failed
+                category = .rejected
+            default:
+                state = .failed
+                category = .admission
+            }
+        }
+        return Self(channel: channel, state: state, checkedAt: Date(), errorCategory: category)
+    }
+}
+
 /// The only payload a message channel may transmit. Fields are structured and
 /// bounded: prompts, model responses, file paths, raw account identifiers and
-/// free-form text are unrepresentable by construction.
+/// private free-form text are unrepresentable. Public wording requires a validated context.
 struct MessageTaskStatus: Equatable {
     enum EventKind: String {
         case test
+        case publicRegularReset
+        case publicBankedReset
         case lowQuotaDetected
         case quotaReset
         case resetCreditsAdded
@@ -212,6 +339,7 @@ struct MessageTaskStatus: Equatable {
     let failureReason: FailureReason?
     let occurredAt: Date
     let eventID: UUID
+    let publicResetContext: PublicResetContext?
 
     init(
         eventKind: EventKind,
@@ -222,15 +350,23 @@ struct MessageTaskStatus: Equatable {
         sevenDayRemainingPercent: Double? = nil,
         failureReason: FailureReason? = nil,
         occurredAt: Date,
-        eventID: UUID = UUID()
+        eventID: UUID = UUID(),
+        publicResetContext: PublicResetContext? = nil
     ) throws {
         let percentages = [fiveHourRemainingPercent, sevenDayRemainingPercent].compactMap { $0 }
         guard percentages.allSatisfy({ $0.isFinite && (0...100).contains($0) }) else {
             throw MessageChannelError.invalidStatus
         }
-        guard accountLabel != nil || taskLabel != nil || eventKind == .test else {
+        guard accountLabel != nil || taskLabel != nil || [.test, .publicRegularReset, .publicBankedReset].contains(eventKind) else {
             throw MessageChannelError.invalidStatus
         }
+        if let context = publicResetContext {
+            guard eventKind == (context.kind == .regular ? .publicRegularReset : .publicBankedReset),
+                accountLabel == nil, taskLabel == nil, taskState == nil,
+                percentages.isEmpty, failureReason == nil
+            else { throw MessageChannelError.invalidStatus }
+        }
+        self.publicResetContext = publicResetContext
         self.eventKind = eventKind
         self.accountLabel = accountLabel
         self.taskLabel = taskLabel
@@ -247,6 +383,12 @@ struct MessageTaskStatus: Equatable {
     func summary(_ language: WidgetLanguage) -> String {
         var lines: [String] = []
         switch eventKind {
+        case .publicRegularReset:
+            lines.append(language.text("公共重置公告：额度刷新", "Public reset announcement: quota refreshed"))
+            lines.append(language.text("第三方汇总；请刷新账号核实，不代表重置卡到账。", "Third-party feed; refresh the account to verify. This is not a reset credit."))
+        case .publicBankedReset:
+            lines.append(language.text("公共重置公告：发放重置卡", "Public reset announcement: reset credits announced"))
+            lines.append(language.text("第三方汇总；请刷新账号核实，不代表已经到账。", "Third-party feed; refresh the account to verify. Receipt is not guaranteed."))
         case .test:
             lines.append(language.text("连接测试", "Connection test"))
         case .lowQuotaDetected:
@@ -261,6 +403,12 @@ struct MessageTaskStatus: Equatable {
             lines.append(language.text("切换未完成", "Switch did not complete"))
         case .taskStateChange:
             lines.append(language.text("任务状态更新", "Task status update"))
+        }
+        if let context = publicResetContext {
+            let timestamp = ISO8601DateFormatter().string(from: context.announcedAt)
+            lines.append(language.text("公告时间：", "Announced at: ") + timestamp)
+            if !context.publicText.isEmpty { lines.append(context.publicText) }
+            lines.append(language.text("来源：", "Source: ") + context.sourceURL.absoluteString)
         }
         if let accountLabel {
             lines.append(language.text("账号：\(accountLabel.value)", "Account: \(accountLabel.value)"))

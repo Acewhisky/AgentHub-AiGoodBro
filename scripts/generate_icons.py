@@ -1,7 +1,7 @@
 from PIL import Image
 import os
 
-src_path = "Resources/codexU-icon.png"
+src_path = "Resources/AiGoodBro-icon.png"
 output_dir = "windows/apps/codexu-tauri/src-tauri/icons"
 os.makedirs(output_dir, exist_ok=True)
 

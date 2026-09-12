@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<!-- 直接复用 token-monitor（Javis603，MIT）的样式与图表源码 -->
+<link rel="stylesheet" href="dashboard.css">
+<style>
+  html,body{margin:0;padding:0;background:transparent;}
+  #trend{width:100%;height:100%;}
+  .area-line{display:block;width:100%;height:100%;}
+  .area-line-stroke{fill:none;stroke:#2583f8;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+  .area-line-point{fill:#2583f8;}
+  .area-line-fill{fill:url(#area-line-grad);}
+  .area-line-grad-top{stop-color:#2583f8;stop-opacity:.30;}
+  .area-line-grad-bottom{stop-color:#2583f8;stop-opacity:.02;}
+</style>
+</head>
+<body>
+  <div id="trend"></div>
+  <script src="usageCharts.js"></script>
+  <script>
+    // Swift 侧通过 evaluateJavaScript 调用 window.__renderTrend(daily, opts)
+    // daily: [{date:'YYYY-MM-DD', tokens:Number}]
+    window.__renderTrend = function (daily, opts) {
+      var host = document.getElementById('trend');
+      if (!host) { throw new Error('trend host missing'); }
+      host.innerHTML = '';
+      if (!window.TokenMonitorUsageCharts || typeof window.TokenMonitorUsageCharts.areaLineChart !== 'function' || typeof window.TokenMonitorUsageCharts.areaLineSvg !== 'function') {
+        throw new Error('trend renderer unavailable');
+      }
+      if (!Array.isArray(daily)) { throw new Error('trend data invalid'); }
+      var rows = daily.filter(function (d) {
+        return d && typeof d.date === 'string' && d.date.length > 0 && Number.isFinite(d.tokens) && d.tokens >= 0;
+      });
+      if (rows.length < 1) { throw new Error('trend data empty'); }
+      var api = window.TokenMonitorUsageCharts;
+      var o = { width: (opts && opts.width) || 260, height: (opts && opts.height) || 40, metric: 'tokens', curve: true };
+      try {
+        var model = api.areaLineChart(rows, o);
+        var svg = model && api.areaLineSvg(model);
+        if (typeof svg !== 'string' || svg.trim().length < 1) { throw new Error('trend renderer returned no output'); }
+        host.innerHTML = svg;
+        return svg;
+      } catch (error) {
+        throw error;
+      }
+    };
+  </script>
+</body>
+</html>

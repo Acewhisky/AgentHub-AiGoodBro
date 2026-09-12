@@ -38,7 +38,7 @@ struct DispatchActivityStore {
 
         func taskStatus(now: Date = Date()) -> HubAccountTaskStatus {
             let phase: HubAccountTaskPhase
-            if ["warmup", "maintenance"].contains(route), occupied, effectiveState(now: now) != "uncertain" {
+            if ["warmup", "maintenance"].contains(route), ["preparing", "starting", "running"].contains(effectiveState(now: now)) {
                 return HubAccountTaskStatus(phase: .maintenance, updatedAt: Date(timeIntervalSince1970: updatedAt))
             }
             switch effectiveState(now: now) {
@@ -166,7 +166,7 @@ struct DispatchActivityStore {
     /// Source and target are reserved together, so a busy second account never
     /// leaves the first account with an orphaned preparation reservation.
     func reserveMaintenance(accounts: [(account: String, alias: String)], now: Date = Date()) throws -> [String] {
-        let keys = accounts.map { (account: Self.hash($0.account), alias: Self.hash($0.alias.lowercased())) }
+        let keys = accounts.map { (account: Self.hash($0.account), alias: Self.hash($0.alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())) }
         guard !keys.isEmpty, keys.count <= 2, Set(keys.map(\.account)).count == keys.count,
             Set(keys.map(\.alias)).count == keys.count
         else { throw Failure.invalidState }
@@ -339,6 +339,14 @@ struct DispatchActivityStore {
     /// Fixed application messages only. Raw errors, account names and paths never
     /// enter the shared journal; the Skill appends its observations to this file.
     func appendIssue(id: String, phase: String, summary: String, code: String? = nil, now: Date = Date()) throws {
+        let identifier = #"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\z"#
+        let forbidden = #"(?i)(?:[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:/Users/|/home/|/var/|~/|https?://)|(?:sk-|Bearer\s|access_token|refresh_token|webhook))"#
+        guard [id, phase].allSatisfy({ $0.range(of: identifier, options: .regularExpression) != nil }),
+            !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            summary.unicodeScalars.count <= 1200,
+            summary.range(of: forbidden, options: .regularExpression) == nil,
+            code == nil || (code!.utf8.count == 1 && code!.utf8.allSatisfy({ (65...90).contains($0) }))
+        else { throw Failure.invalidState }
         let date = ISO8601DateFormatter()
         date.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let utc = date.string(from: now)
@@ -359,7 +367,12 @@ struct DispatchActivityStore {
             guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
                 info.st_uid == geteuid(), info.st_nlink == 1, info.st_mode & 0o077 == 0
             else { throw Failure.unavailable }
-            guard data.withUnsafeBytes({ Darwin.write(fd, $0.baseAddress, $0.count) }) == data.count, fsync(fd) == 0 else { throw Failure.unavailable }
+            guard data.withUnsafeBytes({ Darwin.write(fd, $0.baseAddress, $0.count) }) == data.count, fsync(fd) == 0 else {
+                // Roll back this append while still holding the shared lock.
+                // Failure remains visible even if storage cannot restore it.
+                guard ftruncate(fd, info.st_size) == 0, fsync(fd) == 0 else { throw Failure.unavailable }
+                throw Failure.unavailable
+            }
         }
     }
 }

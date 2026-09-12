@@ -8,9 +8,10 @@ APP_DIR := $(BUILD_DIR)/$(APP_NAME).app
 MACOS_DIR := $(APP_DIR)/Contents/MacOS
 RESOURCES_DIR := $(APP_DIR)/Contents/Resources
 SOURCES := $(shell find Sources/CodexUsageWidget -name '*.swift' | sort)
-APP_ICON_SOURCE := Resources/codexU.icns
+APP_ICON_SOURCE := Resources/AiGoodBro.icns
 APP_ICON := AiGoodBro.icns
-RUNTIME_PNG_RESOURCES := Resources/codexU-icon.png Resources/codex-color.png Resources/codex-template.png Resources/claudecode-color.png Resources/claudecode-template.png
+RUNTIME_PNG_RESOURCES := Resources/AiGoodBro-icon.png Resources/codex-color.png Resources/codex-template.png Resources/claudecode-color.png Resources/claudecode-template.png
+ICON_VARIANTS := Resources/AiGoodBro-02-deep-plum.icns Resources/AiGoodBro-03-sage-green.icns Resources/AiGoodBro-04-graphite.icns Resources/AiGoodBro-05-champagne.icns
 LEADERSHIP_BADGES := $(sort $(wildcard Resources/LeadershipBadges/leadership-badge-l*.png))
 SELF_TEST_RUNNER := ./scripts/run-self-tests.sh
 DEPLOYMENT_TARGET ?= 13.0
@@ -62,10 +63,13 @@ build:
 	mkdir -p "$(MACOS_DIR)" "$(RESOURCES_DIR)"
 	cp Resources/Info.plist "$(APP_DIR)/Contents/Info.plist"
 	cp "$(APP_ICON_SOURCE)" "$(RESOURCES_DIR)/$(APP_ICON)"
+	cp $(ICON_VARIANTS) "$(RESOURCES_DIR)/"
 	cp $(RUNTIME_PNG_RESOURCES) "$(RESOURCES_DIR)/"
 	cp Resources/THIRD_PARTY_NOTICES.txt "$(RESOURCES_DIR)/"
 	cp docs/third-party-cli-notices.md "$(RESOURCES_DIR)/CLI_PROVIDER_NOTICES.md"
 	cp -R Resources/Palettes "$(RESOURCES_DIR)/Palettes"
+	mkdir -p "$(RESOURCES_DIR)/UpstreamCharts"
+	cp -R Resources/UpstreamCharts/ "$(RESOURCES_DIR)/UpstreamCharts/"
 	/usr/bin/xattr -dr com.apple.quarantine "$(APP_DIR)" 2>/dev/null || true
 	MACOSX_DEPLOYMENT_TARGET="$(DEPLOYMENT_TARGET)" swiftc $(SWIFT_OPTIMIZATION) $(SWIFTC_PARALLELISM) -parse-as-library $(SWIFTC_TARGET_FLAGS) $(SWIFTC_FEATURE_FLAGS) $(SOURCES) \
 		-o "$(MACOS_DIR)/$(APP_NAME)" \

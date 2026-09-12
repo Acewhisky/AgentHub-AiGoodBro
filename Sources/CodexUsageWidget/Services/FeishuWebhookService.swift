@@ -1232,7 +1232,9 @@ enum FeishuWebhookServiceSelfTest {
                 window: RateWindow(usedPercent: 37, windowDurationMins: 300, resetsAt: nil), confirmedPlan: "pro"
             )
             expect(finitePro == .finite(remainingPercent: 63, resetsAt: nil), "finite Pro 5-hour window was overwritten")
-            expect(FeishuQuotaValue.generalFiveHour(window: nil, confirmedPlan: "PRO") == .unlimited, "absent confirmed Pro 5-hour window was not unlimited")
+            expect(FeishuQuotaValue.generalFiveHour(window: nil, confirmedPlan: "PRO") == .unknown, "missing Pro 5-hour window was not unknown")
+            expect(FeishuQuotaValue.generalFiveHour(window: nil, confirmedPlan: nil) == .unknown, "missing plan and 5-hour window was not unknown")
+            expect(FeishuQuotaValue.generalFiveHour(window: nil, confirmedPlan: " \tpro\n") == .unknown, "missing whitespace-padded Pro 5-hour window was not unknown")
             expect(FeishuQuotaValue.generalFiveHour(window: nil, confirmedPlan: "plus") == .unknown, "missing non-Pro 5-hour window was not unknown")
             for invalidPercent in [Double.nan, Double.infinity, -0.1, 100.1] {
                 expect(

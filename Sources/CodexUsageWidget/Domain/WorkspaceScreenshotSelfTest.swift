@@ -15,10 +15,49 @@ enum WorkspaceScreenshotSelfTest {
         func expect(_ condition: Bool, _ message: String) {
             if !condition { failures.append(message) }
         }
+        var modules = WorkspaceModuleArrangement()
+        modules.move("usage", to: "accounts")
+        modules.compact = ["monitor"]
+        modules.resizeHeight("monitor", by: 70)
+        expect(modules.extraHeight["monitor"] == 3, "height snaps to the nearest 24 point grid")
+        modules.resizeHeight("monitor", by: 900)
+        expect(modules.extraHeight["monitor"] == 10, "resize cannot grow unbounded")
+        modules.resizeHeight("monitor", by: -900)
+        expect(modules.extraHeight["monitor"] == 0, "resize cannot clip intrinsic content")
+        modules.extraHeight["monitor"] = 3
+        let moduleSettings = AppSettings(defaults: defaults)
+        moduleSettings.homeModuleArrangement = modules
+        expect(AppSettings(defaults: defaults).homeModuleArrangement == modules, "module order and snapped sizes survive reload")
+        expect(modules.order == ["monitor", "accounts", "usage"], "module moves preserve all three identities")
+        expect(WorkspaceModuleArrangement.load(Data("{broken".utf8)) == .init(), "corrupt module layout falls back safely")
+        var invalid = modules
+        invalid.order = ["usage", "usage", "monitor"]
+        expect(WorkspaceModuleArrangement.load(try? JSONEncoder().encode(invalid)) == .init(), "duplicate modules cannot hide accounts")
+        moduleSettings.homeModuleArrangement = .init()
+        expect(AppSettings(defaults: defaults).homeModuleArrangement == .init(), "layout reset survives reload")
+        func result(_ state: LocalCLIQuotaState, code: String? = nil) -> LocalCLIQuotaResult {
+            LocalCLIQuotaResult(
+                state: state, fetchedAt: Date(), maskedIdentity: nil, identityFingerprint: nil,
+                planLabel: nil, windows: [], balance: nil, balanceCurrency: nil, sourceLabel: "Synthetic", messageCode: code)
+        }
+        expect(LocalCLIReadiness.resolve(installed: false, result: nil) == .notInstalled, "missing tools require installation")
+        expect(LocalCLIReadiness.resolve(installed: true, result: nil) == .unknown, "unknown sign-in is never called signed-in")
+        expect(LocalCLIReadiness.resolve(installed: true, result: result(.needsLogin)) == .needsLogin, "login state remains actionable")
+        expect(
+            LocalCLIReadiness.resolve(installed: true, result: result(.unavailable, code: "capability_report_unavailable")) == .inputFailure("capability_report_unavailable"),
+            "input failure is separate from ended reservations")
+        expect(
+            LocalCLIReadiness.resolve(installed: true, result: result(.unavailable, code: "preparing_reservation_required")) == .endedReservation,
+            "ended reservations must not suggest retrying the same lease")
+        expect(LocalCLIReadiness.resolve(installed: true, result: result(.available), stale: true) == .stale, "old quota evidence cannot be presented as current")
+        expect(LocalCLIReadiness.resolve(installed: true, result: result(.unavailable)) == .readFailed, "read failures are distinct from missing quota integration")
+        expect(!LocalCLIReadiness.inputFailure("invocation_file_unavailable").detail(.zh).contains("能力报告"), "brief and capability report failures must not be conflated")
         let status = "5 小时已暂停 · 7 天额度不足 · 下次暖号 7 天 9月10日 09:30 · 7 天额度不足"
         let highlighted = WarmUpStatusText.attributed(status)
         expect(String(highlighted.characters) == status, "highlighting must preserve the exact status text")
-        expect(highlighted.runs.filter { $0.foregroundColor == .red }.count == 2, "every critical phrase occurrence must be red")
+        expect(
+            highlighted.runs.filter { $0.foregroundColor == FixedVisualPalette.statusDanger }.count == 2,
+            "every critical phrase occurrence must be red")
         if let dateRange = highlighted.range(of: "9月10日 09:30") {
             expect(highlighted[dateRange].foregroundColor == nil, "ordinary schedule dates must keep their neutral color")
         }
@@ -27,7 +66,7 @@ enum WorkspaceScreenshotSelfTest {
         }
         for phrase in WarmUpStatusText.criticalPhrases {
             let text = WarmUpStatusText.attributed(phrase)
-            expect(text.foregroundColor == .red, "each supported blocking status must be red")
+            expect(text.foregroundColor == FixedVisualPalette.statusDanger, "each supported blocking status must be red")
             expect(text.font == .caption2.weight(.semibold), "blocking status must also use stronger weight")
         }
         let reset = Date(timeIntervalSince1970: 1_800_000_000)
@@ -61,9 +100,10 @@ enum WorkspaceScreenshotSelfTest {
         defaults.set("future-layout", forKey: AccountWorkspaceLayout.storageKey)
         expect(AccountWorkspaceLayout.storedOrDefault(defaults: defaults) == .rows, "unknown stored layouts must fall back to the original")
         defaults.removeObject(forKey: AccountWorkspaceLayout.storageKey)
-        expect(AccountCardGridLayout.columnCount(width: 784, itemCount: 9) == 3, "the compact minimum window must fit three cards")
-        expect(AccountCardGridLayout.columnCount(width: 944, itemCount: 9) == 3, "the default window must fit three cards")
-        expect(AccountCardGridLayout.columnCount(width: 1_244, itemCount: 9) == 4, "a wide window must fit four cards")
+        expect(AccountCardGridLayout.columnCount(width: 784, itemCount: 9) == 2, "the compact minimum window keeps two natural-width cards")
+        expect(AccountCardGridLayout.columnCount(width: 944, itemCount: 9) == 2, "the 1100pt window content keeps two cards until a third is comfortable")
+        expect(AccountCardGridLayout.columnCount(width: 1_064, itemCount: 9) == 3, "the 1100pt window content fits three cards")
+        expect(AccountCardGridLayout.columnCount(width: 1_404, itemCount: 9) == 4, "the 1440pt window content fits four cards")
         expect(AccountCardGridLayout.columnCount(width: .infinity, itemCount: 9) == 1, "nonfinite probes must be safe")
         expect(AccountCardGridLayout.selfTest(), "all card rows must share one global measured size at 720 and 980 points")
         expect(CrossProviderQuotaSummary.selfTest(), "provider summaries must preserve unknown values and never add unrelated percentages")
@@ -91,6 +131,15 @@ enum WorkspaceScreenshotSelfTest {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let reorderRoot = root.appendingPathComponent("reorder-save")
             let reorderStore = WorkspacePreviewRenderer.fixtureStore(accountCount: 4, root: reorderRoot)
+            let recoveryProfile = reorderStore.profiles[0]
+            expect(AccountRecoveryGuide.isIsolated(recoveryProfile), "recovery accepts explicit isolated profiles")
+            expect(AccountRecoveryGuide.quotaVerified(recoveryProfile), "fresh successful quota supports recovery evidence")
+            var failedRecovery = recoveryProfile
+            failedRecovery.lastQuotaReadFailureAt = Date()
+            expect(!AccountRecoveryGuide.quotaVerified(failedRecovery), "old success cannot hide a current quota failure")
+            let systemRecovery = CodexProfile(
+                id: "system-fixture", name: "Synthetic", codexHomePath: root.appendingPathComponent("system").path, isSystemProfile: true, createdAt: Date())
+            expect(!AccountRecoveryGuide.isIsolated(systemRecovery), "recovery must never offer the system account")
             let firstID = reorderStore.profiles[0].id
             let lastID = reorderStore.profiles[3].id
             let originalIDs = reorderStore.profiles.map(\.id)

@@ -7,6 +7,7 @@ struct NextSetupGuideView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var webhookDraft = ""
+    @State private var confirmsCompanionInstall = false
     @StateObject private var runtime: NextRuntimeSetupModel
 
     init(store: UsageStore, settings: AppSettings, openAutomation: @escaping () -> Void, runtime: NextRuntimeSetupModel = NextRuntimeSetupModel()) {
@@ -37,10 +38,20 @@ struct NextSetupGuideView: View {
         }
         .frame(width: 780, height: 580)
         .background(Color(nsColor: .windowBackgroundColor))
+        .confirmationDialog(language.text("安装配套调用工具？", "Install companion tools?"), isPresented: $confirmsCompanionInstall, titleVisibility: .visible) {
+            Button(language.text("安装并检查", "Install and check")) { runtime.installTools() }
+            Button(language.text("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(
+                language.text(
+                    "将写入 ~/.codex/skills/multi-agent-management 的受管文件，并更新应用 Support 目录的运行时链接；已有受管文件会先备份。保留 Skill 非受管文档，不改系统 auth.json/config.toml。请先确认没有使用该运行器的在途任务；本向导不会代为结束任务。",
+                    "Writes managed files under ~/.codex/skills/multi-agent-management and updates the runtime link in application support. Existing managed files are backed up; unmanaged Skill text and system auth.json/config.toml are preserved. Ensure no tasks are using this runner; this guide does not stop tasks."
+                ))
+        }
         .environment(\.widgetLanguage, language)
         .environment(\.locale, language.locale)
         .onAppear {
-            store.refreshLocalNotificationAuthorization()
+            if !store.isPreview { store.refreshLocalNotificationAuthorization() }
             if step == .runtime { runtime.refresh() }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -52,7 +63,11 @@ struct NextSetupGuideView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 28) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("NEXT").font(.system(size: 12, weight: .bold, design: .rounded)).tracking(2)
+                Label {
+                    Text("AgentHub")
+                } icon: {
+                    AHBrandSymbol(size: 24)
+                }.font(.headline)
                     .foregroundStyle(.secondary)
                 Text(language.text("使用引导", "Getting started")).font(.title2.weight(.semibold))
             }
@@ -105,7 +120,7 @@ struct NextSetupGuideView: View {
     private var runtimePage: some View {
         VStack(alignment: .leading, spacing: 18) {
             heading(
-                language.text("让现有工具就绪", "Get your tools ready"),
+                language.text("准备工具与配套 Skill", "Tools & companion Skill"),
                 language.text("优先复用已安装的工具。缺少时按需安装，回到这里会自动重新检查。", "Use the tools already on your Mac. Install missing tools when needed; Next checks again when you return."))
             VStack(spacing: 12) {
                 ForEach(["codex", "python", "hub"], id: \.self) { id in
@@ -134,6 +149,21 @@ struct NextSetupGuideView: View {
                     }
                 }
             }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label(language.text("配套调用 Skill", "Companion Skill"), systemImage: "shippingbox")
+                    Spacer()
+                    Text(runtime.report?.skill == "ready" ? language.text("已匹配随包工具", "Bundled tools match") : language.text("待安装或更新", "Install or update needed"))
+                        .foregroundStyle(.secondary)
+                }.font(.subheadline.weight(.medium))
+                Text(
+                    language.text(
+                        "随应用提供 multi-agent-management、调用入口与运行器；检测到已有版本时由现有安装器备份受管文件并更新。安装完成后重新检查，不以按钮点击判成功。",
+                        "The app includes multi-agent-management, launchers and runner files. The existing installer backs up managed files before updating. Recheck after installation; clicking the button is not success."
+                    )
+                )
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(12).sectionBackground()
             if runtime.isBusy {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -156,7 +186,7 @@ struct NextSetupGuideView: View {
                 Button(language.text("重新检查", "Check again")) { runtime.refresh() }.disabled(runtime.isBusy)
                 Spacer()
                 Button(runtime.report?.skill == "ready" ? language.text("配套工具已安装", "Companion tools installed") : language.text("安装配套调用工具", "Install companion tools")) {
-                    runtime.installTools()
+                    confirmsCompanionInstall = true
                 }
                 .disabled(!runtime.toolsReady || runtime.isBusy || runtime.report?.skill == "ready")
             }
@@ -232,20 +262,7 @@ struct NextSetupGuideView: View {
                 language.text("先看额度，再开始任务", "Check limits, then start work"),
                 language.text("把账号的额度、任务和日常维护放在同一个工作台。", "Keep account limits, task status and daily maintenance together.")
             )
-            VStack(alignment: .leading, spacing: 20) {
-                instruction(
-                    "1", title: language.text("看清账号状态", "See account status"),
-                    detail: language.text("5 小时和 7 天额度分别显示。刷新失败时会保留旧数据并标明原因。", "Five-hour and weekly limits are separate. Failed refreshes keep the previous data and show why."))
-                instruction(
-                    "2", title: language.text("为新任务选账号", "Choose an account for new work"),
-                    detail: language.text(
-                        "新账号需先完成独立登录，再确认参与开关、模型与推理强度。新添加的账号默认参与调度；退出后暖号和额度维护仍会继续。",
-                        "Finish isolated sign-in first, then confirm participation, model, and reasoning settings. New accounts join dispatch by default; opting out keeps maintenance active."
-                    ))
-                instruction(
-                    "3", title: language.text("从账号卡打开终端", "Open a terminal from the account card"),
-                    detail: language.text("确认账号空闲后开始。桌面切换有独立入口，由你主动确认。", "Start once the account is idle. Desktop switching has its own action and confirmation."))
-            }
+            AccountRecoveryGuide(store: store, language: language)
             Divider()
             Label(
                 language.text(

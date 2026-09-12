@@ -31,7 +31,19 @@ final class UsageStore: ObservableObject {
         let targetAccount: FeishuMaskedAccount
         let sourceQuota: AutomaticSwitchQuotaState
         let eventID: UUID
+        let thresholds: LowQuotaAlertThresholds
+        var completeTasks: CodexTaskLiveSnapshot?
     }
+
+    private static func automaticQuotaEvidenceIsFresh(
+        succeeded: Bool?, fetchedAt: Date, failedAt: Date?, now: Date
+    ) -> Bool {
+        let age = now.timeIntervalSince(fetchedAt)
+        return succeeded == true && (failedAt.map { $0 < fetchedAt } ?? true)
+            && age >= -5 && age <= CodexAutomaticSwitchPolicy.quotaSnapshotMaximumAge
+    }
+
+    private var switchPreparationEvidenceID: UUID?
 
     private static let feishuNotificationsEnabledKey = "CodexManagerNext.feishuNotifications.enabled"
     private static let feishuQuotaResetEnabledKey = "CodexManagerNext.feishuNotifications.quotaReset"
@@ -365,9 +377,18 @@ final class UsageStore: ObservableObject {
     }
 
     @MainActor
-    private func persistTerminalActivity(_ lease: String, state: String, pid: pid_t? = nil) async -> Bool {
+    private func persistTerminalActivity(_ lease: String, state: String, pid: pid_t? = nil, session: TerminalLaunchSession? = nil) async -> Bool {
         var delay: UInt64 = 1_000_000_000
         while !Task.isCancelled {
+            // Recheck after every storage retry; a previous receipt check is not a permit.
+            if let session, state == "awaiting_acceptance" || state == "failed" {
+                guard let code = session.verifiedExitCode(),
+                    state == (code == 0 ? "awaiting_acceptance" : "failed")
+                else {
+                    _ = await persistTerminalActivity(lease, state: "uncertain")
+                    return false
+                }
+            }
             if updateTerminalActivity(lease, state: state, pid: pid) { return true }
             // Keep both the reservation and its observer while storage recovers.
             // A transient lock or disk error must not orphan an active terminal.
@@ -417,7 +438,17 @@ final class UsageStore: ObservableObject {
                             reportedRunning = true
                         }
                     case .exited(let code):
-                        guard await self.persistTerminalActivity(lease, state: code >= 128 ? "uncertain" : code == 0 ? "awaiting_acceptance" : "failed") else { return }
+                        guard session.verifiedExitCode() == code else {
+                            guard await self.persistTerminalActivity(lease, state: "uncertain") else { return }
+                            reportedUncertain = true
+                            self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "终端退出回执尚不能证明进程组已结束；占用保留待核实", "The exit receipt does not yet prove the process group has ended. The reservation is preserved.")
+                            // EXIT runs before the writer disappears. Keep observing;
+                            // descendants may also legitimately outlive the wrapper.
+                            try await Task.sleep(nanoseconds: 1_000_000_000)
+                            continue
+                        }
+                        guard await self.persistTerminalActivity(lease, state: code == 0 ? "awaiting_acceptance" : "failed", session: session) else { return }
                         self.accountManagerMessage =
                             code == 0
                             ? WidgetLanguage.storedOrAutomatic().text("\(accountName) 的终端会话已结束", "Terminal session for \(accountName) has ended.")
@@ -1009,8 +1040,22 @@ final class UsageStore: ObservableObject {
         isLaunchingCodex = true
         canCancelDesktopSwitch = true
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在准备切换…", "Preparing to switch…")
+        let preparationID = UUID()
+        switchPreparationEvidenceID = preparationID
         desktopSwitchPreparationTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            var handedOff = false
+            defer {
+                if !handedOff, switchPreparationEvidenceID == preparationID {
+                    switchPreparationEvidenceID = nil
+                    finishDesktopSwitchPreparation()
+                    isLaunchingCodex = false
+                    finishAutomaticSwitchAttempt(
+                        for: profileID, succeeded: false, failureReason: .validationFailed,
+                        detail: WidgetLanguage.storedOrAutomatic().text(
+                            "切换准备未完成或已取消", "Switch preparation failed or was cancelled."))
+                }
+            }
             let deadline = Date().addingTimeInterval(45)
             while isRefreshing || isRefreshingWarmUpProfiles || warmingProfileID != nil {
                 accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -1028,13 +1073,24 @@ final class UsageStore: ObservableObject {
             guard !Task.isCancelled else { return }
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在检查桌面任务…", "Checking Desktop tasks…")
             let client = taskClient
-            let previousTasks = codexLiveTasks
+            let isAutomatic = automaticSwitchTargetID == profileID
+            let isForcedManual = !isAutomatic && forceWithoutSessionRestore
+            if isAutomatic { automaticSwitchContext?.completeTasks = nil }
             let refreshed = await Task.detached(priority: .userInitiated) {
-                Date().timeIntervalSince(previousTasks.refreshedAt) > 5
-                    ? client.awaitSnapshot(timeout: 5) : previousTasks
+                client.awaitSnapshot(timeout: 5)
             }.value
             guard !Task.isCancelled else { return }
-            if let refreshed { codexLiveTasks = refreshed }
+            if let refreshed {
+                codexLiveTasks = refreshed
+                if isAutomatic { automaticSwitchContext?.completeTasks = refreshed }
+            } else {
+                codexLiveTasks = .disconnected
+                guard isForcedManual else {
+                    accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "完整任务读取失败，切换已取消", "Complete task read failed; switching cancelled.")
+                    return
+                }
+            }
             let board = snapshot.taskBoard
             let canRestore =
                 !forceWithoutSessionRestore
@@ -1051,6 +1107,8 @@ final class UsageStore: ObservableObject {
                 return
             }
             finishDesktopSwitchPreparation()
+            handedOff = true
+            switchPreparationEvidenceID = nil
             beginCodexSwitch(with: profileID, forceWithoutSessionRestore: forceWithoutSessionRestore, visibleThreadID: visibleThread)
         }
     }
@@ -1354,7 +1412,7 @@ final class UsageStore: ObservableObject {
                         .lowercased()
                     let quotaAge = preflightNow.timeIntervalSince(currentSystemSnapshot.refreshedAt)
                     let currentQuota = AutomaticSwitchQuotaState(snapshot: currentSystemSnapshot)
-                    let triggeredWindows = currentQuota.triggeredWindows()
+                    let triggeredWindows = currentQuota.triggeredWindows(thresholds: self.lowQuotaAlertThresholds)
                     let targetQuotaAge = preflightNow.timeIntervalSince(verifiedSnapshot.refreshedAt)
                     let targetIsEligible =
                         CodexAutomaticSwitchPolicy.preferredCandidate(
@@ -1366,13 +1424,24 @@ final class UsageStore: ObservableObject {
                         .runningApplications(withBundleIdentifier: "local.codex.account-manager")
                         .isEmpty
                     guard let context = self.automaticSwitchContext,
+                        let completeTasks = context.completeTasks,
+                        !profile.isSystemProfile,
+                        context.thresholds == self.lowQuotaAlertThresholds,
+                        NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty,
                         self.automaticAccountSwitchEnabled,
                         self.automaticSwitchParticipation(for: profileID),
                         self.automaticSwitchParticipation(for: context.sourceProfileID),
                         context.sourceProfileID == self.selectedMonitorProfileID,
                         currentEmail == context.sourceIdentityKey,
                         currentSystemCredentialIdentity.accountID == context.sourceAccountID,
+                        (try? self.accountActions.currentSystemAuthFingerprint(
+                            expectedEmail: context.sourceIdentityKey,
+                            expectedAccountID: context.sourceAccountID)) == context.sourceAuthFingerprint,
                         targetCredentialIdentity.accountID == profile.lastSnapshot?.accountID,
+                        currentQuota.fiveHourRemaining != nil,
+                        currentQuota.sevenDayRemaining != nil,
+                        (systemProfile.lastQuotaReadFailureAt ?? .distantPast) < currentSystemSnapshot.refreshedAt,
+                        (profile.lastQuotaReadFailureAt ?? .distantPast) < verifiedSnapshot.refreshedAt,
                         currentSystemSnapshot.quotaReadSucceeded,
                         verifiedSnapshot.quotaReadSucceeded,
                         quotaAge >= -5,
@@ -1381,6 +1450,12 @@ final class UsageStore: ObservableObject {
                         targetQuotaAge <= CodexAutomaticSwitchPolicy.quotaSnapshotMaximumAge,
                         !triggeredWindows.isEmpty,
                         targetIsEligible,
+                        CodexAutomaticSwitchPolicy.hasSafeTaskState(
+                            completeTasks,
+                            codexInactiveSince: self.codexInactiveSince,
+                            legacyManagerRunning: legacyManagerRunning,
+                            now: preflightNow
+                        ),
                         CodexAutomaticSwitchPolicy.hasSafeTaskState(
                             self.codexLiveTasks,
                             codexInactiveSince: self.codexInactiveSince,
@@ -1485,9 +1560,17 @@ final class UsageStore: ObservableObject {
                 }
                 if isAutomaticSwitch {
                     guard let context = self.automaticSwitchContext,
+                        let completeTasks = context.completeTasks,
+                        context.thresholds == self.lowQuotaAlertThresholds,
+                        NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty,
                         self.automaticAccountSwitchEnabled,
                         self.automaticSwitchParticipation(for: profileID),
                         self.automaticSwitchParticipation(for: context.sourceProfileID),
+                        CodexAutomaticSwitchPolicy.hasSafeTaskState(
+                            completeTasks,
+                            codexInactiveSince: self.codexInactiveSince,
+                            legacyManagerRunning: legacyManagerRunning
+                        ),
                         CodexAutomaticSwitchPolicy.hasSafeTaskState(
                             self.codexLiveTasks,
                             codexInactiveSince: self.codexInactiveSince,
@@ -2109,6 +2192,12 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    /// 手动刷新公告，并沿用自动检查的状态、通知与飞书投递流程。
+    @MainActor
+    func refreshResetAnnouncements() {
+        publicResetAnnouncements.check()
+    }
+
     func refreshLocalNotificationAuthorization() {
         guard !isPreview else { return }
         NextLocalNotificationService.shared.authorizationStatus { [weak self] state in
@@ -2391,9 +2480,15 @@ final class UsageStore: ObservableObject {
 
     private func evaluateAutomaticAccountSwitch() {
         guard hasStarted,
+            automaticAccountSwitchEnabled,
+            automaticSwitchContext == nil,
+            automaticSwitchTargetID == nil,
+            !isAccountSwitchTransactionActive,
+            desktopSwitchMaintenanceLeases.isEmpty,
             !isLoggingIn,
             !isLaunchingCodex,
             !isRefreshing,
+            !isRefreshingWarmUpProfiles,
             warmingProfileID == nil,
             let sourceSnapshot = runtimeSnapshot(for: .codex)?.snapshot,
             sourceSnapshot.quotaReadSucceeded,
@@ -2404,6 +2499,7 @@ final class UsageStore: ObservableObject {
             let sourceProfile = selectedMonitorProfile,
             let systemProfile = profiles.first(where: \.isSystemProfile),
             let sourceAccountID = sourceProfile.lastSnapshot?.accountID,
+            !sourceAccountID.isEmpty,
             systemProfile.lastSnapshot?.accountID == sourceAccountID,
             sourceProfile.recordedAccountKey == sourceEmail,
             systemProfile.recordedAccountKey == sourceEmail,
@@ -2411,6 +2507,23 @@ final class UsageStore: ObservableObject {
         else { return }
 
         let now = Date()
+        guard
+            Self.automaticQuotaEvidenceIsFresh(
+                succeeded: sourceSnapshot.quotaReadSucceeded,
+                fetchedAt: sourceSnapshot.refreshedAt,
+                failedAt: sourceProfile.lastQuotaReadFailureAt, now: now
+            ),
+            Self.automaticQuotaEvidenceIsFresh(
+                succeeded: sourceProfile.lastSnapshot?.quotaReadSucceeded,
+                fetchedAt: sourceProfile.lastSnapshot?.fetchedAt ?? .distantPast,
+                failedAt: sourceProfile.lastQuotaReadFailureAt, now: now
+            ),
+            Self.automaticQuotaEvidenceIsFresh(
+                succeeded: systemProfile.lastSnapshot?.quotaReadSucceeded,
+                fetchedAt: systemProfile.lastSnapshot?.fetchedAt ?? .distantPast,
+                failedAt: systemProfile.lastQuotaReadFailureAt, now: now
+            ), NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty
+        else { return }
         let defaults = UserDefaults.standard
         let sourceQuota = AutomaticSwitchQuotaState(snapshot: sourceSnapshot)
         let legacyManagerRunning =
@@ -2446,7 +2559,11 @@ final class UsageStore: ObservableObject {
         let triggeredWindows = sourceQuota.triggeredWindows(thresholds: lowQuotaAlertThresholds)
         let preferred = CodexAutomaticSwitchPolicy.preferredCandidate(
             candidates.compactMap { profile in
-                guard let snapshot = profile.lastSnapshot else { return nil }
+                guard let snapshot = profile.lastSnapshot,
+                    Self.automaticQuotaEvidenceIsFresh(
+                        succeeded: snapshot.quotaReadSucceeded, fetchedAt: snapshot.fetchedAt,
+                        failedAt: profile.lastQuotaReadFailureAt, now: now)
+                else { return nil }
                 return .init(
                     profileID: profile.id,
                     quota: AutomaticSwitchQuotaState(
@@ -2463,9 +2580,12 @@ final class UsageStore: ObservableObject {
         let recommendedName =
             recommendedProfile.map {
                 AccountDisplay.profileName($0, allProfiles: profiles)
-            } ?? WidgetLanguage.storedOrAutomatic().text("暂无满足 30% 额度要求的候选账号", "No candidate account meets the 30% remaining requirement.")
+            }
+            ?? WidgetLanguage.storedOrAutomatic().text(
+                "无合格候选：需新鲜且读取成功的完整额度、两个窗口可用、触发窗口至少 30%",
+                "No eligible candidate: fresh successful complete limits, both windows available, and at least 30% in triggered windows are required.")
         let detail = WidgetLanguage.storedOrAutomatic().text(
-            "额度低于阈值；推荐账号：\(recommendedName)。请回到账号卡手动使用终端", "Usage limits are low. Suggested account: \(recommendedName). Open CLI from its account card to continue.")
+            "额度低于阈值；候选账号：\(recommendedName)", "Usage limits are low. Candidate: \(recommendedName)")
         accountManagerMessage = detail
         sendLocalLowQuotaNotification(sourceQuota)
         if let source = maskedAccount(for: sourceProfile) {
@@ -2479,7 +2599,24 @@ final class UsageStore: ObservableObject {
             )
         }
         recordAutomationEvent(level: .warning, title: WidgetLanguage.storedOrAutomatic().text("低额度提醒", "Low-limit alert"), detail: detail)
-        return
+        guard let target = recommendedProfile,
+            let source = maskedAccount(for: sourceProfile),
+            let targetAccount = maskedAccount(for: target)
+        else { return }
+        do {
+            let fingerprint = try accountActions.currentSystemAuthFingerprint(
+                expectedEmail: sourceEmail, expectedAccountID: sourceAccountID)
+            automaticSwitchContext = AutomaticSwitchContext(
+                sourceProfileID: sourceProfile.id, sourceIdentityKey: sourceEmail,
+                sourceAccountID: sourceAccountID, sourceAuthFingerprint: fingerprint,
+                sourceAccount: source, targetAccount: targetAccount, sourceQuota: sourceQuota,
+                eventID: UUID(), thresholds: lowQuotaAlertThresholds, completeTasks: nil)
+            automaticSwitchTargetID = target.id
+            launchCodex(with: target.id)
+        } catch {
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "自动切换已取消：当前身份无法验证", "Automatic switching cancelled: current identity could not be verified.")
+        }
     }
 
     private func finishAutomaticSwitchAttempt(
@@ -3725,6 +3862,7 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    @MainActor
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
@@ -3778,6 +3916,7 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    @MainActor
     private func startAfterPendingSwitchRecovery() {
         guard hasStarted else { return }
         publicResetAnnouncements.configure(
@@ -3803,23 +3942,45 @@ final class UsageStore: ObservableObject {
             send: { [weak self] announcement in
                 guard let self else { return .failure(.cancelled) }
                 let revision = self.feishuConfigurationRevision
+                let admission = self.publicResetAnnouncements.deliveryAdmission()
                 return await withCheckedContinuation { continuation in
                     self.feishuWebhookService.sendPublicResetAnnouncement(
                         announcement,
                         shouldSend: { [weak self] in
                             guard let self else { return false }
-                            return self.hasStarted && self.publicResetAnnouncements.enabled && self.feishuNotificationsEnabled
+                            return admission() && self.hasStarted && self.publicResetAnnouncements.enabled && self.feishuNotificationsEnabled
                                 && self.feishuWebhookConfigured && !self.isUpdatingFeishuConnection && revision == self.feishuConfigurationRevision
                                 && !self.pausedAutomationFeatures.contains(.feishu)
                         },
                         completion: { [weak self] result in
                             Task { @MainActor [weak self] in
-                                if let self, revision == self.feishuConfigurationRevision, case .failure(let error) = result {
+                                if admission(), let self, revision == self.feishuConfigurationRevision, case .failure(let error) = result {
                                     self.handleFeishuCredentialFailure(error)
                                 }
                                 continuation.resume(returning: result)
                             }
                         })
+                }
+            },
+            channelRevision: { [weak self] kind in
+                guard let self, self.hasStarted, self.publicResetAnnouncements.enabled else { return nil }
+                return self.messageChannels.publicResetRevision(kind)
+            },
+            sendChannel: { [weak self] announcement, kind, revision in
+                guard let self else { return .failure(.cancelled) }
+                let admission = self.publicResetAnnouncements.deliveryAdmission()
+                return await self.messageChannels.sendPublicReset(announcement, to: kind, revision: revision) { [weak self] in
+                    guard let self else { return false }
+                    return admission() && self.hasStarted && self.publicResetAnnouncements.enabled
+                }
+            },
+            onChannelResult: { [weak self] result in
+                guard let self else { return }
+                self.messageChannels.recordPublicResetChannelResult(result)
+                if result.state != .accepted {
+                    self.recordOperationsIssue(
+                        id: "public-reset-" + result.channel.rawValue,
+                        summary: result.statusText)
                 }
             })
         updateCodexForegroundState()
@@ -4027,6 +4188,7 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    @MainActor
     func stop() {
         feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         messageChannels.stop()
@@ -4561,9 +4723,12 @@ final class UsageStore: ObservableObject {
     }
 
     private func updateLocalLifetimeHighWater() {
+        let observed = snapshot.local.flatMap { local in
+            local.hasCompleteTotals ? (local.allAgentsLifetimeTokens ?? local.lifetimeTokens) : nil
+        }
         localAllAgentsLifetimeTokens = Self.persistedHighWater(
             forKey: Self.localLifetimeHighWaterKey,
-            observed: snapshot.local?.allAgentsLifetimeTokens ?? snapshot.local?.lifetimeTokens
+            observed: observed
         )
     }
 

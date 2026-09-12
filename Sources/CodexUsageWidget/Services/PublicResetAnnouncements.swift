@@ -1,3 +1,4 @@
+import Combine
 import Darwin
 import Foundation
 
@@ -52,25 +53,29 @@ struct PublicResetAnnouncement: Codable, Equatable, Identifiable {
 
     func title(_ language: WidgetLanguage = .storedOrAutomatic()) -> String {
         switch resetType {
-        case .regular: return language.text("🔄 观察到额度窗口变化", "🔄 Quota-window change observed")
-        case .banked: return language.text("🎫 Reset 卡发放公告", "🎫 Reset credit grant announcement")
+        case .regular: return language.text("🔄 额度刷新了", "🔄 Quota refreshed")
+        case .banked: return language.text("🎫 发重置卡了", "🎫 Reset credits granted")
         }
+    }
+
+    /// 人话版说明：这条公告对当前用户实际意味着什么。
+    /// 独立成方法，便于横幅直接展示提醒，不必解析 summary 的换行。
+    func meaning(_ language: WidgetLanguage = .storedOrAutomatic()) -> String {
+        resetType == .banked
+            ? language.text(
+                "有人在发重置卡，你的账号不一定已经到账。请到账号页刷新，核对你自己的可用次数。",
+                "Reset credits are being granted, but that does not mean yours arrived. Refresh on the Accounts page to check your own balance.")
+            : language.text(
+                "有人的额度刷新了，这不等于发重置卡。请到账号页刷新，看你实际还剩多少。",
+                "Someone's quota refreshed — that is not a reset credit. Refresh on the Accounts page to see what you actually have left.")
     }
 
     func summary(_ language: WidgetLanguage = .storedOrAutomatic()) -> String {
         let sourceLabel =
             source.type == "observed"
-            ? language.text("社区观察", "Community observation")
-            : language.text("公开公告", "Public announcement")
-        let meaning =
-            resetType == .banked
-            ? language.text(
-                "消息类型：获得重置机会 / Reset 卡。第三方公告不代表账号已经到账；请刷新账号核对可用次数。",
-                "Message type: reset opportunity / reset credit grant. A third-party announcement does not confirm account delivery; refresh the account to check availability.")
-            : language.text(
-                "消息类型：观察到额度窗口变化，不表示获得 Reset 卡。请刷新账号核对实际额度。",
-                "Message type: quota-window change observed, not a reset-credit grant. Refresh the account to verify its limits.")
-        return "\(sourceLabel) · \(language.dateTime(announcedAt))\n\(meaning)"
+            ? language.text("网友看到", "Spotted by users")
+            : language.text("公开帖文", "Public post")
+        return "\(sourceLabel) · \(language.dateTime(announcedAt))\n\(meaning(language))"
     }
 }
 
@@ -168,8 +173,15 @@ struct PublicResetClient {
         let guardDelegate = PublicResetRedirectGuard()
         let session = URLSession(configuration: configuration, delegate: guardDelegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        var request = URLRequest(url: try Self.requestURL(cursor: cursor), cachePolicy: .reloadIgnoringLocalCacheData)
+        // A manual refresh must revalidate with the origin, not only bypass
+        // URLSession's local cache. The endpoint is public and contains no
+        // credentials, so a conditional/no-store request is safe here.
+        var request = URLRequest(
+            url: try Self.requestURL(cursor: cursor),
+            cachePolicy: .reloadIgnoringLocalAndRemoteCacheData
+        )
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache, no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue("CodexAccountManagerNext/1", forHTTPHeaderField: "User-Agent")
         let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw PublicResetFailure.invalidResponse }
@@ -297,6 +309,23 @@ struct PublicResetDeliveryLedger: Codable {
     var payloads: [String: PublicResetAnnouncement]?
     var historyCheckpoint: PublicResetHistoryRecovery.Checkpoint?
 
+    /// Explicit one-shot delivery shares the automatic ledger and never replays
+    /// a sent, interrupted, uncertain or retired announcement.
+    mutating func reserveAuthorizedDelivery(_ event: PublicResetAnnouncement) throws {
+        guard event.isValid(now: Date()),
+            records[event.id] == nil || records[event.id] == .baseline || records[event.id] == .pending,
+            retiredThrough.map({ event.announcedAt > $0 }) ?? true,
+            records[event.id] != nil || records.count < 500
+        else { throw PublicResetFailure.localState }
+        records[event.id] = .sending
+        if observedDates == nil { observedDates = [:] }
+        observedDates?[event.id] = event.announcedAt
+        if payloads == nil { payloads = [:] }
+        payloads?[event.id] = PublicResetAnnouncement(
+            id: event.id, resetType: event.resetType, announcedAt: event.announcedAt,
+            text: "public-announcement", source: event.source)
+    }
+
     mutating func recoverInterruptedSends() {
         for id in records.keys where records[id] == .sending { records[id] = .uncertain }
     }
@@ -391,6 +420,9 @@ private struct PublicResetDeliveryLock {
     }
 }
 
+/// UI-facing state is published only from the MainActor-owned delivery path.
+/// Network and history work still suspend through async URLSession calls, but
+/// no continuation may publish into Combine/SwiftUI from a generic executor.
 final class PublicResetAnnouncementMonitor: ObservableObject {
     enum LocalDelivery { case submitted, inAppOnly, retry }
     static let enabledKey = "CodexManagerNext.publicResetAnnouncements.enabled"
@@ -404,19 +436,33 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     @Published private(set) var missingDeliveryCount = 0
     @Published private(set) var needsLocalBaseline = false
     @Published private(set) var localStatus: String?
+    @Published private(set) var channelResults: [MessageChannelKind: PublicResetChannelResult] = [:]
+    private var onChannelResult: @MainActor (PublicResetChannelResult) -> Void = { _ in }
     private var timer: Timer?
     private var task: Task<Void, Never>?
+    private var generation: UInt64 = 0
+    private var stopped = false
+    private let fixtureScheduling: Bool
+    private let fetchPage: () async throws -> PublicResetPage
     private var notBefore = Date.distantPast
     private var rebaseRequested = false
     private var localRebaseRequested = false
     private let preview: Bool
     private let stateURL: URL
     private let localStateURL: URL
-    private var notifyLocally: ((PublicResetAnnouncement) async -> LocalDelivery)?
+    private var notifyLocally: (@MainActor (PublicResetAnnouncement) async -> LocalDelivery)?
+    private var channelRevision: @MainActor (MessageChannelKind) -> UUID? = { _ in nil }
+    private var sendChannel: (@MainActor (PublicResetAnnouncement, MessageChannelKind, UUID) async -> Result<MessageDeliveryOutcome, MessageChannelError>)?
     private var canSend: () -> Bool = { false }
-    private var send: ((PublicResetAnnouncement) async -> Result<Void, FeishuWebhookError>)?
+    private var send: (@MainActor (PublicResetAnnouncement) async -> Result<Void, FeishuWebhookError>)?
 
-    init(preview: Bool = false, supportDirectory: URL? = nil) {
+    init(
+        preview: Bool = false, supportDirectory: URL? = nil,
+        fixtureScheduling: Bool = false,
+        fetchPage: @escaping () async throws -> PublicResetPage = { try await PublicResetClient().fetch() }
+    ) {
+        self.fixtureScheduling = fixtureScheduling
+        self.fetchPage = fetchPage
         self.preview = preview
         enabled = preview || NextFeatureDefaults.isEnabled(Self.enabledKey)
         let directory = supportDirectory ?? DispatchParticipationPaths.supportDirectory()
@@ -424,40 +470,97 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         localStateURL = directory.appendingPathComponent("public-reset-local-v1.json")
     }
 
+    /// Preview fixtures only. Does not start a check or change delivery ledgers.
+    @MainActor
+    func seedPreviewLatest(_ announcement: PublicResetAnnouncement?, checkedAt: Date?) {
+        guard preview else { return }
+        latest = announcement
+        self.checkedAt = checkedAt
+    }
+
+    @MainActor
     func configure(
-        notifyLocally: @escaping (PublicResetAnnouncement) async -> LocalDelivery,
+        notifyLocally: @escaping @MainActor (PublicResetAnnouncement) async -> LocalDelivery,
         canSend: @escaping () -> Bool,
-        send: @escaping (PublicResetAnnouncement) async -> Result<Void, FeishuWebhookError>
+        send: @escaping @MainActor (PublicResetAnnouncement) async -> Result<Void, FeishuWebhookError>,
+        channelRevision: @escaping @MainActor (MessageChannelKind) -> UUID? = { _ in nil },
+        sendChannel: (@MainActor (PublicResetAnnouncement, MessageChannelKind, UUID) async -> Result<MessageDeliveryOutcome, MessageChannelError>)? = nil,
+        onChannelResult: @escaping @MainActor (PublicResetChannelResult) -> Void = { _ in }
     ) {
+        invalidateLifecycle()
+        stopped = false
+        self.onChannelResult = onChannelResult
+        self.channelRevision = channelRevision
+        self.sendChannel = sendChannel
         self.canSend = canSend
         self.notifyLocally = notifyLocally
         self.send = send
         schedule()
     }
 
+    @MainActor
+    private func invalidateLifecycle() {
+        generation += 1
+        timer?.invalidate()
+        timer = nil
+        task?.cancel()
+        task = nil
+        checking = false
+    }
+
+    @MainActor
+    private func isCurrent(_ epoch: UInt64) -> Bool {
+        generation == epoch && !stopped && !Task.isCancelled
+    }
+
+    /// Capture at delivery entry, before a callback-based service suspends.
+    /// Existing service admission callbacks execute on the main queue.
+    @MainActor
+    func deliveryAdmission() -> () -> Bool {
+        let epoch = generation
+        return { [weak self] in
+            MainActor.assumeIsolated { self?.isCurrent(epoch) == true }
+        }
+    }
+
+    @MainActor
+    var lifecycleTask: Task<Void, Never>? { task }
+
+    // Read-only fixture observation; no timing or production preference changes.
+    @MainActor
+    var lifecycleSnapshot: (epoch: UInt64, scheduled: Bool, active: Bool) {
+        (generation, timer != nil, task != nil)
+    }
+
+    @MainActor
     func setEnabled(_ enabled: Bool) {
         guard !preview else { return }
+        invalidateLifecycle()
         self.enabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.enabledKey)
         schedule()
     }
 
+    @MainActor
     private func schedule() {
         timer?.invalidate()
         timer = nil
-        guard !preview, enabled else { return }
+        guard !preview || fixtureScheduling, enabled, !stopped else { return }
         check()
+        let epoch = generation
         timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.check() }
+            MainActor.assumeIsolated {
+                guard let self, self.isCurrent(epoch) else { return }
+                self.check()
+            }
         }
         timer?.tolerance = 30
     }
 
+    @MainActor
     func stop() {
-        timer?.invalidate()
-        timer = nil
-        task?.cancel()
-        task = nil
+        invalidateLifecycle()
+        stopped = true
     }
 
     private func load(at url: URL? = nil) throws -> PublicResetDeliveryLedger {
@@ -477,18 +580,20 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         return ledger
     }
 
-    private func save(_ ledger: PublicResetDeliveryLedger, at url: URL? = nil) throws {
+    @MainActor
+    private func save(_ ledger: PublicResetDeliveryLedger, at url: URL? = nil, publish: Bool = true) throws {
         do {
             let data = try JSONEncoder().encode(ledger)
             guard data.count <= 512 * 1024 else { throw PublicResetFailure.localState }
             try PrivateLocalFileStore.write(data, to: url ?? stateURL)
         } catch { throw PublicResetFailure.localState }
-        if url == nil {
+        if url == nil, publish {
             uncertainDeliveryIDs = ledger.records.filter { $0.value == .uncertain }.map(\.key).sorted()
             missingDeliveryCount = ledger.missingPayloadIDs.count
         }
     }
 
+    @MainActor
     private func writableFeishuLedger() -> PublicResetDeliveryLedger? {
         guard canSend(), let ledger = try? load() else { return nil }
         // A readable but unwritable optional ledger must not repeatedly pull
@@ -500,6 +605,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     }
 
     /// The user has checked Feishu. An uncertain send is never retried automatically.
+    @MainActor
     func resolveUncertainDelivery(id: String, received: Bool) {
         guard !preview, !checking else { return }
         do {
@@ -515,135 +621,334 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         } catch { status = PublicResetFailure.localState.localizedDescription }
     }
 
+    @MainActor
     func establishNewBaseline(local: Bool = false) {
         guard enabled, !checking else { return }
         if local { localRebaseRequested = true } else { rebaseRequested = true }
         check()
     }
 
+    @MainActor
     func check() {
-        guard !preview, !checking, Date() >= notBefore else { return }
+        guard !preview || fixtureScheduling, !stopped, !checking else { return }
+        let epoch = generation
+        guard Date() >= notBefore else {
+            status = PublicResetFailure.retryLater(max(1, Int(ceil(notBefore.timeIntervalSinceNow)))).localizedDescription
+            return
+        }
         checking = true
+        localStatus = nil
         task = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
-                checking = false
-                task = nil
+                if generation == epoch {
+                    checking = false
+                    task = nil
+                }
             }
+            guard isCurrent(epoch) else { return }
             do {
-                let page = try await PublicResetClient().fetch()
-                guard !Task.isCancelled else { return }
+                let page = try await fetchPage()
+                guard isCurrent(epoch) else { return }
                 latest = page.data.max { $0.announcedAt < $1.announcedAt }
                 checkedAt = Date()
                 let language = WidgetLanguage.storedOrAutomatic()
                 status = language.text("公告已更新；来源为第三方汇总，账号额度以官方刷新结果为准", "Announcements updated from a third-party feed. Account limits use official refresh results.")
                 guard enabled else { return }
-                guard let lock = try PublicResetDeliveryLock.acquire(in: stateURL.deletingLastPathComponent()) else {
-                    status = language.text("另一个 Next 实例正在处理公告，将稍后重试", "Another Next instance is processing announcements. Retrying later.")
-                    return
+                let channelTasks = MessageChannelKind.allCases.map { kind in
+                    Task { @MainActor in await self.deliverChannel(page, kind: kind, epoch: epoch) }
                 }
-                defer { lock.release() }
-                // Native delivery is independent of Feishu configuration and
-                // its recovery ledger. The public endpoint uses no model quota.
-                var localLedger = try load(at: localStateURL)
-                var feishuLedger = writableFeishuLedger()
-                if localRebaseRequested {
-                    localLedger.initialized = false
-                    localLedger.historyCheckpoint = nil
-                }
-                if rebaseRequested {
-                    feishuLedger?.initialized = false
-                    feishuLedger?.historyCheckpoint = nil
-                }
-                let recovered = await PublicResetHistoryRecovery.recover(
-                    first: page, ledgers: [localLedger] + (feishuLedger.map { [$0] } ?? []))
-                localLedger.hydrate(recovered.recoveredRows)
-                localLedger.historyCheckpoint = recovered.checkpoint
-                try save(localLedger, at: localStateURL)
-                if var ledger = feishuLedger {
-                    ledger.hydrate(recovered.recoveredRows)
-                    ledger.historyCheckpoint = recovered.checkpoint
-                    do {
-                        try save(ledger)
-                        feishuLedger = ledger
-                    } catch {
-                        // A damaged optional Feishu ledger must not suppress
-                        // otherwise healthy native updates.
-                        feishuLedger = nil
+                await withTaskCancellationHandler {
+                    await self.deliverExistingChannels(page, language: language, epoch: epoch)
+                    for task in channelTasks {
+                        await task.value
+                        if !self.isCurrent(epoch) { channelTasks.forEach { $0.cancel() } }
                     }
+                } onCancel: {
+                    channelTasks.forEach { $0.cancel() }
                 }
-                if case .retryLater(let seconds) = recovered.failure {
-                    notBefore = Date().addingTimeInterval(Double(seconds))
-                }
-                guard !Task.isCancelled else { return }
-                try await deliverLocally(recovered.page, ledger: localLedger)
-                if localStatus == nil, let failure = recovered.failure { localStatus = failure.localizedDescription }
-                guard canSend(), let send else {
-                    status = language.text("消息已更新，不消耗账号额度", "Updates checked. No account quota used.")
-                    return
-                }
-                guard var ledger = feishuLedger else { throw PublicResetFailure.localState }
-                if rebaseRequested { ledger.initialized = false }
-                let wasInitialized = ledger.initialized
-                var observationFailure: PublicResetFailure?
-                do {
-                    try ledger.observe(recovered.page)
-                    needsNewBaseline = false
-                } catch let error as PublicResetFailure {
-                    // A full queue or feed gap must not prevent delivery of
-                    // already durable, independently verifiable announcements.
-                    switch error {
-                    case .queueFull, .historyGap:
-                        observationFailure = error
-                        needsNewBaseline = true
-                    default: throw error
-                    }
-                }
-                try save(ledger)
-                if !wasInitialized, observationFailure == nil {
-                    rebaseRequested = false
-                    status = language.text("已开始接收重置消息", "Reset updates are on.")
-                    return
-                }
-                if ledger.records.values.contains(.uncertain) {
-                    status = language.text("有公告推送结果待核实，未自动重发；请检查飞书消息", "Some announcement deliveries are unverified and were not resent. Check Feishu.")
-                }
-                let queue = (ledger.payloads ?? [:]).values.filter { ledger.records[$0.id] == .pending }
-                    .sorted { $0.announcedAt < $1.announcedAt }
-                for announcement in queue.prefix(20) {
-                    guard enabled, canSend(), !Task.isCancelled else { return }
-                    ledger.records[announcement.id] = .sending
-                    try save(ledger)
-                    let result = await send(announcement)
-                    switch result {
-                    case .success:
-                        ledger.records[announcement.id] = .sent
-                        ledger.payloads?.removeValue(forKey: announcement.id)
-                        status = language.text("重置公告已提交给飞书机器人", "Reset announcement accepted by the Feishu bot.")
-                    case .failure(let error):
-                        switch error {
-                        case .transportFailed, .invalidResponse: ledger.records[announcement.id] = .uncertain
-                        case .httpStatus(let code) where code >= 500: ledger.records[announcement.id] = .uncertain
-                        default: ledger.records[announcement.id] = .pending
-                        }
-                        status = error.localizedDescription
-                    }
-                    try save(ledger)
-                    if case .failure = result { return }
-                    try await Task.sleep(nanoseconds: 250_000_000)
-                }
-                if let observationFailure { status = observationFailure.localizedDescription }
             } catch let error as PublicResetFailure {
+                guard isCurrent(epoch) else { return }
                 if case .retryLater(let seconds) = error { notBefore = Date().addingTimeInterval(Double(seconds)) }
                 status = error.localizedDescription
             } catch {
-                if !Task.isCancelled { status = PublicResetFailure.unavailable.localizedDescription }
+                if isCurrent(epoch) { status = PublicResetFailure.unavailable.localizedDescription }
             }
         }
     }
 
-    private func deliverLocally(_ page: PublicResetPage, ledger initialLedger: PublicResetDeliveryLedger) async throws {
-        guard let notifyLocally else { return }
+    /// Separate durable ledger and lock per optional channel. No historical fetch
+    /// here: a feed gap fails closed without affecting the other delivery paths.
+    @MainActor
+    func deliverChannel(_ page: PublicResetPage, kind: MessageChannelKind) async {
+        await deliverChannel(page, kind: kind, epoch: generation)
+    }
+
+    @MainActor
+    private func deliverChannel(_ page: PublicResetPage, kind: MessageChannelKind, epoch: UInt64) async {
+        guard enabled, isCurrent(epoch), let revision = channelRevision(kind), let sendChannel else { return }
+        let directory = stateURL.deletingLastPathComponent().appendingPathComponent("public-reset-" + kind.rawValue)
+        let url = directory.appendingPathComponent("delivery-v1.json")
+        do {
+            guard let lock = try PublicResetDeliveryLock.acquire(in: directory) else { return }
+            // This invocation owns the descriptor, even after invalidation;
+            // releasing it cannot clear another generation's task or lock.
+            defer { lock.release() }
+            var ledger = try load(at: url)
+            try ledger.observe(page)
+            // Only these channel queues retain the restricted public projection,
+            // so a later short page cannot lose queued wording. Native/Feishu
+            // ledger payloads and baseline/dedupe semantics remain unchanged.
+            for event in page.data where ledger.records[event.id] == .pending {
+                let context = try PublicResetContext(announcement: event)
+                ledger.payloads?[event.id] = PublicResetAnnouncement(
+                    id: event.id, resetType: event.resetType, announcedAt: event.announcedAt,
+                    text: context.publicText.isEmpty ? "public-announcement" : context.publicText,
+                    source: event.source)
+            }
+            try save(ledger, at: url)
+            if ledger.records.values.contains(.uncertain) {
+                publishChannelResult(.init(channel: kind, state: .uncertain, checkedAt: Date(), errorCategory: .interrupted), epoch: epoch, revision: revision)
+            }
+            let queue = (ledger.payloads ?? [:]).values.filter { ledger.records[$0.id] == .pending }
+                .sorted { $0.announcedAt < $1.announcedAt }
+            for event in queue.prefix(20) {
+                guard enabled, isCurrent(epoch), channelRevision(kind) == revision else { return }
+                ledger.records[event.id] = .sending
+                try save(ledger, at: url)
+                // Prefer validated current wording. Queued rows retain the
+                // restricted projection; pre-context ledgers retain their placeholder.
+                let announcement = page.data.first { $0.id == event.id && $0.isValid(now: Date()) } ?? event
+                let result = await sendChannel(announcement, kind, revision)
+                // Every non-acceptance is conservatively terminal for automatic
+                // delivery, including duplicateSkipped and post-send cancellation.
+                if enabled, isCurrent(epoch), channelRevision(kind) == revision,
+                    case .success(.accepted) = result
+                {
+                    ledger.records[event.id] = .sent
+                    ledger.payloads?.removeValue(forKey: event.id)
+                } else {
+                    ledger.records[event.id] = .uncertain
+                }
+                try save(ledger, at: url, publish: false)
+                publishChannelResult(.delivery(result, channel: kind), epoch: epoch, revision: revision)
+                guard isCurrent(epoch) else { return }
+                if case .failure = result { return }
+            }
+        } catch {
+            publishChannelResult(.init(channel: kind, state: .ledgerFailed, checkedAt: Date(), errorCategory: .ledger), epoch: epoch, revision: revision)
+        }
+    }
+
+    @MainActor
+    private func publishChannelResult(_ result: PublicResetChannelResult, epoch: UInt64, revision: UUID) {
+        guard enabled, isCurrent(epoch), channelRevision(result.channel) == revision else { return }
+        channelResults[result.channel] = result
+        onChannelResult(result)
+    }
+
+    @MainActor
+    private func deliverExistingChannels(_ page: PublicResetPage, language: WidgetLanguage, epoch: UInt64) async {
+        guard isCurrent(epoch) else { return }
+        do {
+            guard let lock = try PublicResetDeliveryLock.acquire(in: stateURL.deletingLastPathComponent()) else {
+                status = language.text("另一个 Next 实例正在处理公告，将稍后重试", "Another Next instance is processing announcements. Retrying later.")
+                return
+            }
+            defer { lock.release() }
+            // Native delivery is independent of Feishu configuration and
+            // its recovery ledger. The public endpoint uses no model quota.
+            var localLedger = try? load(at: localStateURL)
+            var feishuLedger = writableFeishuLedger()
+            if localRebaseRequested {
+                localLedger?.initialized = false
+                localLedger?.historyCheckpoint = nil
+            }
+            if rebaseRequested {
+                feishuLedger?.initialized = false
+                feishuLedger?.historyCheckpoint = nil
+            }
+            let recovered = await PublicResetHistoryRecovery.recover(
+                first: page, ledgers: (localLedger.map { [$0] } ?? []) + (feishuLedger.map { [$0] } ?? []))
+            guard isCurrent(epoch) else { return }
+            if var ledger = localLedger {
+                ledger.hydrate(recovered.recoveredRows)
+                ledger.historyCheckpoint = recovered.checkpoint
+                do {
+                    try save(ledger, at: localStateURL)
+                    localLedger = ledger
+                } catch {
+                    localLedger = nil
+                    localStatus = PublicResetFailure.localState.localizedDescription
+                }
+            } else {
+                localStatus = PublicResetFailure.localState.localizedDescription
+            }
+            if var ledger = feishuLedger {
+                ledger.hydrate(recovered.recoveredRows)
+                ledger.historyCheckpoint = recovered.checkpoint
+                do {
+                    try save(ledger)
+                    feishuLedger = ledger
+                } catch {
+                    // A damaged optional Feishu ledger must not suppress
+                    // otherwise healthy native updates.
+                    feishuLedger = nil
+                }
+            }
+            if case .retryLater(let seconds) = recovered.failure {
+                notBefore = Date().addingTimeInterval(Double(seconds))
+            }
+            guard isCurrent(epoch) else { return }
+            if let localLedger {
+                do { try await deliverLocally(recovered.page, ledger: localLedger, epoch: epoch) } catch {
+                    if isCurrent(epoch) { localStatus = PublicResetFailure.localState.localizedDescription }
+                }
+            }
+            guard isCurrent(epoch) else { return }
+            if localStatus == nil, let failure = recovered.failure { localStatus = failure.localizedDescription }
+            guard canSend(), let send else {
+                status = language.text("消息已更新，不消耗账号额度", "Updates checked. No account quota used.")
+                return
+            }
+            guard var ledger = feishuLedger else { throw PublicResetFailure.localState }
+            if rebaseRequested { ledger.initialized = false }
+            let wasInitialized = ledger.initialized
+            var observationFailure: PublicResetFailure?
+            do {
+                try ledger.observe(recovered.page)
+                needsNewBaseline = false
+            } catch let error as PublicResetFailure {
+                guard isCurrent(epoch) else { return }
+                // A full queue or feed gap must not prevent delivery of
+                // already durable, independently verifiable announcements.
+                switch error {
+                case .queueFull, .historyGap:
+                    observationFailure = error
+                    needsNewBaseline = true
+                default: throw error
+                }
+            }
+            try save(ledger)
+            if !wasInitialized, observationFailure == nil {
+                rebaseRequested = false
+                status = language.text("已开始接收重置消息", "Reset updates are on.")
+                return
+            }
+            if ledger.records.values.contains(.uncertain) {
+                status = language.text("有公告推送结果待核实，未自动重发；请检查飞书消息", "Some announcement deliveries are unverified and were not resent. Check Feishu.")
+            }
+            let queue = (ledger.payloads ?? [:]).values.filter { ledger.records[$0.id] == .pending }
+                .sorted { $0.announcedAt < $1.announcedAt }
+            for announcement in queue.prefix(20) {
+                guard enabled, canSend(), isCurrent(epoch) else { return }
+                ledger.records[announcement.id] = .sending
+                try save(ledger)
+                let result = await send(announcement)
+                guard isCurrent(epoch) else {
+                    ledger.records[announcement.id] = .uncertain
+                    try save(ledger, publish: false)
+                    return
+                }
+                switch result {
+                case .success:
+                    ledger.records[announcement.id] = .sent
+                    ledger.payloads?.removeValue(forKey: announcement.id)
+                    status = language.text("重置公告已提交给飞书机器人", "Reset announcement accepted by the Feishu bot.")
+                case .failure(let error):
+                    switch error {
+                    case .transportFailed, .invalidResponse: ledger.records[announcement.id] = .uncertain
+                    case .httpStatus(let code) where code >= 500: ledger.records[announcement.id] = .uncertain
+                    default: ledger.records[announcement.id] = .pending
+                    }
+                    status = error.localizedDescription
+                }
+                try save(ledger)
+                if case .failure = result { return }
+                try await Task.sleep(nanoseconds: 250_000_000)
+                guard isCurrent(epoch) else { return }
+            }
+            if let observationFailure { status = observationFailure.localizedDescription }
+        } catch let error as PublicResetFailure {
+            guard isCurrent(epoch) else { return }
+            if case .retryLater(let seconds) = error { notBefore = Date().addingTimeInterval(Double(seconds)) }
+            status = error.localizedDescription
+        } catch {
+            if isCurrent(epoch) { status = PublicResetFailure.unavailable.localizedDescription }
+        }
+    }
+
+    /// Only the explicit CLI authorization path calls this. No app startup,
+    /// account activity, preference changes or notification permission prompts.
+    @MainActor
+    func sendAuthorizedLatest() async -> Int32 {
+        let epoch = generation
+        guard isCurrent(epoch) else { return 6 }
+        var announcementID = "none"
+        do {
+            let page = try await fetchPage()
+            guard isCurrent(epoch) else { return 6 }
+            guard let event = page.data.max(by: { $0.announcedAt < $1.announcedAt }) else {
+                print("public-reset failure id=none reason=no-announcement")
+                return 3
+            }
+            announcementID = event.id
+            guard let lock = try PublicResetDeliveryLock.acquire(in: stateURL.deletingLastPathComponent()) else {
+                print("public-reset failure id=\(announcementID) reason=delivery-busy")
+                return 4
+            }
+            defer { lock.release() }
+            var ledger = try load()
+            // Persist the reservation before reading credentials or sending.
+            // A crash or any failed result requires explicit human resolution.
+            try ledger.reserveAuthorizedDelivery(event)
+            try save(ledger)
+            let service = FeishuWebhookService()
+            let admission = deliveryAdmission()
+            let result: Result<Void, FeishuWebhookError> = await withCheckedContinuation { continuation in
+                service.sendPublicResetAnnouncement(event, shouldSend: admission) {
+                    continuation.resume(returning: $0)
+                }
+            }
+            guard isCurrent(epoch) else {
+                ledger.records[event.id] = .uncertain
+                try save(ledger, publish: false)
+                return 6
+            }
+            switch result {
+            case .success:
+                ledger.records[event.id] = .sent
+                ledger.payloads?.removeValue(forKey: event.id)
+            case .failure:
+                ledger.records[event.id] = .uncertain
+            }
+            do { try save(ledger) } catch {
+                // The durable sending reservation prevents replay on restart.
+                print("public-reset failure id=\(announcementID) reason=receipt-save-failed-delivery-unverified")
+                return 5
+            }
+            switch result {
+            case .success:
+                print("public-reset success id=\(announcementID)")
+                return 0
+            case .failure(let error):
+                print("public-reset failure id=\(announcementID) reason=\(error.localizedDescription)")
+                return 6
+            }
+        } catch let error as PublicResetFailure {
+            print("public-reset failure id=\(announcementID) reason=\(error.localizedDescription)")
+            return 7
+        } catch {
+            // Never render raw URLSession or filesystem errors.
+            print("public-reset failure id=\(announcementID) reason=source-or-ledger-unavailable")
+            return 8
+        }
+    }
+
+    @MainActor
+    private func deliverLocally(_ page: PublicResetPage, ledger initialLedger: PublicResetDeliveryLedger, epoch requestedEpoch: UInt64? = nil) async throws {
+        let epoch = requestedEpoch ?? generation
+        guard isCurrent(epoch), let notifyLocally else { return }
         var ledger = initialLedger
         if localRebaseRequested { ledger.initialized = false }
         var observationFailure: PublicResetFailure?
@@ -665,10 +970,16 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         let queue = (ledger.payloads ?? [:]).values.filter { ledger.records[$0.id] == .pending }
             .sorted { $0.announcedAt < $1.announcedAt }
         for announcement in queue.prefix(20) {
-            guard enabled, !Task.isCancelled else { return }
+            guard enabled, isCurrent(epoch) else { return }
             ledger.records[announcement.id] = .sending
             try save(ledger, at: localStateURL)
-            switch await notifyLocally(announcement) {
+            let result = await notifyLocally(announcement)
+            guard isCurrent(epoch) else {
+                ledger.records[announcement.id] = .uncertain
+                try save(ledger, at: localStateURL, publish: false)
+                return
+            }
+            switch result {
             case .submitted: ledger.records[announcement.id] = .sent
             case .inAppOnly: ledger.records[announcement.id] = .baseline
             case .retry: ledger.records[announcement.id] = .pending
@@ -679,6 +990,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     }
 }
 
+@MainActor
 extension PublicResetAnnouncementMonitor {
     fileprivate static func optionalFeishuRecoverySelfTest(now: Date) async -> Bool {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-public-optional-test-\(UUID().uuidString)")
@@ -794,6 +1106,40 @@ extension PublicResetAnnouncementMonitor {
             return true
         } catch { return false }
     }
+
+    /// Invoke delivery from a detached task and verify that Combine receives
+    /// the published state on the main thread after the async delivery work.
+    /// This fails against an unisolated `deliverLocally` implementation.
+    fileprivate static func mainActorDeliverySelfTest(now: Date) async -> Bool {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-public-main-actor-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let monitor = PublicResetAnnouncementMonitor(preview: true, supportDirectory: root)
+        monitor.notifyLocally = { _ in .submitted }
+        var publishedOnMain = true
+        var publicationCount = 0
+        let subscription = monitor.$localStatus.sink { value in
+            guard value != nil else { return }
+            publicationCount += 1
+            publishedOnMain = publishedOnMain && Thread.isMainThread
+        }
+        var ledger = PublicResetDeliveryLedger()
+        ledger.initialized = true
+        ledger.records["older"] = .pending
+        let event = PublicResetAnnouncement(
+            id: "101", resetType: .regular, announcedAt: now.addingTimeInterval(-60), text: "fixture",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/101")))
+        let page = PublicResetPage(
+            data: [event], pagination: .init(hasMore: true, nextCursor: "older"), meta: .init(apiVersion: "v1", generatedAt: now))
+        let delivery = Task.detached { () -> Bool in
+            do {
+                try await monitor.deliverLocally(page, ledger: ledger)
+                return true
+            } catch { return false }
+        }
+        let completed = await delivery.value
+        withExtendedLifetime(subscription) {}
+        return completed && publicationCount > 0 && publishedOnMain
+    }
 }
 
 enum PublicResetAnnouncementSelfTest {
@@ -895,19 +1241,44 @@ enum PublicResetAnnouncementSelfTest {
                 _ = try page([invalid])
                 return false
             } catch {}
+            let authorizedEvent = initial.data[0]
+            for phase in [PublicResetDeliveryLedger.Phase.sending, .sent, .uncertain] {
+                var reserved = PublicResetDeliveryLedger()
+                reserved.records[authorizedEvent.id] = phase
+                do {
+                    try reserved.reserveAuthorizedDelivery(authorizedEvent)
+                    return false
+                } catch PublicResetFailure.localState {}
+            }
+            for phase in [PublicResetDeliveryLedger.Phase.baseline, .pending] {
+                var reserved = PublicResetDeliveryLedger()
+                reserved.records[authorizedEvent.id] = phase
+                try reserved.reserveAuthorizedDelivery(authorizedEvent)
+                guard reserved.records[authorizedEvent.id] == .sending,
+                    reserved.payloads?[authorizedEvent.id]?.text == "public-announcement"
+                else { return false }
+                reserved.recoverInterruptedSends()
+                guard reserved.records[authorizedEvent.id] == .uncertain else { return false }
+            }
+            var retired = PublicResetDeliveryLedger()
+            retired.retiredThrough = authorizedEvent.announcedAt
+            do {
+                try retired.reserveAuthorizedDelivery(authorizedEvent)
+                return false
+            } catch PublicResetFailure.localState {}
             let payload = try FeishuWebhookService.publicResetPayload(initial.data[0], language: .zh)
             guard let body = String(data: payload, encoding: .utf8),
-                body.contains("🎫 Reset 卡发放公告"), body.contains("获得重置机会"), body.contains("Reset 卡"),
-                body.contains("第三方公告不代表账号已经到账"), body.contains("\"template\":\"purple\""),
-                !body.contains("Public fixture")
+                body.contains("🎫 发重置卡了"), body.contains("有人在发重置卡"), body.contains("请到账号页刷新"),
+                body.contains("不一定已经到账"), body.contains("\"template\":\"purple\""),
+                !body.contains("Public fixture"), !body.contains("官方公告"), !body.contains("Official announcement")
             else { return false }
             let regular = PublicResetAnnouncement(
                 id: "103", resetType: .regular, announcedAt: now.addingTimeInterval(-30), text: "fixture",
                 source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/103")))
             let regularPayload = try FeishuWebhookService.publicResetPayload(regular, language: .en)
             guard let regularBody = String(data: regularPayload, encoding: .utf8),
-                regularBody.contains("🔄 Quota-window change observed"),
-                regularBody.contains("not a reset-credit grant"), regularBody.contains("\"template\":\"turquoise\""),
+                regularBody.contains("🔄 Quota refreshed"),
+                regularBody.contains("not a reset credit"), regularBody.contains("\"template\":\"turquoise\""),
                 // \p{Han} also matches U+00B7 (its Script_Extensions include Han),
                 // so assert on the ideograph blocks the copy could actually use.
                 regularBody.range(of: "[\\x{3400}-\\x{9FFF}\\x{F900}-\\x{FAFF}]", options: .regularExpression) == nil
@@ -918,15 +1289,24 @@ enum PublicResetAnnouncementSelfTest {
                 let historyPassed = await historyRecoverySelfTest(now: now)
                 let localPassed = await PublicResetAnnouncementMonitor.deliverySelfTest(now: now)
                 let optionalPassed = await PublicResetAnnouncementMonitor.optionalFeishuRecoverySelfTest(now: now)
-                result.set(historyPassed && localPassed && optionalPassed)
+                let mainActorPassed = await PublicResetAnnouncementMonitor.mainActorDeliverySelfTest(now: now)
+                result.set(historyPassed && localPassed && optionalPassed && mainActorPassed)
                 completed.signal()
             }
-            guard completed.wait(timeout: .now() + 5) == .success, result.get() else { return false }
+            // The self-test entry point runs on MainActor. Pump its run loop
+            // while waiting so the actor-isolation regression can actually
+            // execute; a blocking semaphore wait would deadlock MainActor.
+            let deadline = Date().addingTimeInterval(5)
+            while completed.wait(timeout: .now()) != .success, Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            guard result.get() else { return false }
             let encodedURL = try PublicResetClient.requestURL(cursor: "opaque+/=cursor&x=y")
             guard encodedURL.host == "codex-resets.com",
                 URLComponents(url: encodedURL, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "cursor" })?.value == "opaque+/=cursor&x=y"
             else { return false }
-            print("Public reset announcement self-test passed: default baseline, dedupe, interrupted send, full-queue hydration and bounded history recovery")
+            print(
+                "Public reset announcement self-test passed: default baseline, dedupe, interrupted send, full-queue hydration, bounded history recovery and MainActor publication")
             return true
         } catch {
             print("Public reset announcement self-test failed")

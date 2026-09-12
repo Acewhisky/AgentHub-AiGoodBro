@@ -558,7 +558,7 @@ enum SevenDayResetReminder {
 
     static func message(resetsAt: Date?, now: Date = Date(), language: WidgetLanguage = .zh) -> String? {
         remainingDays(resetsAt: resetsAt, now: now).map {
-            language.text("7 天额度 \($0) 天后重置", "Weekly limit resets in \($0) \($0 == 1 ? "day" : "days")")
+            language.text("7 天窗口 \($0) 天后重置", "Weekly window resets in \($0) \($0 == 1 ? "day" : "days")")
         }
     }
 }
@@ -1839,8 +1839,18 @@ final class CodexProfileStore {
     /// 从额度读取的诊断消息中提取可展示的失败分类；只保留标记，不保留原始消息。
     static func quotaFailureReason(from messages: [String]) -> String? {
         let joined = messages.joined(separator: "\n").lowercased()
+        let tokens = Set(joined.split { !$0.isLetter && !$0.isNumber && $0 != "_" }.map(String.init))
+        let officialPermanentMessage =
+            joined.contains("refresh token has expired")
+            || joined.contains("refresh token was already used")
+            || joined.contains("refresh token was revoked")
+        let officialPermanentCode =
+            tokens.contains("refresh_token_expired")
+            || tokens.contains("refresh_token_reused")
+            || tokens.contains("refresh_token_invalidated")
+            || (tokens.contains("invalid_grant") && joined.contains("refresh"))
         if joined.contains("oauth-invalidated") || joined.contains("invalidated oauth token")
-            || joined.contains("401 unauthorized")
+            || officialPermanentMessage || officialPermanentCode
         {
             return "oauth-invalidated"
         }
@@ -2179,10 +2189,17 @@ enum CodexProfileStoreSelfTest {
             requestID: 3,
             error: ["message": "unknown private-response-marker"]
         )
+        let genericUnauthorizedFailure = CodexUsageReader.appServerFailureMessage(
+            requestID: 3,
+            error: ["message": "HTTP 401 Unauthorized; private-response-marker"]
+        )
         guard failureMessage == "app-server 3: oauth-invalidated",
             CodexProfileStore.quotaFailureReason(from: [failureMessage]) == "oauth-invalidated",
             !unknownFailure.contains("private-response-marker"),
-            CodexProfileStore.quotaFailureReason(from: [unknownFailure]) == nil
+            CodexProfileStore.quotaFailureReason(from: [unknownFailure]) == nil,
+            !genericUnauthorizedFailure.contains("private-response-marker"),
+            CodexProfileStore.quotaFailureReason(from: ["401 Unauthorized"]) == nil,
+            CodexProfileStore.quotaFailureReason(from: [genericUnauthorizedFailure]) == nil
         else {
             print("Codex profile store self-test failed: safe quota failure classification")
             return false
@@ -2289,7 +2306,7 @@ enum CodexProfileStoreSelfTest {
                 SevenDayResetReminder.message(
                     resetsAt: reminderNow.addingTimeInterval(1),
                     now: reminderNow
-                ) == "7 天额度 1 天后重置",
+                ) == "7 天窗口 1 天后重置",
                 SevenDayResetReminder.remainingDays(
                     resetsAt: reminderNow.addingTimeInterval(72 * 60 * 60 + 1),
                     now: reminderNow
@@ -3818,7 +3835,7 @@ enum CodexProfileStoreSelfTest {
             cloudLifetimeTokens: nil,
             local: nil,
             taskBoard: nil,
-            messages: ["401 Unauthorized"]
+            messages: ["app-server 3: oauth-invalidated"]
         )
         try failureWriter.record(failedSnapshot, for: profile.id)
         let afterFailure = reload()
@@ -4136,7 +4153,7 @@ enum CodexProfileStoreSelfTest {
         expect(currentProfile().lastQuotaReadFailureAt == nil, "late failure must not replace fresh success")
         expect(try Data(contentsOf: stateURL) == persistedAfterSuccess, "late failure must not rewrite persisted state")
 
-        try store.record(observation(40, messages: ["401 Unauthorized"]), for: profile.id)
+        try store.record(observation(40, messages: ["app-server 3: oauth-invalidated"]), for: profile.id)
         let persistedAfterFailure = try Data(contentsOf: stateURL)
         expect(
             !CodexWarmUpPolicy.canSendWarmUpRequest(currentProfile(), now: base.addingTimeInterval(40)),
@@ -4185,7 +4202,7 @@ enum CodexProfileStoreSelfTest {
             "equal-time account enrichment must fill missing identity fields"
         )
         let thirdAfterEnrichment = store.profiles.first { $0.id == third.id }
-        try store.record(observation(50, messages: ["401 Unauthorized"]), for: third.id)
+        try store.record(observation(50, messages: ["app-server 3: oauth-invalidated"]), for: third.id)
         expect(
             store.profiles.first { $0.id == third.id } == thirdAfterEnrichment,
             "equal-time failure must not override a successful quota observation"
@@ -4197,7 +4214,7 @@ enum CodexProfileStoreSelfTest {
         )
 
         let fourth = try store.addManagedProfile()
-        try store.record(observation(60, messages: ["401 Unauthorized"]), for: fourth.id)
+        try store.record(observation(60, messages: ["app-server 3: oauth-invalidated"]), for: fourth.id)
         try store.record(observation(60), for: fourth.id, allowAccountOnly: true)
         expect(
             store.profiles.first { $0.id == fourth.id }?.lastQuotaReadFailureAt == base.addingTimeInterval(60),
@@ -4212,7 +4229,7 @@ enum CodexProfileStoreSelfTest {
         let fifth = try store.addManagedProfile()
         try store.record(observation(70, succeeded: true), for: fifth.id)
         let fifthAfterSuccess = store.profiles.first { $0.id == fifth.id }
-        try store.record(observation(70, messages: ["401 Unauthorized"]), for: fifth.id)
+        try store.record(observation(70, messages: ["app-server 3: oauth-invalidated"]), for: fifth.id)
         expect(
             store.profiles.first { $0.id == fifth.id } == fifthAfterSuccess,
             "equal-time failure must not override a successful observation without quota windows"

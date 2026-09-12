@@ -215,8 +215,8 @@ test("missing catalog creates a preflight-compatible root and starts at A") {
     let catalog = try object(f.paths.codes)
     try require(catalog["snapshotMaxAgeSeconds"] as? Int == 45)
     let minimums = catalog["minimumRemainingPercent"] as? [String: Any]
-    try require(minimums?["fiveHour"] as? Int == 30)
-    try require(minimums?["sevenDay"] as? Int == 15)
+    try require(minimums?["fiveHour"] as? Int == 0)
+    try require(minimums?["sevenDay"] as? Int == 0)
     let projects = catalog["hubProjects"] as? [String: String]
     try require(projects?["demo"] != nil && projects?["demo-alias"] == nil && projects?["other"] != nil)
     try require(catalog["centralAliases"] as? [String] != nil)
@@ -855,6 +855,164 @@ test("installed app discovers only its existing named Hub service") {
     try expectError(.hubLocation) {
         _ = try DispatchParticipationPaths.live(snapshot: f.paths.snapshot, bundleURL: installed, environment: [:], launchAgentURL: plist)
     }
+}
+
+
+private func fixtureLaunchAgent(_ f: DispatchFixture, arguments: Any) throws -> URL {
+    let plist = f.root.appendingPathComponent("literal-hub.plist")
+    let data = try PropertyListSerialization.data(fromPropertyList: [
+        "Label": "com.agenthub.arc-hub",
+        "WorkingDirectory": f.root.appendingPathComponent("unrelated-directory").path,
+        "ProgramArguments": arguments
+    ], format: .xml, options: 0)
+    try data.write(to: plist)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: plist.path)
+    return plist
+}
+
+private func resolveFixtureLaunchAgent(_ f: DispatchFixture, _ plist: URL) throws -> URL {
+    try DispatchParticipationPaths.live(
+        snapshot: f.paths.snapshot,
+        bundleURL: f.root.appendingPathComponent("Applications/Next.app"),
+        environment: [:], launchAgentURL: plist
+    ).hubConfig
+}
+
+for wrapped in [false, true] {
+    for spaced in [false, true] {
+        test("literal config takes precedence over unrelated WorkingDirectory: wrapper=\(wrapped), spaces=\(spaced)") {
+            let f = try DispatchFixture()
+            let binary = f.root.appendingPathComponent(spaced ? "Hub Tools/hub binary" : "hub-binary").path
+            let config = f.root.appendingPathComponent(spaced ? "Hub Data/config file.json" : "explicit.json")
+            let arguments = wrapped
+                ? ["/bin/bash", "-c", "exec '\(binary)' --config '\(config.path)'"]
+                : [binary, "--config", config.path]
+            let plist = try fixtureLaunchAgent(f, arguments: arguments)
+            let before = try f.contents()
+            try require(try resolveFixtureLaunchAgent(f, plist) == config)
+            try require(f.contents() == before)
+        }
+    }
+}
+
+for spaced in [false, true] {
+    test("deployed double-quoted exec wrapper resolves literal config: spaces=\(spaced)") {
+        let f = try DispatchFixture()
+        let binary = f.root.appendingPathComponent(spaced ? "Hub Tools/hub binary" : "hub-binary").path
+        let config = f.root.appendingPathComponent(spaced ? "Hub Data/config file.json" : "explicit.json")
+        let command = "exec \"\(binary)\" --config \"\(config.path)\""
+        let plist = try fixtureLaunchAgent(f, arguments: ["/bin/bash", "-c", command])
+        try require(try resolveFixtureLaunchAgent(f, plist) == config)
+    }
+}
+
+test("explicit config requires no WorkingDirectory and direct argv without config retains fallback") {
+    let f = try DispatchFixture()
+    let plist = try fixtureLaunchAgent(f, arguments: ["/fixture/hub", "--config", "/fixture/config.json"])
+    var value = try PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil) as! [String: Any]
+    value.removeValue(forKey: "WorkingDirectory")
+    try PropertyListSerialization.data(fromPropertyList: value, format: .xml, options: 0).write(to: plist)
+    try require(try resolveFixtureLaunchAgent(f, plist).path == "/fixture/config.json")
+    let fallback = try fixtureLaunchAgent(f, arguments: ["/fixture/hub", "--verbose"])
+    try require(try resolveFixtureLaunchAgent(f, fallback) == f.root.appendingPathComponent("unrelated-directory/config.json"))
+}
+
+let invalidHubArguments: [[String]] = [
+    [], ["relative-hub", "--config", "/fixture/config.json"],
+    ["/fixture/hub", "--config"], ["/fixture/hub", "--config", ""],
+    ["/fixture/hub", "--config", "relative/config.json"],
+    ["/fixture/hub", "--config", "/fixture/a", "--config", "/fixture/a"],
+    ["/fixture/hub", "--config=/fixture/a"],
+    ["/fixture/hub", "--config", "/fixture/a", "--config=/fixture/b"],
+    ["/fixture/hub", "--", "--config", "/fixture/a"],
+    ["/fixture/hub", "--config", "/fixture/$HOME/config"],
+    ["/fixture/hub", "--config", "/fixture/$(id)/config"],
+    ["/fixture/hub", "--config", "/fixture/`id`/config"],
+    ["/fixture/hub", "--config", "/fixture/a", ";", "other"],
+    ["/bin/bash", "-c"],
+    ["/bin/bash", "-lc", "exec '/fixture/hub' --config '/fixture/a'"],
+    ["/bin/zsh", "-c", "exec '/fixture/hub' --config '/fixture/a'"],
+    ["/bin/bash", "-c", "exec '/fixture/hub' --config '/fixture/a'", "extra"]
+]
+for (index, arguments) in invalidHubArguments.enumerated() {
+    test("invalid direct or wrapper arguments reject fallback: \(index)") {
+        let f = try DispatchFixture()
+        let plist = try fixtureLaunchAgent(f, arguments: arguments)
+        try expectError(.hubLocation) { _ = try resolveFixtureLaunchAgent(f, plist) }
+    }
+}
+
+let invalidHubCommands = [
+    "exec '/fixture/hub' --config 'relative/config.json'",
+    "exec '/fixture/hub' --config '/fixture/a",
+    "exec '/fixture/hub --config '/fixture/a'",
+    "exec '/fixture/hub' --config",
+    "exec '/fixture/hub' --config '/fixture/a' --config '/fixture/b'",
+    "exec '/fixture/hub' --config '/fixture/$HOME/a'",
+    "exec '/fixture/hub' --config '/fixture/$(id)/a'",
+    "exec '/fixture/hub' --config '/fixture/`id`/a'",
+    "exec '/fixture/hub' --config '/fixture/a'; other",
+    "exec '/fixture/hub' --config '/fixture/a' && other",
+    "exec '/fixture/hub' --config '/fixture/a' | other",
+    "exec '/fixture/hub' --config '/fixture/a' > /fixture/out",
+    "exec '/fixture/hub' --config '/fixture/a' &",
+    "exec '/fixture/hub' --config '/fixture/a'\nother",
+    "exec '/fixture/hub' --config '/fixture/a'\n",
+    "exec '/fixture/hub' --config '/fixture/\\a'",
+    "exec '/fixture/hub' --config '/fixture/*.json'",
+    "exec '/fixture/hub' --config '/fixture/a' # comment",
+    "exec /fixture/hub --config /fixture/a",
+    "exec \"/fixture/hub\" --config \"/fixture/$HOME/a\"",
+    "exec \"/fixture/hub\" --config \"/fixture/$(id)/a\"",
+    "exec \"/fixture/hub\" --config \"/fixture/a\"; other",
+    "exec \"/fixture/hub\" --config '/fixture/a\"",
+    "exec '/bin/bash' --config '/fixture/a'"
+]
+for (index, command) in invalidHubCommands.enumerated() {
+    test("nonliteral shell command rejects fallback: \(index)") {
+        let f = try DispatchFixture()
+        let plist = try fixtureLaunchAgent(f, arguments: ["/bin/bash", "-c", command])
+        try expectError(.hubLocation) { _ = try resolveFixtureLaunchAgent(f, plist) }
+    }
+}
+
+test("malformed ProgramArguments rejects fallback") {
+    let f = try DispatchFixture()
+    let plist = try fixtureLaunchAgent(f, arguments: "--config /fixture/a")
+    try expectError(.hubLocation) { _ = try resolveFixtureLaunchAgent(f, plist) }
+}
+
+for mode in [0o620, 0o602] {
+    test("explicit arguments do not bypass writable LaunchAgent rejection: \(mode)") {
+        let f = try DispatchFixture()
+        let plist = try fixtureLaunchAgent(f, arguments: ["/fixture/hub", "--config", "/fixture/a"])
+        try require(Darwin.chmod(plist.path, mode_t(mode)) == 0)
+        try expectError(.hubLocation) { _ = try resolveFixtureLaunchAgent(f, plist) }
+    }
+}
+
+test("explicit arguments do not bypass symlink or nonregular LaunchAgent rejection") {
+    let f = try DispatchFixture()
+    let plist = try fixtureLaunchAgent(f, arguments: ["/fixture/hub", "--config", "/fixture/a"])
+    let link = f.root.appendingPathComponent("linked-hub.plist")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: plist)
+    try expectError(.hubLocation) { _ = try resolveFixtureLaunchAgent(f, link) }
+    try expectError(.hubLocation) { _ = try resolveFixtureLaunchAgent(f, f.root) }
+}
+
+
+// Changing a fixture's owner requires root. Never read an unrelated system file
+// or change process identity merely to exercise this unchanged ownership guard.
+if geteuid() == 0 {
+    test("explicit arguments do not bypass unowned LaunchAgent rejection") {
+        let f = try DispatchFixture()
+        let plist = try fixtureLaunchAgent(f, arguments: ["/fixture/hub", "--config", "/fixture/a"])
+        try require(Darwin.chown(plist.path, 1, gid_t.max) == 0)
+        defer { _ = Darwin.chown(plist.path, 0, gid_t.max) }
+        try expectError(.hubLocation) { _ = try resolveFixtureLaunchAgent(f, plist) }
+    }
+} else {
+    print("SKIP: unowned LaunchAgent fixture requires root; ownership guard unchanged.")
 }
 
 print("All \(passed) dispatch participation tests passed (temporary fixtures only).")

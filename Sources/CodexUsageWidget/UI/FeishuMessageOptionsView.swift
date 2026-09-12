@@ -17,12 +17,15 @@ struct FeishuMessageOptionsView: View {
             Toggle(language.text("可用 Reset 卡", "Available reset credits"), isOn: $options.includesResetCredits)
 
             if options.includesResetCredits {
+                Text(language.text("到期详情", "Expiry details"))
+                    .font(.caption)
                 Picker(language.text("到期详情", "Expiry details"), selection: $options.resetExpiryDetail) {
                     Text(language.text("最近一次", "Nearest")).tag(FeishuMessageOptions.ResetExpiryDetail.nearest)
                     Text(language.text("全部", "All")).tag(FeishuMessageOptions.ResetExpiryDetail.all)
                     Text(language.text("不显示", "Hide")).tag(FeishuMessageOptions.ResetExpiryDetail.none)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
             }
 
             Text(
@@ -33,6 +36,7 @@ struct FeishuMessageOptionsView: View {
             )
             .font(.caption)
             .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .disabled(disabled)
     }

@@ -172,7 +172,7 @@ enum LocalCLITerminalLauncher {
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()
-            if case .exited(let code) = try session.readState() {
+            if case .exited(let code) = try session.readState(), session.verifiedExitCode() == code {
                 session.removeAfterExit()
                 return code
             }

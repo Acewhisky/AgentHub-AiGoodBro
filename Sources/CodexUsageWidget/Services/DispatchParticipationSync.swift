@@ -58,13 +58,53 @@ struct DispatchParticipationPaths {
                     info.st_uid == geteuid(), info.st_mode & 0o022 == 0,
                     let data = try DispatchParticipationSync.readBoundedRegularFile(launchAgentURL, maximumBytes: 64 * 1_024),
                     let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-                    plist["Label"] as? String == "com.agenthub.arc-hub",
-                    let directory = plist["WorkingDirectory"] as? String, directory.hasPrefix("/")
+                    plist["Label"] as? String == "com.agenthub.arc-hub"
                 else { throw DispatchParticipationError.hubLocation }
-                hubConfig = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent(hubConfigFileName)
+                if let explicit = try explicitConfigPath(in: plist) {
+                    hubConfig = URL(fileURLWithPath: explicit)
+                } else {
+                    guard let directory = plist["WorkingDirectory"] as? String, directory.hasPrefix("/")
+                    else { throw DispatchParticipationError.hubLocation }
+                    hubConfig = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent(hubConfigFileName)
+                }
             }
         }
         return Self(snapshot: snapshot, hubConfig: hubConfig, codes: snapshot.deletingLastPathComponent().appendingPathComponent(codesFileName))
+    }
+
+    /// Parse literals only. Invalid explicit arguments must never select the legacy fallback.
+    private static func explicitConfigPath(in plist: [String: Any]) throws -> String? {
+        guard let raw = plist["ProgramArguments"] else { return nil }
+        guard var arguments = raw as? [String], let executable = arguments.first,
+            executable.hasPrefix("/")
+        else { throw DispatchParticipationError.hubLocation }
+        if executable == "/bin/bash" {
+            // Deliberately accept only the deployed wrapper, not general shell grammar.
+            guard arguments.count == 3, arguments[1] == "-c" else {
+                throw DispatchParticipationError.hubLocation
+            }
+            let pattern = #"\Aexec (['"])(/[^'"]+)\1 --config (['"])(/[^'"]+)\3\z"#
+            let command = arguments[2]
+            let regex = try NSRegularExpression(pattern: pattern)
+            guard let match = regex.firstMatch(in: command, range: NSRange(command.startIndex..., in: command)),
+                let binaryRange = Range(match.range(at: 2), in: command),
+                let configRange = Range(match.range(at: 4), in: command)
+            else { throw DispatchParticipationError.hubLocation }
+            arguments = [String(command[binaryRange]), "--config", String(command[configRange])]
+        }
+        // Conservative literal subset, also applied to direct argv: no expansions,
+        // quoting, control characters, shell operators, or nested shell invocation.
+        let forbidden = CharacterSet(charactersIn: "$`\\\"';&|<>(){}[]*?~").union(.controlCharacters)
+        guard arguments.allSatisfy({ !$0.isEmpty && $0.rangeOfCharacter(from: forbidden) == nil }),
+            !["sh", "bash", "zsh", "dash", "ksh", "fish"].contains(URL(fileURLWithPath: arguments[0]).lastPathComponent),
+            !arguments.contains("-c"), !arguments.contains("-lc"), !arguments.contains("--")
+        else { throw DispatchParticipationError.hubLocation }
+        let flags = arguments.indices.filter { arguments[$0].hasPrefix("--config") }
+        guard !flags.isEmpty else { return nil }
+        guard flags.count == 1, let index = flags.first, arguments[index] == "--config",
+            index + 1 < arguments.count, arguments[index + 1].hasPrefix("/")
+        else { throw DispatchParticipationError.hubLocation }
+        return arguments[index + 1]
     }
 }
 
@@ -413,7 +453,7 @@ struct DispatchParticipationSync {
         } else {
             minimums = [:]
         }
-        for (key, minimum) in [("fiveHour", 30.0), ("sevenDay", 15.0)] {
+        for (key, minimum) in [("fiveHour", 0.0), ("sevenDay", 0.0)] {
             if let existing = minimums[key] {
                 guard validRemainingPercent(existing, minimum: minimum) else {
                     throw DispatchParticipationError.invalidCodes
@@ -506,8 +546,8 @@ struct DispatchParticipationSync {
         guard integer(catalog["schemaVersion"]) == 1,
             let snapshotAge = catalog["snapshotMaxAgeSeconds"], validPositiveNumber(snapshotAge),
             let minimums = catalog["minimumRemainingPercent"] as? [String: Any],
-            let fiveHour = minimums["fiveHour"], validRemainingPercent(fiveHour, minimum: 30),
-            let sevenDay = minimums["sevenDay"], validRemainingPercent(sevenDay, minimum: 15),
+            let fiveHour = minimums["fiveHour"], validRemainingPercent(fiveHour, minimum: 0),
+            let sevenDay = minimums["sevenDay"], validRemainingPercent(sevenDay, minimum: 0),
             let centralAliases = catalog["centralAliases"] as? [String],
             centralAliases.allSatisfy({ nonempty($0) != nil })
         else { throw DispatchParticipationError.invalidCodes }

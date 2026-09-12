@@ -62,7 +62,34 @@ final class GlassHostingContainer<Content: View>: NSView {
     }
 
     override var mouseDownCanMoveWindow: Bool { true }
+
+    /// Native fullscreen fills the screen, so the rounded floating-panel frame
+    /// must flatten on entry and restore on exit. Keep every subview layer in
+    /// sync so no glass/material layer keeps clipping to the old radius.
+    func updateCornerRadius(_ radius: CGFloat) {
+        layer?.cornerRadius = radius
+        for subview in subviews {
+            #if compiler(>=6.2) && CAMNEXT_HAS_LIQUID_GLASS
+                if #available(macOS 26.0, *), let glass = subview as? NSGlassEffectView {
+                    glass.cornerRadius = radius
+                    continue
+                }
+            #endif
+            if let material = subview as? NSVisualEffectView {
+                material.layer?.cornerRadius = radius
+                material.layer?.masksToBounds = radius > 0
+            }
+        }
+    }
 }
+
+/// Non-generic handle so the window delegate can toggle the container's
+/// rounded frame without naming the hosted SwiftUI root type.
+private protocol FullscreenRoundedContent: AnyObject {
+    func updateCornerRadius(_ radius: CGFloat)
+}
+
+extension GlassHostingContainer: FullscreenRoundedContent {}
 
 final class MainAppWindow: NSWindow {
     init(contentRect: NSRect) {
@@ -86,7 +113,7 @@ final class MainAppWindow: NSWindow {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate, TokenMonitorFloatingBubbleSessionOwner {
     private let startupPerformanceSpan = PerformanceMonitor.shared.begin(.appStartup)
     private let store = UsageStore()
     private let paletteCatalog = PaletteCatalog.loadFromMainBundle()
@@ -96,6 +123,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var paletteLibraryWindow: NSWindow?
     private var taskOverviewController: TaskOverviewPanelController?
     private var accountFloatingPanelController: AccountFloatingPanelController?
+    /// token-monitor 风格悬浮窗。此前视图已编译进 App 但无人创建，这里负责真正挂到桌面浮层。
+    private let floatingBubbleController = TokenMonitorFloatingBubbleController()
+    private var floatingBubbleEditorWindow: NSWindow?
+    private var floatingBubbleEnabled = false
+    private var floatingBubbleShuttingDown = false
     private weak var taskOverviewMenuItem: NSMenuItem?
     private var titlebarToolbarController: NSTitlebarAccessoryViewController?
     private let screenshotRequests = PassthroughSubject<NSWindow, Never>()
@@ -120,6 +152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         debugLog("app launched")
 
         createMainWindow()
+        // 自动重置：启动时立刻拉取最新重置公告，latest 是 @Published，变化会触发主页重渲染
+        // （CoA 传 store.publicResetAnnouncements.latest 到 ResetUpdatesBanner 即可）
+        store.refreshResetAnnouncements()
         activeSpaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
@@ -156,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         store.updateVisibleRuntimeScopes(settings.visibleRuntimeScopes)
         store.start()
+        setupFloatingBubbleSync()
         showMainWindow()
         PerformanceMonitor.shared.end(startupPerformanceSpan)
     }
@@ -190,6 +226,117 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         applyMainWindowLevel()
     }
 
+    private func setupFloatingBubbleSync() {
+        TokenMonitorFloatingBubbleSession.owner = self
+        floatingBubbleController.onOpenEditor = { [weak self] in
+            self?.openFloatingBubbleEditor()
+        }
+        syncFloatingBubble()
+        // These publishers emit before mutation. Deliver on the next main-loop
+        // turn and read current state, including when several changes coalesce.
+        settings.$language
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncFloatingBubble() }
+            .store(in: &cancellables)
+        settings.$floatingBubble
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncFloatingBubble() }
+            .store(in: &cancellables)
+        store.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncFloatingBubble() }
+            .store(in: &cancellables)
+    }
+
+    private func syncFloatingBubble(reveal: Bool = false) {
+        guard !floatingBubbleShuttingDown else { return }
+        let prefs = settings.floatingBubble
+        let language = settings.language
+        let providerID = prefs.selectedProviderID ?? AgentNavCatalog.codexID
+        // Only the Codex store has a proven quota source here.
+        let quota = providerID == AgentNavCatalog.codexID ? store.snapshot.fiveHourQuota : nil
+        let bubble = floatingBubbleController
+        bubble.language = language
+        bubble.preferences = prefs
+        bubble.snapshot = TokenMonitorFloatingBubbleSnapshot(
+            providerID: providerID,
+            providerName: AgentNavCatalog.displayName(providerID),
+            percentRemaining: quota?.remainingPercent,
+            resetLabel: quota?.resetsAt.map { language.dateTime($0) }
+                ?? language.text("待获取", "Pending"),
+            costLabel: "—",
+            customText: prefs.customText,
+            isUnknown: quota?.remainingPercent == nil,
+            isZero: quota?.remainingPercent == 0
+        )
+        if prefs.enabled {
+            if reveal || !floatingBubbleEnabled { bubble.show() } else { bubble.refreshContent() }
+        } else {
+            bubble.close()
+            closeFloatingBubbleEditor()
+        }
+        floatingBubbleEnabled = prefs.enabled
+    }
+
+    func showFloatingBubble(settings callerSettings: AppSettings, language: WidgetLanguage) {
+        guard !floatingBubbleShuttingDown, callerSettings === settings else { return }
+        if !settings.floatingBubble.enabled { settings.floatingBubble.enabled = true }
+        syncFloatingBubble(reveal: true)
+    }
+
+    private func openFloatingBubbleEditor() {
+        guard !floatingBubbleShuttingDown, settings.floatingBubble.enabled else { return }
+        if let floatingBubbleEditorWindow {
+            if floatingBubbleEditorWindow.isMiniaturized {
+                floatingBubbleEditorWindow.deminiaturize(nil)
+            }
+            floatingBubbleEditorWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let editor = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 660, height: 480),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false
+        )
+        editor.isReleasedWhenClosed = false
+        editor.delegate = self
+        editor.title = settings.language.text("自定义悬浮窗", "Customize floating bubble")
+        editor.contentView = NSHostingView(
+            rootView: TokenMonitorFloatingBubbleEditor(
+                preferences: Binding(
+                    get: { [weak self] in self?.settings.floatingBubble ?? .init() },
+                    set: { [weak self] in self?.settings.floatingBubble = $0 }
+                ),
+                snapshot: floatingBubbleController.snapshot,
+                language: settings.language,
+                providers: AgentNavCatalog.workspaceProviders,
+                previewUsesSyntheticData: false,
+                onShowDesktop: { [weak self] in
+                    guard let self else { return }
+                    self.showFloatingBubble(settings: self.settings, language: self.settings.language)
+                    self.closeFloatingBubbleEditor()
+                },
+                onCancel: { [weak self] in self?.closeFloatingBubbleEditor() },
+                onDone: { [weak self] in self?.closeFloatingBubbleEditor() }
+            ))
+        floatingBubbleEditorWindow = editor
+        editor.center()
+        editor.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func closeFloatingBubbleEditor() {
+        let editor = floatingBubbleEditorWindow
+        floatingBubbleEditorWindow = nil
+        editor?.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let editor = notification.object as? NSWindow, editor === floatingBubbleEditorWindow {
+            floatingBubbleEditorWindow = nil
+        }
+    }
+
     private func installTitlebarToolbar(on window: NSWindow) {
         let toolbarView = NSHostingView(
             rootView: TitlebarToolbarView(
@@ -217,6 +364,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        floatingBubbleShuttingDown = true
+        if TokenMonitorFloatingBubbleSession.owner === self {
+            TokenMonitorFloatingBubbleSession.owner = nil
+        }
+        closeFloatingBubbleEditor()
+        floatingBubbleController.shutdown()
         taskOverviewController?.shutdown()
         taskOverviewController = nil
         accountFloatingPanelController?.shutdown()
@@ -298,6 +451,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func windowDidChangeOcclusionState(_ notification: Notification) {
         updateTaskBoardPollingActivity()
+    }
+
+    // P0 fullscreen black edges: the main window is normally a transparent,
+    // 28pt-rounded panel capped at maxWidth = 1280. Native fullscreen fills the
+    // screen, so those traits must be suspended on entry — otherwise the
+    // rounded corners and the region beyond maxSize reveal the fullscreen
+    // space's black backdrop (user-visible as large black edges).
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === self.window else { return }
+        let fallbackScheme: ColorScheme =
+            window.effectiveAppearance.name.rawValue.contains("Dark") ? .dark : .light
+        let effectiveScheme = settings.themeMode.preferredColorScheme ?? fallbackScheme
+        window.isOpaque = true
+        window.backgroundColor = Self.fullscreenBackground(for: effectiveScheme)
+        window.maxSize = CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        window.contentMaxSize = window.maxSize
+        (window.contentView as? FullscreenRoundedContent)?.updateCornerRadius(0)
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === self.window else { return }
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.maxSize = CGSize(width: CodexAccountManagerView.maxWidth, height: .greatestFiniteMagnitude)
+        window.contentMaxSize = window.maxSize
+        (window.contentView as? FullscreenRoundedContent)?.updateCornerRadius(CodexAccountManagerView.windowCornerRadius)
+    }
+
+    /// Opaque counterparts of FixedVisualPalette.windowScrim, so the
+    /// behind-window material never reveals the black fullscreen space.
+    private static func fullscreenBackground(for scheme: ColorScheme) -> NSColor {
+        scheme == .dark
+            ? NSColor(calibratedRed: 0.075, green: 0.080, blue: 0.100, alpha: 1)
+            : NSColor(calibratedRed: 0.955, green: 0.960, blue: 0.975, alpha: 1)
     }
 
     private func showMainWindow() {

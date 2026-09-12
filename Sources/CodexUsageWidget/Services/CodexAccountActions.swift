@@ -12,7 +12,8 @@ enum CodexCredentialAccessGate {
     /// 系统默认登录（官方 Codex 正在使用的 home）以外，只读额度读取按 home 串行；
     /// 同一 home 的读取互斥，不同 home 之间允许并发。
     static func homeLock(forHomePath path: String) -> NSRecursiveLock {
-        let key = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+        let key = URL(fileURLWithPath: path, isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL.path
         registryLock.lock()
         defer { registryLock.unlock() }
         if let existing = homeLocks[key] { return existing }
@@ -1565,6 +1566,15 @@ final class CodexAccountActions {
                             throw Self.switchError(
                                 WidgetLanguage.storedOrAutomatic().text(
                                     "Codex 共享运行时在写入前重新出现；账号未切换", "The shared Codex runtime restarted before writing. The account was not switched."))
+                        }
+                        // Recheck immediately before writing; this is not an atomic
+                        // exclusion of independently launched external processes.
+                        guard try Self.codexProcessIDs(appURL: appURL).isEmpty,
+                            NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty
+                        else {
+                            throw Self.switchError(
+                                WidgetLanguage.storedOrAutomatic().text(
+                                    "Codex Desktop 在写入前重新运行；账号未切换", "Codex Desktop restarted before writing. The account was not switched."))
                         }
                         try targetAuth.write(to: systemAuthURL, options: .atomic)
                         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: systemAuthURL.path)

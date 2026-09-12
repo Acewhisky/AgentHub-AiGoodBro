@@ -390,7 +390,7 @@ enum MessageChannelsTests {
         let status = try! makeStatus()
         let first = Task { await channel.send(status) }
         let deadline = Date().addingTimeInterval(2)
-        while transport.requests.isEmpty && Date() < deadline { Thread.sleep(forTimeInterval: 0.005) }
+        while transport.requests.isEmpty && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.005)) }
         expect(transport.requests.count == 1, "first concurrent send did not start")
         let second = runAsync { await channel.send(status) }
         expect(second == .success(.duplicateSkipped), "in-flight duplicate was not suppressed")
@@ -411,7 +411,7 @@ enum MessageChannelsTests {
         let channel = makeTelegramChannel(provider: provider, transport: transport, deduplicator: deduplicator)
         let status = try! makeStatus()
         let task = Task { await channel.send(status) }
-        Thread.sleep(forTimeInterval: 0.2)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         expect(transport.requests.count == 1, "held send never reached the transport")
         task.cancel()
         release.signal()
@@ -495,7 +495,7 @@ enum MessageChannelsTests {
 }
 
 /// Runs an async expression to completion on a background task while the
-/// calling thread blocks on a semaphore (script-mode tests are synchronous).
+/// calling thread pumps MainActor work (script-mode tests are synchronous).
 private final class TestResultBox<Value> {
     private let lock = NSLock()
     private var stored: Value?
@@ -510,7 +510,11 @@ private func runAsync<T>(_ body: @escaping () async -> T) -> T {
         captured.set(await body())
         semaphore.signal()
     }
-    guard semaphore.wait(timeout: .now() + 10) == .success, let value = captured.get() else {
+    let deadline = Date().addingTimeInterval(10)
+    while captured.get() == nil && Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+    }
+    guard semaphore.wait(timeout: .now()) == .success, let value = captured.get() else {
         fatalError("offline async fixture did not finish within ten seconds")
     }
     return value

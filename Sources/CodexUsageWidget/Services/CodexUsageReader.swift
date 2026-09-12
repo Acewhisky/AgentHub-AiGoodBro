@@ -250,6 +250,70 @@ private struct LocalAnalyticsCacheEntry: Codable {
     let sourceFingerprint: String
     let analytics: LocalAnalytics
 }
+
+private final class AppServerPendingResponses {
+    let group = DispatchGroup()
+    private let lock = NSLock()
+    private let expected: Set<Int>
+    private var completed = Set<Int>()
+
+    init(_ ids: [Int]) {
+        expected = Set(ids)
+        ids.forEach { _ in group.enter() }
+    }
+
+    func complete(_ id: Int) {
+        lock.lock()
+        let shouldLeave = expected.contains(id) && completed.insert(id).inserted
+        lock.unlock()
+        if shouldLeave { group.leave() }
+    }
+
+    /// Returns true only for the first termination that finds requested responses pending.
+    func completeRemaining() -> Bool {
+        lock.lock()
+        let pending = expected.subtracting(completed)
+        completed.formUnion(pending)
+        lock.unlock()
+        pending.forEach { _ in group.leave() }
+        return !pending.isEmpty
+    }
+}
+
+private enum AppServerFailureClassifier {
+    private static let permanentCodes: Set<String> = [
+        "refresh_token_expired",
+        "refresh_token_reused",
+        "refresh_token_invalidated",
+        "invalid_grant",
+    ]
+
+    static func failureReason(from error: [String: Any]) -> String? {
+        var inputs = [error["message"] as? String ?? ""]
+        collectPermanentCodes(in: error, depth: 0, into: &inputs)
+        return CodexProfileStore.quotaFailureReason(from: inputs)
+    }
+
+    private static func collectPermanentCodes(in value: Any, depth: Int, into inputs: inout [String]) {
+        guard depth <= 4 else { return }
+        if let dictionary = value as? [String: Any] {
+            for (key, child) in dictionary {
+                if key == "code" || key == "reason",
+                    let code = child as? String,
+                    permanentCodes.contains(code.lowercased())
+                {
+                    // Add only an allowlisted classification marker, never arbitrary server data.
+                    inputs.append("refresh error code: \(code.lowercased())")
+                } else if child is [String: Any] || child is [Any] {
+                    collectPermanentCodes(in: child, depth: depth + 1, into: &inputs)
+                }
+            }
+        } else if let array = value as? [Any] {
+            for child in array { collectPermanentCodes(in: child, depth: depth + 1, into: &inputs) }
+        }
+    }
+}
+
 final class CodexUsageReader {
     private let fileManager = FileManager.default
     private let localAnalyticsCacheVersion = 17
@@ -328,13 +392,48 @@ final class CodexUsageReader {
         if quotaOnly { return snapshot(local: nil) }
 
         var local: LocalUsage?
-        switch CCSwitchUsageReader().load(context: context) {
+        let ccSwitchReader = CCSwitchUsageReader()
+        switch ccSwitchReader.load(context: context) {
         case .success(let summary):
             local = summary.localUsage
         case .failure(let error):
-            local = nil
             messages.append(error.localizedDescription)
+            switch ccSwitchReader.loadDailyHistory(context: context) {
+            case .success(let dailyBuckets):
+                local = LocalUsage(
+                    lifetimeTokens: 0,
+                    todayTokens: 0,
+                    sevenDayTokens: 0,
+                    threadCount: 0,
+                    lastUpdatedAt: nil,
+                    dailyBuckets: dailyBuckets,
+                    recentThreads: [],
+                    detailedUsage: nil,
+                    usageTrend: nil,
+                    inferencePerformance: nil,
+                    projectBoard: nil,
+                    toolUsages: [],
+                    skillUsages: [],
+                    allAgentsLifetimeTokens: nil,
+                    allAgentsTodayTokens: nil,
+                    allAgentsShares: nil,
+                    coverage: .dailyOnly
+                )
+                messages.append(
+                    WidgetLanguage.storedOrAutomatic().text(
+                        "只显示已核对的最近 35 天每日记录；累计统计暂不可确认。历史汇总仅有日期键，按所选统计日展示，未推断原时区。",
+                        "Only verified daily records from the latest 35 days are shown; cumulative totals cannot currently be confirmed. Historical rollups contain date keys only, so they follow the selected statistics day without inferring their original timezone."
+                    ))
+            case .failure(let dailyError):
+                local = nil
+                if dailyError != error {
+                    messages.append(dailyError.localizedDescription)
+                }
+            }
         }
+        // Other CLI/manual sources are partial additions. Without a verified
+        // cc-switch summary they must not manufacture complete all-source totals.
+        guard local?.hasCompleteTotals == true else { return snapshot(local: local) }
         var mergedShares = local?.allAgentsShares ?? []
         let todayStart = context.statistics.calendar.startOfDay(for: context.now)
         let zcodeUsage = ZCodeUsageReader.usage(todayStart: todayStart)
@@ -359,30 +458,9 @@ final class CodexUsageReader {
             return snapshot(local: local)
         }
         if mergedLifetime > 0 || mergedToday > 0 {
-            if local != nil {
-                local!.allAgentsLifetimeTokens = mergedLifetime
-                local!.allAgentsTodayTokens = mergedToday
-                local!.allAgentsShares = mergedShares
-            } else {
-                local = LocalUsage(
-                    lifetimeTokens: 0,
-                    todayTokens: 0,
-                    sevenDayTokens: 0,
-                    threadCount: 0,
-                    lastUpdatedAt: nil,
-                    dailyBuckets: [],
-                    recentThreads: [],
-                    detailedUsage: nil,
-                    usageTrend: nil,
-                    inferencePerformance: nil,
-                    projectBoard: nil,
-                    toolUsages: [],
-                    skillUsages: [],
-                    allAgentsLifetimeTokens: mergedLifetime,
-                    allAgentsTodayTokens: mergedToday,
-                    allAgentsShares: mergedShares
-                )
-            }
+            local!.allAgentsLifetimeTokens = mergedLifetime
+            local!.allAgentsTodayTokens = mergedToday
+            local!.allAgentsShares = mergedShares
         }
         return snapshot(local: local)
     }
@@ -859,10 +937,11 @@ final class CodexUsageReader {
     ) -> AppServerSnapshot {
         // 系统默认 home 是官方 Codex 正在使用的登录，保持原有全局门禁不变；
         // 其他账号 home 只涉及自身凭据，按 home 互斥即可允许跨账号并行读取。
-        let homePath = context.codexHomeDirectory.standardizedFileURL.path
+        let homePath = context.codexHomeDirectory
+            .resolvingSymlinksInPath().standardizedFileURL.path
         let systemHomePath = context.homeDirectory
             .appendingPathComponent(".codex", isDirectory: true)
-            .standardizedFileURL.path
+            .resolvingSymlinksInPath().standardizedFileURL.path
         if profile != nil { CodexCredentialAccessGate.lock.lock() }
         defer { if profile != nil { CodexCredentialAccessGate.lock.unlock() } }
         let gate: NSRecursiveLock =
@@ -894,6 +973,9 @@ final class CodexUsageReader {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: codexPath)
         process.arguments = ["app-server"]
+        if profile != nil {
+            process.arguments?.append(contentsOf: ["-c", "cli_auth_credentials_store=\"file\""])
+        }
         if quotaOnly {
             process.arguments?.append(contentsOf: [
                 "--disable", "apps",
@@ -904,6 +986,11 @@ final class CodexUsageReader {
             ])
         }
         var environment = ProcessInfo.processInfo.environment
+        if profile != nil {
+            for key in ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_THREAD_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] {
+                environment.removeValue(forKey: key)
+            }
+        }
         environment["CODEX_HOME"] = context.codexHomeDirectory.path
         process.environment = environment
 
@@ -937,13 +1024,11 @@ final class CodexUsageReader {
         }
 
         let requestedResponseIDs = quotaOnly ? [2, 3] : [2, 3, 4]
-        let responseGroup = DispatchGroup()
-        requestedResponseIDs.forEach { _ in responseGroup.enter() }
+        let pendingResponses = AppServerPendingResponses(requestedResponseIDs)
 
         let lock = NSLock()
         var buffer = Data()
         var snapshot = AppServerSnapshot()
-        var completed = Set<Int>()
         var sentAccountRequests = false
         var appServerMessages: [String] = []
 
@@ -952,13 +1037,11 @@ final class CodexUsageReader {
             if !quotaOnly { writeMessage(["id": 4, "method": "account/usage/read"]) }
         }
 
-        func markComplete(_ id: Int) {
+        func failPendingResponses(_ message: String) {
+            guard pendingResponses.completeRemaining() else { return }
             lock.lock()
-            let inserted = completed.insert(id).inserted
+            appServerMessages.append(message)
             lock.unlock()
-            if inserted {
-                responseGroup.leave()
-            }
         }
 
         func parseLine(_ lineData: Data) {
@@ -968,6 +1051,18 @@ final class CodexUsageReader {
             else { return }
 
             if id == 1 {
+                if let error = object["error"] as? [String: Any] {
+                    failPendingResponses(Self.appServerFailureMessage(requestID: id, error: error))
+                    return
+                }
+                guard object["result"] is [String: Any] else {
+                    failPendingResponses(
+                        WidgetLanguage.storedOrAutomatic().text(
+                            "app-server 1: 初始化失败",
+                            "app-server 1: initialization failed."
+                        ))
+                    return
+                }
                 lock.lock()
                 let shouldSend = !sentAccountRequests
                 sentAccountRequests = true
@@ -981,6 +1076,8 @@ final class CodexUsageReader {
                 return
             }
 
+            guard requestedResponseIDs.contains(id) else { return }
+
             // A proactive refresh must finish before the quota request uses its credentials.
             if id == 2, profile != nil { writeUsageRequests() }
 
@@ -988,12 +1085,19 @@ final class CodexUsageReader {
                 lock.lock()
                 appServerMessages.append(Self.appServerFailureMessage(requestID: id, error: error))
                 lock.unlock()
-                markComplete(id)
+                pendingResponses.complete(id)
                 return
             }
 
             guard let result = object["result"] as? [String: Any] else {
-                markComplete(id)
+                lock.lock()
+                appServerMessages.append(
+                    WidgetLanguage.storedOrAutomatic().text(
+                        "app-server \(id): 响应无效",
+                        "app-server \(id): invalid response."
+                    ))
+                lock.unlock()
+                pendingResponses.complete(id)
                 return
             }
 
@@ -1011,9 +1115,7 @@ final class CodexUsageReader {
             }
             lock.unlock()
 
-            if requestedResponseIDs.contains(id) {
-                markComplete(id)
-            }
+            pendingResponses.complete(id)
         }
 
         let outputHandle = output.fileHandleForReading
@@ -1032,6 +1134,11 @@ final class CodexUsageReader {
         readerGroup.enter()
         DispatchQueue.global(qos: .utility).async {
             defer {
+                failPendingResponses(
+                    WidgetLanguage.storedOrAutomatic().text(
+                        "app-server 在完成响应前已退出",
+                        "app-server exited before completing its responses."
+                    ))
                 Darwin.close(outputDescriptor)
                 readerGroup.leave()
             }
@@ -1051,10 +1158,11 @@ final class CodexUsageReader {
 
                 buffer.append(data)
                 if buffer.count > maximumOutputBufferBytes {
-                    lock.lock()
-                    appServerMessages.append(WidgetLanguage.storedOrAutomatic().text("app-server 输出超过安全上限", "app-server output exceeded the safety limit."))
-                    lock.unlock()
-                    requestedResponseIDs.forEach(markComplete)
+                    failPendingResponses(
+                        WidgetLanguage.storedOrAutomatic().text(
+                            "app-server 输出超过安全上限",
+                            "app-server output exceeded the safety limit."
+                        ))
                     break
                 }
 
@@ -1085,10 +1193,12 @@ final class CodexUsageReader {
         ])
 
         let responseTimeout = requestTimeout.map { min(30, max(1, $0)) } ?? (quotaOnly ? 30 : 12)
-        if responseGroup.wait(timeout: .now() + responseTimeout) == .timedOut {
-            lock.lock()
-            appServerMessages.append(WidgetLanguage.storedOrAutomatic().text("app-server 响应超时", "app-server response timed out."))
-            lock.unlock()
+        if pendingResponses.group.wait(timeout: .now() + responseTimeout) == .timedOut {
+            failPendingResponses(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "app-server 响应超时",
+                    "app-server response timed out."
+                ))
         }
 
         writeLock.lock()
@@ -1118,7 +1228,7 @@ final class CodexUsageReader {
 
     static func appServerFailureMessage(requestID: Int, error: [String: Any]) -> String {
         // Classify in memory; never retain the server message, which may contain credentials or identifiers.
-        if let reason = CodexProfileStore.quotaFailureReason(from: [error["message"] as? String ?? ""]) {
+        if let reason = AppServerFailureClassifier.failureReason(from: error) {
             return "app-server \(requestID): \(reason)"
         }
         return WidgetLanguage.storedOrAutomatic().text("app-server \(requestID): 请求失败", "app-server \(requestID): request failed.")

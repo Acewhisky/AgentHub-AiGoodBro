@@ -177,12 +177,28 @@ private func runtimeJSONObject(_ window: RateWindow) -> [String: Any] {
     ] as [String: Any]
 }
 
-private func runtimeJSONObject(_ local: LocalUsage) -> [String: Any] {
+func runtimeJSONObject(_ local: LocalUsage) -> [String: Any] {
+    let coverage: String
+    let coverageDescription: String
+    switch local.coverage {
+    case .complete:
+        coverage = "complete"
+        coverageDescription = "Cumulative and daily local usage are verified."
+    case .dailyOnly:
+        coverage = "dailyOnly"
+        coverageDescription = "Only verified daily records from the latest 35 days are available; cumulative totals are unconfirmed."
+    }
+    let todayTokens: Any = local.hasCompleteTotals ? local.todayTokens : NSNull()
+    let sevenDayTokens: Any = local.hasCompleteTotals ? local.sevenDayTokens : NSNull()
+    let lifetimeTokens: Any = local.hasCompleteTotals ? local.lifetimeTokens : NSNull()
+    let threadCount: Any = local.hasCompleteTotals ? local.threadCount : NSNull()
     var object: [String: Any] = [
-        "todayTokens": local.todayTokens,
-        "sevenDayTokens": local.sevenDayTokens,
-        "lifetimeTokens": local.lifetimeTokens,
-        "threadCount": local.threadCount,
+        "todayTokens": todayTokens,
+        "sevenDayTokens": sevenDayTokens,
+        "lifetimeTokens": lifetimeTokens,
+        "coverage": coverage,
+        "coverageDescription": coverageDescription,
+        "threadCount": threadCount,
         "lastUpdatedAt": runtimeJSONValue(runtimeISOString(local.lastUpdatedAt)),
         "dailyBuckets": local.dailyBuckets.map { bucket in
             [
@@ -195,7 +211,7 @@ private func runtimeJSONObject(_ local: LocalUsage) -> [String: Any] {
         "skillUsages": local.skillUsages.prefix(20).map { runtimeJSONObject($0) },
     ]
 
-    if let detailed = local.detailedUsage {
+    if local.hasCompleteTotals, let detailed = local.detailedUsage {
         object["detailedUsage"] =
             [
                 "today": runtimeJSONObject(detailed.today),

@@ -235,7 +235,8 @@ class Registry:
             for existing in state["leases"]:
                 if existing["state"] not in ACTIVE:
                     continue
-                if existing["accountKey"] == account_key or existing["projectKey"] == project:
+                if (existing["accountKey"] == account_key or existing["aliasKey"] == alias_key
+                        or existing["projectKey"] == project):
                     raise ActivityError("account_or_project_reserved")
             if gate is not None:
                 gate()  # Recheck Hub inside the same local reservation transaction.
@@ -327,9 +328,16 @@ class Registry:
                 info = os.fstat(fd)
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_mode & 0o077:
                     raise ActivityError("unsafe_issue_file")
-                if os.write(fd, payload) != len(payload):
-                    raise ActivityError("issue_write_incomplete")
-                os.fsync(fd)
+                try:
+                    if os.write(fd, payload) != len(payload):
+                        raise ActivityError("issue_write_incomplete")
+                    os.fsync(fd)
+                except BaseException:
+                    # The shared lock excludes cooperating appenders. Remove
+                    # only this failed append so the next JSONL row stays valid.
+                    os.ftruncate(fd, info.st_size)
+                    os.fsync(fd)
+                    raise
             finally:
                 os.close(fd)
         return event
@@ -352,7 +360,10 @@ def merge_preflight(report: dict, snapshot: dict, registry: dict, cwd: Path,
     for row in rows:
         p = profiles.get(row["profileId"])
         key = identity_key(p) if p and (p.get("lastSnapshot") or {}).get("email") else None
-        conflicts = [x for x in busy if x["accountKey"] == key or x["projectKey"] == project]
+        alias = row.get("alias")
+        alias_key = digest(alias.strip().lower()) if isinstance(alias, str) else None
+        conflicts = [x for x in busy if x["accountKey"] == key or x["aliasKey"] == alias_key
+                     or x["projectKey"] == project]
         row["localActivity"] = [{"leaseId": x["leaseId"], "ownerThreadId": x["ownerThreadId"],
                                  "taskId": x["taskId"], "state": effective_state(x)} for x in conflicts]
         if conflicts and "local_reserved" not in row["reasons"]:
@@ -445,6 +456,29 @@ def renew_heartbeat(registry: Registry, lease_id: str, owner: str, stop: threadi
             if stop.wait(retry_delays[attempt]):
                 return False
     return False
+
+
+def read_capability_report(path: Path) -> dict:
+    """Read the capability report with a reason code that names the failing input.
+
+    The generic invocation-file codes cannot tell an operator whether the brief
+    or the capability report is missing. Callers that already know which input
+    they are checking use this so the failure is actionable, and so the check
+    can run before a reservation is claimed.
+    """
+    try:
+        data = read_file(path, MAX_RECEIPT_BYTES)
+    except InvocationError as error:
+        if str(error) == "invocation_file_unavailable":
+            raise ActivityError("capability_report_unavailable") from None
+        raise ActivityError("capability_report_invalid") from None
+    try:
+        capability = json.loads(data)
+    except (ValueError, UnicodeError):
+        raise ActivityError("capability_report_invalid") from None
+    if not isinstance(capability, dict):
+        raise ActivityError("capability_report_invalid")
+    return capability
 
 
 def supervise(registry: Registry, lease: dict, command: list[str], cwd: Path,
@@ -600,6 +634,9 @@ def parser():
             for key in ("lease-id", "owner", "capability-report"):
                 run.add_argument("--" + key, required=True)
             run.add_argument("--refresh", action="store_true")
+        else:
+            run.add_argument("--capability-report",
+                             help="Dry-run only: validate this report without reserving or launching")
     issue = commands.add_parser("issue")
     for key in ("issue-id", "component", "phase", "summary"):
         issue.add_argument("--" + key, required=True)
@@ -677,6 +714,11 @@ def execute(args, registry):
             if (lease["route"] != "direct" or lease.get("code") != args.code
                     or lease["accountKey"] != identity_key(profile) or lease["projectKey"] != project_key(args.cwd)):
                 raise ActivityError("reservation_target_mismatch")
+            # Validate the launch input before the reservation is claimed. A
+            # missing or unreadable report previously failed inside before_start,
+            # after the lease was claimed, which burned the reservation and made
+            # the retry fail again with preparing_reservation_required.
+            read_capability_report(Path(args.capability_report))
         project_key(args.cwd)
         preference = pre.execution_preference(profile)
         if preference is None:
@@ -717,7 +759,11 @@ def execute(args, registry):
                                 preference=preference, sandbox=args.sandbox, code=args.code, lease=lease,
                                 effective_preference=effective)
         if args.command == "plan":
-            print(json.dumps(invocation.preview(), ensure_ascii=False, indent=2))
+            preview = invocation.preview()
+            if args.capability_report is not None:
+                read_capability_report(Path(args.capability_report))
+                preview["capabilityReportReadable"] = True
+            print(json.dumps(preview, ensure_ascii=False, indent=2))
             return 0
         environment = dict(os.environ)
         environment["CODEX_HOME"] = str(home)
@@ -744,7 +790,7 @@ def execute(args, registry):
             command[insertion:insertion] = ["-c", "agents.enabled=false", "-c", "features.multi_agent_v2=false"]
 
         def before_start():
-            capability = json.loads(read_file(Path(args.capability_report), MAX_RECEIPT_BYTES))
+            capability = read_capability_report(Path(args.capability_report))
             if capability.get("status") != "passed":
                 raise ActivityError("capability_check_not_passed")
             if capability.get("cliSHA256") != file_hash(executable):
@@ -799,8 +845,14 @@ def main(argv=None):
             try:
                 lease = next((x for x in registry.read()["leases"] if x["leaseId"] == args.lease_id
                               and x["ownerThreadId"] == args.owner), None)
-                if (lease and lease["state"] in {"preparing", "starting", "running"}
-                        and lease.get("runnerPID") in {None, os.getpid()}):
+                # Only a run that actually claimed the reservation may consume
+                # it. A failure before the claim (an unreadable capability
+                # report, a bad path) is an input problem, not an execution
+                # outcome: the lease stays preparing so the operator can fix the
+                # input and retry with the same lease instead of re-reserving.
+                if lease and lease.get("runnerPID") is not None \
+                        and lease["state"] in {"preparing", "starting", "running"} \
+                        and lease.get("runnerPID") in {None, os.getpid()}:
                     try:
                         registry.update(args.lease_id, args.owner, "failed")
                     except ActivityError:

@@ -24,5 +24,8 @@
 --self-test-performance-monitor
 --self-test-phase-one-gate
 --self-test-workspace-screenshot
+--self-test-quota-provider-wiring
+--self-test-token-monitor-ui
 --self-test-main-window-layout
 --self-test-account-floating-panel
+--self-test-brand-assets

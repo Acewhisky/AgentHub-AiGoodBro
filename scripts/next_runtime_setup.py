@@ -463,7 +463,7 @@ class Setup:
                   'approvalTTLSeconds': 300, 'approvalQuotaMaxAgeSeconds': 300, 'mode': 'workspace-write',
                   'claudeMaxBudgetUSD': 1, 'accountStrategy': 'least_recently_used', 'accounts': accounts,
                   'commands': {'codex': self.codex}, 'projects': {'workspace': str(project)}}
-        codes = {'schemaVersion': 1, 'snapshotMaxAgeSeconds': 45, 'minimumRemainingPercent': {'fiveHour': 30, 'sevenDay': 15},
+        codes = {'schemaVersion': 1, 'snapshotMaxAgeSeconds': 45, 'minimumRemainingPercent': {'fiveHour': 0, 'sevenDay': 0},
                  'centralAliases': ['system'], 'accounts': mapping, 'hubProjects': {'workspace': str(project)}}
         log = self.home / 'Library/Logs/CodexAccountManagerNextHub'
         plist = {'Label': HUB_LABEL, 'ProgramArguments': [str(self.current / 'agent-remote-control'), '--config', str(self.hub / 'config.json')],

@@ -37,20 +37,32 @@ mkdir -p "$DMG_ROOT" "$DIST_DIR"
 ditto "$APP_DIR" "$DMG_ROOT/$APP_NAME.app"
 ln -s /Applications "$DMG_ROOT/Applications"
 
-# Package only the reviewed public files; never copy a user's installed Skill.
-COMPANION_SOURCE=".agents/skills/multi-agent-management"
+# Reuse the built app's reviewed Skill, including the root-script overrides.
+COMPANION_SOURCE="$APP_DIR/Contents/Resources/CompanionSkill"
 COMPANION_DEST="$DMG_ROOT/Companion Skill/multi-agent-management"
-COMPANION_FILES=(
-  "SKILL.md" "使用说明.md"
-  "config/dispatch-codes-v1.json" "config/dispatch-policy-v1.json"
-  "references/coordination.md" "references/dispatch-brief.md" "references/local-runtime.md"
-  "scripts/next_dispatch_activity.py" "scripts/next_dispatch_preflight.py"
-)
-for relative in "${COMPANION_FILES[@]}"; do
-  [[ -f "$COMPANION_SOURCE/$relative" ]] || { echo "Missing companion Skill file: $relative" >&2; exit 1; }
-  mkdir -p "$(dirname "$COMPANION_DEST/$relative")"
-  install -m 644 "$COMPANION_SOURCE/$relative" "$COMPANION_DEST/$relative"
-done
+python3 - "$COMPANION_SOURCE" "$COMPANION_DEST" <<'PY'
+import pathlib, runpy, shutil, subprocess, sys
+source, destination = map(pathlib.Path, sys.argv[1:])
+if not source.is_dir() or source.is_symlink():
+    raise SystemExit('Missing reviewed app CompanionSkill resources')
+definition = runpy.run_path('scripts/prepare-companion-resources.py')
+public = definition['ROOT'] / '.agents/skills/multi-agent-management'
+validated = []
+for relative in definition['SKILL_FILES']:
+    bundled = source / relative
+    reviewed = definition['SKILL_SOURCE_OVERRIDES'].get(relative, public / relative)
+    if (not bundled.is_file() or bundled.is_symlink()
+            or any((source / parent).is_symlink() for parent in pathlib.Path(relative).parents)
+            or not reviewed.is_file() or reviewed.is_symlink()):
+        raise SystemExit(f'Missing reviewed companion Skill file: {relative}')
+    if subprocess.run(['/usr/bin/cmp', '-s', str(reviewed), str(bundled)]).returncode:
+        raise SystemExit(f'App companion Skill differs from reviewed source: {relative}')
+    validated.append((relative, bundled))
+for relative, bundled in validated:
+    target = destination / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(bundled, target)
+PY
 install -m 644 LICENSE "$DMG_ROOT/Companion Skill/LICENSE"
 
 cat > "$DMG_ROOT/README.txt" <<README

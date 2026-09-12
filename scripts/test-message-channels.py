@@ -29,6 +29,8 @@ def main():
         module_cache = str(work / "ModuleCache")
         settings = repo / "Sources/CodexUsageWidget/Services/AppSettings.swift"
 
+        announcement = (repo / "Sources/CodexUsageWidget/Services/PublicResetAnnouncements.swift").read_text()
+        announcement = announcement[announcement.index("struct PublicResetAnnouncement:"):announcement.index("struct PublicResetPage:")]
         if "--typecheck-only" in os.sys.argv:
             # WidgetLanguage plus its EnvironmentKey and EnvironmentValues
             # extension: everything the message-channel UI needs, without the
@@ -41,7 +43,9 @@ def main():
                 "import SwiftUI\nimport Foundation\n"
                 + (repo / "Sources/CodexUsageWidget/Domain/TokenFormatter.swift").read_text()
                 + "\n" + language)
-            source_paths = [
+            announcement_file = work / "public-reset-announcement-extract.swift"
+            announcement_file.write_text("import Foundation\n" + announcement)
+            source_paths = [announcement_file,
                 language_file,
                 repo / "Sources/CodexUsageWidget/Domain/MessageChannel.swift",
                 repo / "Sources/CodexUsageWidget/Services/TelegramMessageChannel.swift",
@@ -63,6 +67,7 @@ def main():
         parts = [
             (repo / "Sources/CodexUsageWidget/Domain/TokenFormatter.swift").read_text(),
             language,
+            announcement,
             (repo / "Sources/CodexUsageWidget/Domain/MessageChannel.swift").read_text(),
             (repo / "Sources/CodexUsageWidget/Services/TelegramMessageChannel.swift").read_text(),
             (repo / "Sources/CodexUsageWidget/Services/WeChatMessageChannel.swift").read_text(),

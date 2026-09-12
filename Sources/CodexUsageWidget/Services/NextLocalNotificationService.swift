@@ -35,6 +35,7 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
 
     private static let notificationIdentifierPrefix = "com.blackielf.codex-account-manager-next.low-quota."
     private static let resetIdentifierPrefix = "com.blackielf.codex-account-manager-next.reset."
+    static let integrationPingPrefix = "com.blackielf.codex-account-manager-next.integration-ping."
 
     private let center: UNUserNotificationCenter
 
@@ -168,6 +169,19 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
         submitReset(identifier: Self.resetIdentifierPrefix + UUID().uuidString, title: title, body: body, completion: completion)
     }
 
+    /// Authorized integration ping. Copy is fixed and contains no account, path or quota numbers.
+    func submitAuthorizedIntegrationPing(
+        language: WidgetLanguage = .storedOrAutomatic(),
+        completion: @escaping (Result<SubmissionReceipt, ServiceError>) -> Void
+    ) {
+        submitReset(
+            identifier: Self.integrationPingPrefix + UUID().uuidString,
+            title: language.text("AiGoodBro 集成回执", "AiGoodBro integration receipt"),
+            body: language.text("已授权的系统通知已提交到通知中心。", "The authorized system notification was submitted to Notification Center."),
+            completion: completion
+        )
+    }
+
     private func submitReset(
         identifier: String, title: String, body: String,
         completion: @escaping (Result<SubmissionReceipt, ServiceError>) -> Void
@@ -208,7 +222,8 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
     ) {
         let options: UNNotificationPresentationOptions =
             notification.request.identifier.hasPrefix(Self.notificationIdentifierPrefix)
-                || notification.request.identifier.hasPrefix(Self.resetIdentifierPrefix) ? [.banner, .list] : []
+                || notification.request.identifier.hasPrefix(Self.resetIdentifierPrefix)
+                || notification.request.identifier.hasPrefix(Self.integrationPingPrefix) ? [.banner, .list] : []
         Self.completeOnMain(options, completion: completionHandler)
     }
 

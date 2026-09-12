@@ -48,6 +48,13 @@ struct CodexAccountManagerNextMain {
             exit(PalettePreviewRenderer.renderSettingsCatalog(to: outputURL) ? 0 : 1)
         }
 
+        if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-workbench-previews"),
+            CommandLine.arguments.indices.contains(previewIndex + 1)
+        {
+            _ = NSApplication.shared
+            exit(WorkspacePreviewRenderer.renderWorkbench(to: URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)) ? 0 : 1)
+        }
+
         if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-workspace-previews"),
             CommandLine.arguments.indices.contains(previewIndex + 1)
         {
@@ -152,6 +159,23 @@ struct CodexAccountManagerNextMain {
             exit(WorkspaceScreenshotSelfTest.run() ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--self-test-quota-provider-wiring") {
+            exit(QuotaProviderWiringSelfTest.run() && AppIconStyleSelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-token-monitor-ui") {
+            _ = NSApplication.shared
+            exit(TokenMonitorUISelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments == [CommandLine.arguments[0], "--send-authorized-public-reset-update"] {
+            IntegrationPushCommand.sendAuthorizedPublicResetUpdate()
+        }
+
+        if CommandLine.arguments.contains("--submit-authorized-push") {
+            exit(IntegrationPushCommand.run())
+        }
+
         if CommandLine.arguments.contains("--self-test-main-window-layout") {
             exit(AccountCardGridLayout.selfTest() && CrossProviderQuotaSummary.selfTest() ? 0 : 1)
         }
@@ -160,9 +184,13 @@ struct CodexAccountManagerNextMain {
             exit(AccountFloatingPanelStateStore.selfTest() ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--self-test-brand-assets") {
+            exit(AHBrandAssetsSelfTest.run() ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-account-inspection") {
             // Preserve the test CLI contract after merging inspection into account cards.
-            exit(AccountTaskStatusSelfTest.run() ? 0 : 1)
+            exit(AccountTaskStatusSelfTest.run() && TaskStatusCopy.selfTest() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-automatic-account-switch") {

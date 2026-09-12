@@ -243,6 +243,35 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var homeModuleArrangement: WorkspaceModuleArrangement {
+        didSet { defaults.set(try? JSONEncoder().encode(homeModuleArrangement), forKey: WorkspaceModuleArrangement.storageKey) }
+    }
+
+    @Published var agentNavigation: AgentNavigationState {
+        didSet { defaults.set(agentNavigation.encoded(), forKey: AgentNavigationState.storageKey) }
+    }
+
+    @Published var accountAvatars: AccountAvatarTable {
+        didSet { defaults.set(try? JSONEncoder().encode(accountAvatars), forKey: AccountAvatarTable.storageKey) }
+    }
+
+    @Published var floatingBubble: TokenMonitorFloatingBubblePreferences {
+        didSet { defaults.set(try? JSONEncoder().encode(floatingBubble), forKey: TokenMonitorFloatingBubblePreferences.storageKey) }
+    }
+
+    @Published var onboarding: WorkspaceOnboardingState {
+        didSet { defaults.set(onboarding.encoded(), forKey: WorkspaceOnboardingState.storageKey) }
+    }
+
+    @Published var appIconStyle: AppIconStyle {
+        didSet {
+            appIconStyle.persist(defaults: defaults)
+            _ = appIconStyle.applyToRunningApp()
+        }
+    }
+
+    let avatarAssetStore: AccountAvatarAssetStore
+
     @Published var accountWorkspaceLayout: AccountWorkspaceLayout {
         didSet { defaults.set(accountWorkspaceLayout.rawValue, forKey: AccountWorkspaceLayout.storageKey) }
     }
@@ -354,9 +383,36 @@ final class AppSettings: ObservableObject {
         particleAnimationMode = ParticleAnimationMode.storedOrDefault(defaults: defaults)
         usageTrendWindow = UsageTrendWindow.storedOrDefault(defaults: defaults)
         accountMenuTransparency = AccountMenuTransparency.storedOrDefault(defaults: defaults)
+        homeModuleArrangement = WorkspaceModuleArrangement.load(defaults.data(forKey: WorkspaceModuleArrangement.storageKey))
+        var navigationBackup: Data?
+        agentNavigation = AgentNavigationState.load(defaults.data(forKey: AgentNavigationState.storageKey), backupRaw: &navigationBackup)
+        if let navigationBackup {
+            defaults.set(navigationBackup, forKey: AgentNavigationState.backupKey)
+        }
+        accountAvatars = AccountAvatarTable.load(defaults.data(forKey: AccountAvatarTable.storageKey))
+        floatingBubble = TokenMonitorFloatingBubblePreferences.load(defaults.data(forKey: TokenMonitorFloatingBubblePreferences.storageKey))
+        var onboardingBackup: Data?
+        onboarding = WorkspaceOnboardingState.load(defaults.data(forKey: WorkspaceOnboardingState.storageKey), backupRaw: &onboardingBackup)
+        if let onboardingBackup {
+            defaults.set(onboardingBackup, forKey: WorkspaceOnboardingState.backupKey)
+        }
+        appIconStyle = AppIconStyle.storedOrDefault(defaults: defaults)
+        let avatarRoot =
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("AiGoodBro/avatars", isDirectory: true)
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("AiGoodBro-avatars")
+        avatarAssetStore = AccountAvatarAssetStore(root: avatarRoot)
         accountWorkspaceLayout = AccountWorkspaceLayout.storedOrDefault(defaults: defaults)
-        pinnedAccountKey = defaults.string(forKey: "CodexManagerNext.pinnedAccountKey")
-        workspaceDisplayMode = WorkspaceDisplayMode.storedOrDefault(defaults: defaults)
+        let storedPinnedAccountKey = defaults.string(forKey: "CodexManagerNext.pinnedAccountKey")
+        pinnedAccountKey = storedPinnedAccountKey
+        let existingUser =
+            defaults.object(forKey: WorkspaceDisplayMode.storageKey) != nil
+            || defaults.bool(forKey: "CodexManagerNext.setup.dismissed")
+            || defaults.bool(forKey: "CodexManagerNext.setup.completed")
+            || storedPinnedAccountKey != nil
+        workspaceDisplayMode =
+            defaults.string(forKey: WorkspaceDisplayMode.storageKey).flatMap(WorkspaceDisplayMode.init(rawValue:))
+            ?? (existingUser ? .professional : .simple)
         simpleWorkspacePreset = SimpleWorkspacePreset.storedOrDefault(defaults: defaults)
         simpleCustomShowPlatformOverview = Self.storedFlag(
             defaults: defaults, key: Self.simpleCustomShowPlatformOverviewKey, defaultValue: true)
@@ -388,6 +444,20 @@ final class AppSettings: ObservableObject {
             globalShortcut = storedShortcut
         }
         globalShortcutError = nil
+        onboarding.bootstrapIfNeeded(existingUser: existingUser)
+        defaults.set(onboarding.encoded(), forKey: WorkspaceOnboardingState.storageKey)
+        _ = appIconStyle.applyToRunningApp()
+    }
+
+    func avatarImage(for profileID: String) -> NSImage? {
+        guard let assetID = accountAvatars.record(for: profileID).assetID else { return nil }
+        return avatarAssetStore.load(assetID: assetID)
+    }
+
+    func setAvatar(_ record: AccountAvatarRecord, for profileID: String) {
+        var table = accountAvatars
+        table.set(record, for: profileID)
+        accountAvatars = table
     }
 
     @discardableResult

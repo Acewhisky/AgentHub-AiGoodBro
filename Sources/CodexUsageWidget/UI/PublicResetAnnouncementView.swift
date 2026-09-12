@@ -13,8 +13,22 @@ struct PublicResetAnnouncementView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !deliveryDetailsOnly {
+                HStack(spacing: 8) {
+                    Label(PublicResetAnnouncementPresentation.title(language), systemImage: "megaphone.fill")
+                        .font(.headline)
+                    Spacer(minLength: 8)
+                    Button {
+                        monitor.check()
+                    } label: {
+                        Label(
+                            monitor.checking ? language.text("更新中…", "Checking…") : language.text("刷新", "Refresh"),
+                            systemImage: "arrow.clockwise"
+                        )
+                    }
+                    .disabled(monitor.checking)
+                }
                 Toggle(
-                    language.text("接收重置消息", "Receive reset updates"),
+                    language.text("接收额度重置公告", "Receive quota reset announcements"),
                     isOn: Binding(get: { monitor.enabled }, set: { monitor.setEnabled($0) })
                 )
                 .toggleStyle(.switch)
@@ -27,21 +41,31 @@ struct PublicResetAnnouncementView: View {
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 if let announcement = monitor.latest {
-                    Text(announcement.title(language)).font(.caption.weight(.semibold))
-                    Text(language.dateTime(announcement.announcedAt)).font(.caption).foregroundStyle(.secondary)
-                    DisclosureGroup(language.text("查看消息", "Read update")) {
-                        Text(announcement.summary(language)).font(.caption).foregroundStyle(.secondary)
-                        Text(announcement.text).font(.caption).textSelection(.enabled)
-                        Text(language.text("公开消息由第三方汇总；账号实际额度以官方刷新为准。", "Public updates are collected by a third party. Official account data confirms your limits."))
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
+                    Text(PublicResetAnnouncementPresentation.typeTitle(announcement.resetType, language: language))
+                        .font(.caption.weight(.semibold))
+                    AnnouncementOriginalText(text: announcement.text, language: language, compact: false)
+                    Text(
+                        language.text("事件时间：", "Event time: ")
+                            + PublicResetAnnouncementPresentation.eventTime(announcement.announcedAt, language: language)
+                            + " · "
+                            + PublicResetAnnouncementPresentation.sourceLabel(announcement.source, language: language)
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Text(PublicResetAnnouncementPresentation.interpretation(announcement.resetType, language: language))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    PublicResetAnnouncementLinks(source: announcement.source, language: language)
+                } else {
+                    Link("codex-resets.com", destination: PublicResetClient.siteURL)
+                        .font(.caption)
                 }
                 HStack {
-                    Button(monitor.checking ? language.text("更新中…", "Checking…") : language.text("刷新", "Refresh")) { monitor.check() }
-                        .disabled(monitor.checking)
-                    Link(language.text("来源与历史", "Source and history"), destination: PublicResetClient.siteURL)
                     if let checkedAt = monitor.checkedAt {
-                        Text(language.dateTime(checkedAt)).font(.caption2).foregroundStyle(.secondary)
+                        Text(language.text("上次检查：", "Last checked: ") + language.dateTime(checkedAt))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 if let status = monitor.localStatus ?? monitor.status { Text(status).font(.caption).foregroundStyle(.secondary) }

@@ -82,8 +82,8 @@ REASON_LABELS = {
     "missing_seven_day_quota": "缺少 7 天额度",
     "invalid_seven_day_quota": "7 天额度无效",
     "seven_day_reset_not_future": "7 天重置时间已过",
-    "five_hour_below_reserve": "5 小时剩余额度低于 30%",
-    "seven_day_below_reserve": "7 天剩余额度低于 15%",
+    "five_hour_below_reserve": "5 小时剩余额度低于派单保留阈值",
+    "seven_day_below_reserve": "7 天剩余额度低于派单保留阈值",
     "hub_busy": "Hub 中已有未结束任务",
     "local_reserved": "其他任务已登记准备/运行占用，或状态待核实",
     "refresh_incomplete": "本次额度刷新未完成",
@@ -834,9 +834,9 @@ def build_report(
         row["sevenDay"] = seven
         row["reasons"].extend(five_reasons)
         row["reasons"].extend(seven_reasons)
-        if five is not None and five["remainingPercent"] < min_five:
+        if five is not None and five["remainingPercent"] <= min_five:
             row["reasons"].append("five_hour_below_reserve")
-        if seven is not None and seven["remainingPercent"] < min_seven:
+        if seven is not None and seven["remainingPercent"] <= min_seven:
             row["reasons"].append("seven_day_below_reserve")
         if row["hubWork"]:
             row["reasons"].append("hub_busy")
@@ -1065,7 +1065,7 @@ def self_test() -> None:
             profile("b", "busy@x", 4, 1),
             profile("c", "disabled@x", 2, 1, participation=False),
             profile("d", "stale@x", 3, 1, age=60),
-            profile("e", "low@x", 1, 1, used_seven=86),
+            profile("e", "low@x", 1, 1, used_seven=85),
             profile("f", "fast@x", 5, 2),
         ]
     }

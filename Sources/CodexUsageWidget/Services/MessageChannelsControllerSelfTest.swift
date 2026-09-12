@@ -155,7 +155,9 @@ enum MessageChannelsControllerSelfTest {
         transport.completeAll()
         settle()
         controller.setEnabled(false, for: .weChat)
-        for _ in 0..<5 { controller.sendTest(.telegram) }
+        for _ in 0..<5 {
+            controller.send(try! MessageTaskStatus(eventKind: .taskStateChange, taskLabel: MessageChannelTaskLabel("Codex"), taskState: .completed, occurredAt: Date()))
+        }
         spin { transport.count >= 11 }
         expect(transport.count == 11, "in-flight sends bounded to four")
         transport.completeAll()

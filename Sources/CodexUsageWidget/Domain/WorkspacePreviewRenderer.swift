@@ -448,6 +448,68 @@ enum WorkspacePreviewRenderer {
                 .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
                 try renderView(editor, size: CGSize(width: 400, height: 470), scheme: scheme, to: directory.appendingPathComponent("astra-model-\(theme).png"))
 
+                let previousDisplayMode = settings.workspaceDisplayMode
+                settings.workspaceDisplayMode = .professional
+                for count in [1, 3] {
+                    let name = count == 1 ? "professional-codex-single" : "professional-codex-multi"
+                    let store = fixtureStore(
+                        accountCount: count,
+                        root: root.appendingPathComponent("\(theme)-pro-codex-\(count)"),
+                        language: language
+                    )
+                    let view = CodexAccountManagerView(
+                        store: store,
+                        settings: settings,
+                        paletteCatalog: catalog,
+                        previewOpenCodexWorkspace: true
+                    )
+                    for width: CGFloat in [820, 980] {
+                        try renderView(
+                            view.frame(width: width, height: 760)
+                                .environment(\.colorScheme, scheme),
+                            size: CGSize(width: width, height: 760),
+                            scheme: scheme,
+                            to: directory.appendingPathComponent("\(name)-\(theme)-\(Int(width)).png")
+                        )
+                    }
+                }
+                settings.workspaceDisplayMode = previousDisplayMode
+
+                let announcedStore = fixtureStore(
+                    accountCount: 3,
+                    root: root.appendingPathComponent("\(theme)-announced"),
+                    language: language
+                )
+                let announcementID = "1234567890123456789"
+                announcedStore.publicResetAnnouncements.seedPreviewLatest(
+                    PublicResetAnnouncement(
+                        id: announcementID,
+                        resetType: .regular,
+                        announcedAt: Date().addingTimeInterval(-7_200),
+                        text: "Synthetic public reset window notice for layout preview.",
+                        source: .init(
+                            type: "x_post",
+                            author: "thsottiaux",
+                            url: URL(string: "https://x.com/thsottiaux/status/\(announcementID)")
+                        )
+                    ),
+                    checkedAt: Date()
+                )
+                try renderView(
+                    CodexAccountManagerView(store: announcedStore, settings: settings, paletteCatalog: catalog)
+                        .frame(width: 980, height: 760),
+                    size: CGSize(width: 980, height: 760),
+                    scheme: scheme,
+                    to: directory.appendingPathComponent("reset-banner-announced-\(theme).png")
+                )
+                try renderView(
+                    CodexAccountManagerView(store: announcedStore, settings: settings, paletteCatalog: catalog)
+                        .frame(width: 820, height: 760),
+                    size: CGSize(width: 820, height: 760),
+                    scheme: scheme,
+                    to: directory.appendingPathComponent("reset-banner-announced-\(theme)-820.png")
+                )
+
                 // Cross-provider placement uses only labeled synthetic data.
                 let fixtureRoot = root.appendingPathComponent("unified-\(theme)")
                 let codex = fixtureStore(accountCount: 3, root: fixtureRoot, language: language, includeQuotaEdgeCases: true)
@@ -531,6 +593,100 @@ enum WorkspacePreviewRenderer {
             return true
         } catch {
             print("workspace preview render failed")
+            return false
+        }
+    }
+
+    @MainActor static func renderWorkbench(to directory: URL) -> Bool {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("workbench-fixture-\(UUID().uuidString)")
+        let suite = "AiGoodBro.workbench-fixture.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let catalog = PaletteCatalog.loadFromMainBundle()
+            let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
+            settings.language = .zh
+            settings.setupProgress.dismissed = true
+            settings.workspaceDisplayMode = .simple
+            settings.simpleWorkspacePreset = .accountCards
+            settings.accountWorkspaceLayout = .cards
+            let store = fixtureStore(accountCount: 1, root: root)
+            let kinds: [LocalCLIKind] = [.claudeCode, .kimi, .openCode, .grok, .zcode]
+            let names = ["合成 · 待登录", "合成 · 额度未接", "合成 · 待补文件", "合成 · 任务失败", "合成 · 预约结束"]
+            let profiles = kinds.enumerated().map { index, kind in
+                LocalCLIProfile(
+                    id: "demo-\(kind.rawValue)", kind: kind, displayName: names[index],
+                    configDirectory: root.appendingPathComponent("local/\(kind.rawValue)").path, isDefault: true)
+            }
+            var quotas: [String: LocalCLIQuotaResult] = [:]
+            for (index, profile) in profiles.enumerated() {
+                quotas[profile.id] = LocalCLIQuotaResult(
+                    state: index == 0 ? .needsLogin : index == 1 ? .available : .unavailable,
+                    fetchedAt: Date(), maskedIdentity: nil, identityFingerprint: nil, planLabel: "演示",
+                    windows: [], balance: nil, balanceCurrency: nil, sourceLabel: "合成数据",
+                    messageCode: index == 2 ? "capability_report_unavailable" : index == 3 ? "task_failed" : index == 4 ? "preparing_reservation_required" : nil)
+            }
+            let local = LocalCLIAccountStore.preview(profiles: profiles, quotas: quotas, root: root)
+            for scheme in [ColorScheme.light, .dark] {
+                settings.themeMode = scheme == .dark ? .dark : .light
+                let theme = scheme == .dark ? "dark" : "light"
+                for width: CGFloat in [820, 980, 1280] {
+                    let view = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog, localCLIAccounts: local)
+                    try renderView(
+                        view.frame(width: width, height: 900), size: CGSize(width: width, height: 900), scheme: scheme,
+                        to: directory.appendingPathComponent("workbench-\(theme)-\(Int(width)).png"))
+                    if width == 980 {
+                        let capture = try WorkspaceScreenshotExporter.render(view.screenshotContent, width: width, scheme: scheme)
+                        try capture.png.write(to: directory.appendingPathComponent("workbench-\(theme)-full.png"))
+                    }
+                }
+                settings.homeModuleArrangement.compact = ["usage", "monitor"]
+                let editing = CodexAccountManagerView(
+                    store: store, settings: settings, paletteCatalog: catalog,
+                    localCLIAccounts: local, previewEditingModules: true)
+                try renderView(
+                    editing.frame(width: 1280, height: 1000), size: CGSize(width: 1280, height: 1000), scheme: scheme,
+                    to: directory.appendingPathComponent("arrange-\(theme)-1280.png"))
+                // Same persisted half-width preference collapses safely at 820.
+                try renderView(
+                    editing.frame(width: 820, height: 1100), size: CGSize(width: 820, height: 1100), scheme: scheme,
+                    to: directory.appendingPathComponent("arrange-\(theme)-820.png"))
+                settings.homeModuleArrangement = .init()
+                let notices = VStack(alignment: .leading, spacing: 18) {
+                    Text("合成数据 · 调用准备与失败文案").font(.title2.weight(.semibold))
+                    ForEach(
+                        Array(
+                            [
+                                LocalCLIReadiness.notInstalled, .needsLogin, .quotaDisconnected,
+                                .inputFailure("capability_report_unavailable"), .inputFailure("capability_report_invalid"),
+                                .inputFailure("invocation_file_unavailable"), .endedReservation, .taskFailed,
+                            ].enumerated()), id: \.offset
+                    ) { _, state in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(state.title(.zh), systemImage: state.symbol).foregroundStyle(state.color).font(.headline)
+                            Text(state.detail(.zh)).font(.callout)
+                        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).sectionBackground()
+                    }
+                }.padding(24).frame(width: 820).background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
+                try renderView(
+                    notices, size: CGSize(width: 820, height: 1050), scheme: scheme,
+                    to: directory.appendingPathComponent("preparation-\(theme).png"))
+            }
+            print("Workbench previews rendered: synthetic fixtures only; 820 / 980 / 1280; light / dark; arrangement and failure states")
+            return true
+        } catch {
+            let category: String
+            switch (error as? CocoaError)?.code {
+            case .fileReadNoPermission, .fileWriteNoPermission: category = "permission-denied"
+            case .fileWriteOutOfSpace: category = "disk-full"
+            case .fileNoSuchFile, .fileReadNoSuchFile: category = "path-unavailable"
+            default: category = "render-or-write-failed"
+            }
+            print("Workbench preview failed: \(category)")
             return false
         }
     }

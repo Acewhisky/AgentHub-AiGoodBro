@@ -104,6 +104,7 @@ final class TelegramMessageChannel {
         }
     }
 
+    @MainActor
     func send(_ status: MessageTaskStatus, shouldSend: () -> Bool = { true }) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
         guard credentials.isEnabled(.telegram) else { return .failure(.channelDisabled) }
         let age = now().timeIntervalSince(status.occurredAt)

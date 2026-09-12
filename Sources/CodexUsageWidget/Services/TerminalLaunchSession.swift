@@ -2,7 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 
-/// Only a phase, process ID or exit code is persisted. Terminal contents are never captured.
+/// Receipts contain only phase, process identity, process group and exit code.
 struct TerminalLaunchSession {
     enum State: Equatable {
         case pending
@@ -40,8 +40,21 @@ struct TerminalLaunchSession {
         #!/bin/zsh -f
         umask 077
         next_receipt=\(TerminalAppLauncher.shellQuote(receipt.path))
-        trap 'next_exit_status=$?; print -r -- "exited ${next_exit_status}" > "$next_receipt.tmp"; /bin/mv -f -- "$next_receipt.tmp" "$next_receipt"; /bin/rm -f -- "$0"' EXIT
-        print -r -- "started $$" > "$next_receipt.tmp"
+        # One writer per session, including accidental re-opening of Launch.command.
+        # A failed/interrupted claim remains uncertain and is never taken over.
+        /bin/mkdir -- "$next_receipt.owner" 2>/dev/null || exit 74
+        # Keep foreground children in the wrapper's group. Do not enable job control.
+        unsetopt MONITOR
+        next_pid=$$
+        next_group=$(LC_ALL=C /bin/ps -o pgid= -p "$$") || exit 74
+        next_group=${next_group// /}
+        next_birth_text=$(LC_ALL=C TZ=UTC /bin/ps -o lstart= -p "$$") || exit 74
+        next_birth=$(LC_ALL=C TZ=UTC /bin/date -j -u -f '%a %b %e %T %Y' "$next_birth_text" '+%s' 2>/dev/null) || exit 74
+        [[ "$next_group" == <-> && "$next_birth" == <-> ]] || exit 74
+        (( next_group > 1 && next_birth > 0 )) || exit 74
+        # EXIT is evidence of intent to exit, never evidence that the group is gone.
+        trap 'next_exit_status=$?; print -r -- "v2 exited $next_pid $next_group $next_birth $next_exit_status" > "$next_receipt.tmp" && /bin/mv -f -- "$next_receipt.tmp" "$next_receipt"' EXIT
+        print -r -- "v2 started $next_pid $next_group $next_birth 0" > "$next_receipt.tmp"
         /bin/mv -f -- "$next_receipt.tmp" "$next_receipt" || exit 74
         \(command)
         next_exit_status=$?
@@ -69,31 +82,81 @@ struct TerminalLaunchSession {
         return try Self.parse(line)
     }
 
-    static func parse(_ line: String) throws -> State {
+    struct Receipt: Equatable {
+        let state: State
+        let pid: pid_t
+        let group: pid_t
+        let birthSeconds: UInt64
+    }
+
+    static func parseReceipt(_ line: String) throws -> Receipt {
         let parts = line.split(whereSeparator: \.isWhitespace)
-        guard parts.count == 2, let number = Int32(parts[1]) else { throw TerminalLauncherError.launchFailed }
-        switch parts[0] {
-        case "started" where number > 1: return .started(number)
-        case "exited" where (0...255).contains(number): return .exited(number)
+        // Old receipts contain no group/identity evidence. Never infer idle from them.
+        guard parts.count == 6, parts[0] == "v2",
+            let pid = pid_t(parts[2]), pid > 1,
+            let group = pid_t(parts[3]), group > 1,
+            let birth = UInt64(parts[4]), birth > 0,
+            let code = Int32(parts[5]), (0...255).contains(code)
+        else { throw TerminalLauncherError.launchFailed }
+        let state: State
+        switch parts[1] {
+        case "started" where code == 0: state = .started(pid)
+        case "exited": state = .exited(code)
         default: throw TerminalLauncherError.launchFailed
         }
+        return Receipt(state: state, pid: pid, group: group, birthSeconds: birth)
+    }
+
+    static func parse(_ line: String) throws -> State {
+        try parseReceipt(line).state
+    }
+
+    private func receipt() throws -> Receipt {
+        _ = try readState()  // Validate private directory and regular file first.
+        guard let data = try DispatchParticipationSync.readBoundedRegularFile(receiptURL, maximumBytes: 128, allowMissing: false),
+            let line = String(data: data, encoding: .utf8)
+        else { throw TerminalLauncherError.launchFailed }
+        return try Self.parseReceipt(line)
     }
 
     func hasMatchingLiveProcess(_ pid: pid_t) -> Bool {
+        guard let receipt = try? receipt(), receipt.state == .started(pid), receipt.pid == pid else { return false }
         var process = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
         guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &process, size) == size,
             process.pbi_uid == geteuid(), process.pbi_status != UInt32(SZOMB),
-            let values = try? receiptURL.resourceValues(forKeys: [.contentModificationDateKey]),
-            let writtenAt = values.contentModificationDate
+            process.pbi_pgid == UInt32(receipt.group), process.pbi_start_tvsec == receipt.birthSeconds
         else { return false }
-        let startedAt = Double(process.pbi_start_tvsec) + Double(process.pbi_start_tvusec) / 1_000_000
-        // The wrapper writes its first receipt immediately. A reused PID must
-        // never turn an old launch receipt back into a running session.
-        return abs(writtenAt.timeIntervalSince1970 - startedAt) <= 5
+        // ps records seconds only. This is a running indication, never release proof.
+        return true
+    }
+
+    enum Presence { case absent, present, unknown }
+
+    static func presence(_ id: pid_t) -> Presence {
+        if Darwin.kill(id, 0) == 0 { return .present }
+        return errno == ESRCH ? .absent : .unknown
+    }
+
+    /// Injectable read-only probes allow failure/reuse cases without signalling tasks.
+    /// Even a matching live writer (or a reused PID) blocks settlement. Only ESRCH
+    /// for BOTH the writer and the whole recorded group can establish disappearance.
+    func verifiedExitCode(probe: (pid_t) -> Presence = Self.presence) -> Int32? {
+        guard let before = try? receipt(), case .exited(let code) = before.state,
+            code < 128, noReceiptWriteInProgress(),
+            probe(before.pid) == .absent, probe(-before.group) == .absent,
+            let after = try? receipt(), before == after, noReceiptWriteInProgress()
+        else { return nil }
+        return code
+    }
+
+    private func noReceiptWriteInProgress() -> Bool {
+        var info = stat()
+        return lstat(receiptURL.path + ".tmp", &info) != 0 && errno == ENOENT
     }
 
     func removeAfterExit() {
+        guard verifiedExitCode() != nil else { return }
         try? FileManager.default.removeItem(at: directory)
     }
 
@@ -156,7 +219,7 @@ struct TerminalLaunchSession {
             failing.standardError = FileHandle.nullDevice
             try failing.run()
             failing.waitUntilExit()
-            guard failing.terminationStatus == 7, try session.readState() == .exited(7), !fm.fileExists(atPath: session.scriptURL.path) else { return false }
+            guard failing.terminationStatus == 7, try session.readState() == .exited(7), fm.fileExists(atPath: session.scriptURL.path) else { return false }
             do {
                 _ = try Self.parse("started 0")
                 return false
@@ -169,14 +232,13 @@ struct TerminalLaunchSession {
                 _ = try Self.parse("exited 256")
                 return false
             } catch {}
-            var currentProcess = proc_bsdinfo()
-            let processInfoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
-            guard proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &currentProcess, processInfoSize) == processInfoSize else { return false }
-            let birth = Date(timeIntervalSince1970: Double(currentProcess.pbi_start_tvsec) + Double(currentProcess.pbi_start_tvusec) / 1_000_000)
-            try fm.setAttributes([.modificationDate: birth], ofItemAtPath: session.receiptURL.path)
-            guard session.hasMatchingLiveProcess(getpid()) else { return false }
-            try fm.setAttributes([.modificationDate: birth.addingTimeInterval(-60)], ofItemAtPath: session.receiptURL.path)
-            guard !session.hasMatchingLiveProcess(getpid()) else { return false }
+            // Foundation may use a dedicated or inherited group on different hosts.
+            let ended = try session.receipt()
+            if Self.presence(-ended.group) == .absent {
+                guard session.verifiedExitCode() == 7 else { return false }
+            } else {
+                guard session.verifiedExitCode() == nil else { return false }
+            }
             session.removeAfterExit()
             print("Terminal session self-test passed: quoting, isolation, receipt and failure exit")
             return true

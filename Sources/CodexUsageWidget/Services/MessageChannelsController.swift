@@ -127,6 +127,15 @@ final class MessageChannelsController: ObservableObject {
     private var completionObservers: [MessageChannelKind: FeishuTaskCompletionObserver] = [:]
     private let telegramEvents = MessageEventDeduplicator()
     private let weChatEvents = MessageEventDeduplicator()
+    private var credentialWriteInFlight = false {
+        didSet { updateActionInFlight() }
+    }
+    private var explicitTest: (kind: MessageChannelKind, id: UUID)? {
+        didSet { updateActionInFlight() }
+    }
+    private func updateActionInFlight() {
+        actionInFlight = credentialWriteInFlight || explicitTest != nil
+    }
     private var running = false
 
     init(
@@ -159,6 +168,7 @@ final class MessageChannelsController: ObservableObject {
     }
 
     private func invalidate(_ kind: MessageChannelKind) {
+        if explicitTest?.kind == kind { explicitTest = nil }
         revisions[kind] = UUID()
         completionObservers.removeValue(forKey: kind)
         tasks.removeValue(forKey: kind)?.values.forEach { $0.cancel() }
@@ -166,6 +176,8 @@ final class MessageChannelsController: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, for kind: MessageChannelKind) {
+        // A pending storage write cannot be superseded by a settings toggle.
+        guard !credentialWriteInFlight else { return }
         if kind == .telegram { telegramEnabled = enabled } else { weChatEnabled = enabled }
         defaults.set(enabled, forKey: Self.enabledKey(kind))
         invalidate(kind)
@@ -201,20 +213,21 @@ final class MessageChannelsController: ObservableObject {
             completion(false)
             return
         }
-        actionInFlight = true
+        credentialWriteInFlight = true
         invalidate(kind)
         let revision = revisions[kind]
         storage.save(value, for: kind) { [weak self] result in
-            guard let self else { return }
-            self.actionInFlight = false
-            guard self.revisions[kind] == revision else {
-                completion(false)
+            guard let self else {
+                completion((try? result.get()) != nil)
                 return
             }
+            self.credentialWriteInFlight = false
             switch result {
             case .success:
-                self.credentials[kind] = value
-                self.setPhase(self.isEnabled(kind) ? .pendingVerification : .disabled, for: kind)
+                if self.revisions[kind] == revision {
+                    self.credentials[kind] = value
+                    self.setPhase(self.isEnabled(kind) ? .pendingVerification : .disabled, for: kind)
+                }
                 self.statusText = WidgetLanguage.storedOrAutomatic().text("配置已保存，请发送测试消息验证。", "Saved. Send a test message to verify the configuration.")
                 completion(true)
             case .failure(let error):
@@ -224,15 +237,57 @@ final class MessageChannelsController: ObservableObject {
         }
     }
 
+    /// Readiness only; never exposes credentials or loads Keychain on this path.
+    @MainActor
+    func publicResetRevision(_ kind: MessageChannelKind) -> UUID? {
+        guard running, isEnabled(kind), !credentialWriteInFlight,
+            let value = credentials[kind], (try? value.validated(for: kind)) != nil
+        else { return nil }
+        return revisions[kind]
+    }
+
+    /// Await the official adapter result, not the ordinary fire-and-forget queue.
+    @MainActor
+    func sendPublicReset(
+        _ announcement: PublicResetAnnouncement, to kind: MessageChannelKind,
+        revision: UUID, shouldSend: @escaping () -> Bool
+    ) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
+        guard publicResetRevision(kind) == revision, shouldSend(),
+            let value = credentials[kind],
+            let context = try? PublicResetContext(announcement: announcement),
+            let status = try? MessageTaskStatus(
+                eventKind: announcement.resetType == .regular ? .publicRegularReset : .publicBankedReset,
+                occurredAt: Date(), publicResetContext: context)
+        else { return .failure(.cancelled) }
+        let frozen = FrozenMessageChannelCredential(kind: kind, value: value)
+        let valid = { self.publicResetRevision(kind) == revision && shouldSend() }
+        let result: Result<MessageDeliveryOutcome, MessageChannelError>
+        switch kind {
+        case .telegram:
+            result = await TelegramMessageChannel(credentials: frozen, transport: transport()).send(status, shouldSend: valid)
+        case .weChat:
+            result = await WeChatMessageChannel(credentials: frozen, transport: transport()).send(status, shouldSend: valid)
+        }
+        guard valid(), !Task.isCancelled else { return .failure(.cancelled) }
+        return result
+    }
+
+    @MainActor
+    func recordPublicResetChannelResult(_ result: PublicResetChannelResult) {
+        statusText = result.statusText
+    }
+
     func sendTest(_ kind: MessageChannelKind) {
-        guard let status = try? MessageTaskStatus(eventKind: .test, occurredAt: Date()) else { return }
-        send(status, to: kind)
+        guard !actionInFlight,
+            let status = try? MessageTaskStatus(eventKind: .test, occurredAt: Date())
+        else { return }
+        send(status, to: kind, explicit: true)
     }
 
     func observeTaskSnapshot(_ snapshot: CodexTaskLiveSnapshot) {
         guard running else { return }
         for kind in MessageChannelKind.allCases {
-            guard isEnabled(kind), credentials[kind] != nil, !actionInFlight else {
+            guard isEnabled(kind), credentials[kind] != nil, !credentialWriteInFlight else {
                 completionObservers.removeValue(forKey: kind)
                 continue
             }
@@ -255,18 +310,27 @@ final class MessageChannelsController: ObservableObject {
         for kind in MessageChannelKind.allCases { send(status, to: kind) }
     }
 
-    private func send(_ status: MessageTaskStatus, to kind: MessageChannelKind) {
-        guard running, isEnabled(kind), !actionInFlight, let value = credentials[kind] else { return }
+    private func send(_ status: MessageTaskStatus, to kind: MessageChannelKind, explicit: Bool = false) {
+        guard running, isEnabled(kind), !credentialWriteInFlight, let value = credentials[kind] else { return }
         guard tasks[kind]?[status.eventID] == nil else { return }
-        guard (tasks[kind]?.count ?? 0) < 4 else {
+        let automaticCount = (tasks[kind]?.count ?? 0) - (explicitTest?.kind == kind ? 1 : 0)
+        guard explicit || automaticCount < 4 else {
             statusText = WidgetLanguage.storedOrAutomatic().text("当前发送请求过多，本条未发送。", "Too many sends are in progress; this event was not sent.")
             return
         }
         let revision = revisions[kind]
         let credential = FrozenMessageChannelCredential(kind: kind, value: value)
         let selectedTransport = transport()
+        if explicit { explicitTest = (kind, status.eventID) }
         tasks[kind, default: [:]][status.eventID] = Task { @MainActor [weak self] in
-            guard let self, self.running, self.revisions[kind] == revision else { return }
+            guard let self else { return }
+            defer {
+                if self.revisions[kind] == revision {
+                    self.tasks[kind]?.removeValue(forKey: status.eventID)
+                }
+                if self.explicitTest?.id == status.eventID { self.explicitTest = nil }
+            }
+            guard self.running, !Task.isCancelled, self.revisions[kind] == revision else { return }
             let result: Result<MessageDeliveryOutcome, MessageChannelError>
             switch kind {
             case .telegram:
@@ -277,7 +341,6 @@ final class MessageChannelsController: ObservableObject {
                 result = await channel.send(status)
             }
             guard self.running, !Task.isCancelled, self.isEnabled(kind), self.revisions[kind] == revision else { return }
-            self.tasks[kind]?.removeValue(forKey: status.eventID)
             switch result {
             case .success(.accepted):
                 self.setPhase(.ready, for: kind)

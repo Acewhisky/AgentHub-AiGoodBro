@@ -293,6 +293,11 @@ struct SkillUsage: Identifiable, Equatable, Codable {
     let lastLoadedAt: Date?
 }
 
+enum LocalUsageCoverage: Equatable {
+    case complete
+    case dailyOnly
+}
+
 struct LocalUsage: Equatable {
     let lifetimeTokens: Int64
     let todayTokens: Int64
@@ -310,6 +315,9 @@ struct LocalUsage: Equatable {
     var allAgentsLifetimeTokens: Int64? = nil
     var allAgentsTodayTokens: Int64? = nil
     var allAgentsShares: [AgentTokenShare]? = nil
+    var coverage: LocalUsageCoverage = .complete
+
+    var hasCompleteTotals: Bool { coverage == .complete }
 }
 
 enum TaskColumnKind: String, Equatable {

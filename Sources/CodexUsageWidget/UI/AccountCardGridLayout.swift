@@ -4,7 +4,11 @@ import SwiftUI
 /// Every card uses the same width and the same height — the tallest measured card — so later
 /// rows cannot shrink below the first row.
 struct AccountCardGridLayout: Layout {
-    static let minimumCardWidth: CGFloat = 250
+    /// Account cards contain identity, model disclosure, quota windows, and
+    /// primary actions. The old 250pt minimum fit three cards at the 822pt
+    /// window and truncated those controls. Add columns only when this
+    /// natural width fits.
+    static let minimumCardWidth: CGFloat = 320
     static let spacing: CGFloat = 10
 
     /// The resolved dimensions for one complete grid pass.
@@ -139,9 +143,10 @@ struct AccountCardGridLayout: Layout {
         let shared = sharedCardHeight(heights)
         guard columnCount(width: 720, itemCount: heights.count) == 2,
             columnCount(width: 980, itemCount: heights.count) == 3,
-            columnCount(width: 784, itemCount: 9) == 3,
-            columnCount(width: 944, itemCount: 9) == 3,
-            columnCount(width: 1_244, itemCount: 9) == 4,
+            columnCount(width: 784, itemCount: 9) == 2,
+            columnCount(width: 944, itemCount: 9) == 2,
+            columnCount(width: 1_064, itemCount: 9) == 3,
+            columnCount(width: 1_404, itemCount: 9) == 4,
             columnCount(width: .infinity, itemCount: 9) == 1,
             shared == 148,
             sharedCardHeight([]) == 0,

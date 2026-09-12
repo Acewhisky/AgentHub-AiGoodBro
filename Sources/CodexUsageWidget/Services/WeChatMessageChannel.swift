@@ -164,6 +164,7 @@ final class WeChatMessageChannel {
         }
     }
 
+    @MainActor
     func send(_ status: MessageTaskStatus, shouldSend: () -> Bool = { true }) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
         guard credentials.isEnabled(.weChat) else { return .failure(.channelDisabled) }
         let age = now().timeIntervalSince(status.occurredAt)
