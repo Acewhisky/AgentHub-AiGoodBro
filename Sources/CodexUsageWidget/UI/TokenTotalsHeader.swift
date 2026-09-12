@@ -158,6 +158,7 @@ struct TokenTotalsHeader: View {
         .accessibilityElement(children: .contain)
     }
 
+    @MainActor
     @ViewBuilder
     private var dailyActivity: some View {
         VStack(alignment: .leading, spacing: 6) {
