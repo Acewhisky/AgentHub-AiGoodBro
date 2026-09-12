@@ -16,7 +16,7 @@ AiGoodBro puts quota alerts and reset news first, so you can see when work can c
 | Hear about resets | Public announcements from [Codex Resets](https://codex-resets.com/), distinguishing regular resets from banked reset credits, with event times and original-source links. Account-specific reset countdowns remain separate. |
 | Receive notifications | Native macOS notifications, optional Feishu alerts, and configurable Telegram / WeCom group bots. Permissions, configuration and supported event types apply to each channel; see below. |
 | Switch accounts | Start a Desktop switch from an account card and follow preparation, graceful exit, write, relaunch and verification. Isolated CLIs can use other accounts independently. |
-| Switch automatically when safe | Opt in to quota-based selection with participation, fresh identity/quota and task-occupancy checks. The current implementation requires Codex to have exited and task state to be safe; otherwise it pauses with a reason. |
+| Continue after low quota | The published source provides alerts and account recommendations. Automatic execution wiring is being repaired and validated and is not yet a completed feature. The candidate automatic path requires opt-in, Codex to have exited and safe task state. |
 | Coordinate and troubleshoot | Per-account CLI environments and model preferences, reservations before launch, task states, execution receipts and operational issue logs. |
 
 A single account can use read-only monitoring. A public announcement, an account's recovered quota and its available reset credits are separate facts: an announcement neither spends a credit nor replaces an account refresh. The WeChat integration is a **WeCom group bot**; personal WeChat is not connected.
