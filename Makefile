@@ -24,6 +24,11 @@ DMG_NAME := $(APP_NAME)-$(VERSION)-mac-$(ARCH_NAME).dmg
 DMG_PATH := $(DIST_DIR)/$(DMG_NAME)
 SIGN_IDENTITY ?= -
 BUNDLE_COMPANION ?= 0
+TOKEN_MONITOR_CACHE ?= $(HOME)/Library/Caches/AiGoodBro/Next/token-monitor-downloads
+TOKEN_MONITOR_RECEIPT_DIR ?= .build-receipts/AiGoodBro/Next
+TOKEN_MONITOR_RECEIPT = $(TOKEN_MONITOR_RECEIPT_DIR)/token-monitor-$(ARCH_NAME).json
+TOKEN_MONITOR_OFFLINE ?= 0
+TOKEN_MONITOR_NODE_ARCHIVE ?=
 CODESIGN_EXTRA_FLAGS ?=
 ACTIVE_DEVELOPER_DIR := $(shell xcode-select -p 2>/dev/null)
 DEFAULT_SDK_PATH := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
@@ -79,8 +84,10 @@ build:
 		-framework SwiftUI \
 		-framework UserNotifications
 	python3 scripts/prepare-companion-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(BUNDLE_COMPANION)),--include-hub,)
-	codesign $(CODESIGN_FLAGS) "$(APP_DIR)"
+	python3 scripts/prepare-token-monitor-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(TOKEN_MONITOR_OFFLINE)),--offline,) $(if $(TOKEN_MONITOR_NODE_ARCHIVE),--node-archive "$(TOKEN_MONITOR_NODE_ARCHIVE)",)
+	codesign $(filter-out --deep,$(CODESIGN_FLAGS)) "$(APP_DIR)"
 	codesign --verify --deep --strict "$(APP_DIR)"
+	python3 scripts/prepare-token-monitor-resources.py --verify --resources "$(RESOURCES_DIR)" --bundle "$(APP_DIR)" --sign-identity "$(SIGN_IDENTITY)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)"
 
 debug:
 	$(MAKE) build BUILD_DIR=build-debug SWIFT_OPTIMIZATION=-Onone

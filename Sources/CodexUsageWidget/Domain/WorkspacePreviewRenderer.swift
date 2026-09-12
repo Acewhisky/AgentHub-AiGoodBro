@@ -44,6 +44,7 @@ enum WorkspacePreviewRenderer {
                 isSystemProfile: accountCount == 0, createdAt: now,
                 lastSnapshot: CodexAccountSnapshot(
                     accountType: "chatgpt", planType: isPro ? "pro" : "plus", email: nil,
+                    accountID: "synthetic-preview-account-\(index)",
                     limitId: "codex", limitName: "Codex", fiveHour: profileFiveHour,
                     sevenDay: profileSevenDay, monthly: nil,
                     availableResetCredits: 2, resetCreditExpiries: [now.addingTimeInterval(864_000)],
@@ -124,6 +125,7 @@ enum WorkspacePreviewRenderer {
                     accountType: "chatgpt",
                     planType: "plus",
                     email: nil,
+                    accountID: "synthetic-\(id)",
                     limitId: "codex",
                     limitName: "Codex",
                     fiveHour: fiveHour,

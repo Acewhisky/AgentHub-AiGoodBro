@@ -198,6 +198,10 @@ struct PaletteFallbackNotice: Equatable {
 }
 
 final class AppSettings: ObservableObject {
+    @Published var statisticsEngine: StatisticsEngineChoice = .stored() {
+        didSet { defaults.set(statisticsEngine.rawValue, forKey: StatisticsEngineChoice.storageKey) }
+    }
+
     private static let keepMainWindowOnTopKey = "CodexManagerNext.keepMainWindowOnTop"
     private static let keepRunningWhenMainWindowClosedKey = "CodexManagerNext.keepRunningWhenMainWindowClosed"
     private static let visibleRuntimeScopesKey = "CodexManagerNext.visibleRuntimeScopes"
@@ -367,6 +371,7 @@ final class AppSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard, paletteCatalog: PaletteCatalog = .loadFromMainBundle()) {
         self.defaults = defaults
+        statisticsEngine = .stored(defaults: defaults)
         self.paletteCatalog = paletteCatalog
         setupProgress = .load(from: defaults)
         let storedPaletteID = defaults.string(forKey: Self.paletteIDKey)

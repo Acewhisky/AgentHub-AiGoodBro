@@ -13,6 +13,7 @@ class LocalCLIAccountTests(unittest.TestCase):
         sources = [
             ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift",
             ROOT / "Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/GrokResetStatusObservationReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift",
             ROOT / "tests/LocalCLIAccountFixture.swift",
         ]

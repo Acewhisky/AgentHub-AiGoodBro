@@ -1,0 +1,6 @@
+usageCharts.js: Javis603/token-monitor, MIT, Copyright (c) 2026 Javis.
+Source: https://github.com/Javis603/token-monitor/blob/ef079b6fb494e1cfcb24736cfcf4d4e591222eaf/src/electron/renderer/usageCharts.js
+Commit: ef079b6fb494e1cfcb24736cfcf4d4e591222eaf
+SHA256: 9f7bb053c55afc080342820093b899c156d22754683afab0009fb0d7ee5f9441
+Vendor bytes unchanged. standalone.html/js/css are local integration adapters.
+Only standalone.html is loaded by the native host. No Electron or Hub runtime.

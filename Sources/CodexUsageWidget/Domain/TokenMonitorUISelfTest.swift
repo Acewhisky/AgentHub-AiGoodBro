@@ -165,7 +165,9 @@ enum TokenMonitorUISelfTest {
         expect(
             ProviderIconSlot.card.hitTarget >= 32 && ProviderIconSlot.detail.hitTarget >= 32 && ProviderIconSlot.editor.hitTarget >= 32,
             "card/detail/editor avatars keep a 32pt hit target")
-        expect(ProviderIconSlot.list.container == 24, "list avatars stay 24pt so compact rows do not grow")
+        expect(
+            ProviderIconSlot.compactRow.container == 20 && ProviderIconSlot.compactRow.glyph == 20,
+            "compact-row avatars keep the original 20pt footprint")
         var table = AccountAvatarTable()
         table.set(.init(mode: .emoji, emoji: "😀"), for: "a")
         table.set(.init(mode: .image, assetID: "avatar-a-1"), for: "b")
@@ -525,7 +527,7 @@ enum TokenMonitorUISelfTest {
             "banked announcements are labeled as reset-card announcements"
         )
         let regularMeaning = PublicResetAnnouncementPresentation.interpretation(.regular, language: .zh)
-        expect(!regularMeaning.contains("有人额度") && regularMeaning.contains("不确认"), "regular copy does not invent personal delivery")
+        expect(!regularMeaning.contains("有人额度") && regularMeaning.contains("不代表个人额度已刷新"), "regular copy does not invent personal delivery")
         expect(AnnouncementOriginalText.collapsedLineLimit == 3, "home announcement defaults to three lines")
         expect(
             PublicResetAnnouncementPresentation.eventTime(Date(timeIntervalSince1970: 1_789_000_000), language: .zh).contains(":"),

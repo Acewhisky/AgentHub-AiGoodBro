@@ -47,6 +47,9 @@ def fixture_source(source_root: Path) -> str:
     actions = read_source(source_root, f"{services}/CodexAccountActions.swift")
     profile_store = read_source(source_root, f"{services}/CodexProfileStore.swift")
     pipe_reader = read_source(source_root, f"{services}/CodexAppServerTaskClient.swift")
+    models = read_source(source_root, "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift")
+    engine = read_source(source_root, f"{services}/TokenMonitorEngine.swift")
+    usage_models = read_source(source_root, "Sources/CodexUsageWidget/Domain/UsageModels.swift")
 
     gate = extract_declaration(actions, "enum CodexCredentialAccessGate")
     pending = extract_declaration(reader, "final class AppServerPendingResponses")
@@ -121,8 +124,6 @@ enum CodexOfficialProfileReader {
 }
 
 struct AccountInfo { var email: String? }
-struct RateWindow {}
-struct CreditsInfo {}
 
 class PerformanceMonitor {
     enum Kind { case appServerQuota }
@@ -375,6 +376,10 @@ exit(Int32(failures == 0 ? 0 : 1))
 
     return (
         stubs
+        + "\n"
+        + models + "\n" + engine + "\n"
+        + "\n".join(extract_declaration(usage_models, name) for name in [
+            "struct RateWindow:", "struct CreditsInfo:", "struct ResetCreditDetail:"])
         + "\n"
         + gate
         + "\nenum CodexProfileStore {\n"

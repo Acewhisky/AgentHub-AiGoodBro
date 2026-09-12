@@ -8,6 +8,10 @@ VERSION="${1:-$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Re
 PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)"
 BUILD_DIR="${BUILD_DIR:-build}"
 DIST_DIR="${DIST_DIR:-dist}"
+TOKEN_MONITOR_CACHE="${TOKEN_MONITOR_CACHE:-$HOME/Library/Caches/AiGoodBro/Next/token-monitor-downloads}"
+TOKEN_MONITOR_RECEIPT_DIR="${TOKEN_MONITOR_RECEIPT_DIR:-.build-receipts/AiGoodBro/Next}"
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+export TOKEN_MONITOR_CACHE TOKEN_MONITOR_RECEIPT_DIR SIGN_IDENTITY
 
 if [[ "$VERSION" != "$PLIST_VERSION" ]]; then
   echo "Requested version $VERSION does not match Info.plist version $PLIST_VERSION" >&2
@@ -16,6 +20,7 @@ fi
 
 make memory-risk-check BUILD_DIR="$BUILD_DIR"
 python3 tests/test_health_boundaries.py
+python3 -B tests/test_token_monitor_packaging.py
 plutil -lint Resources/Info.plist
 git diff --check
 
@@ -42,6 +47,9 @@ verify_asset() {
   file "$mount_dir/AiGoodBro.app/Contents/MacOS/AiGoodBro" | grep -q "$expected_arch"
   codesign --verify --deep --strict "$mount_dir/AiGoodBro.app"
   local resources="$mount_dir/AiGoodBro.app/Contents/Resources"
+  python3 scripts/prepare-token-monitor-resources.py --verify --resources "$resources" \
+    --bundle "$mount_dir/AiGoodBro.app" --arch "$arch" --cache "$TOKEN_MONITOR_CACHE" \
+    --trusted-receipt "$TOKEN_MONITOR_RECEIPT_DIR/token-monitor-${arch}.json" --sign-identity "$SIGN_IDENTITY"
   local hub="$resources/CompanionHub/agent-remote-control"
   [[ -x "$hub" ]] || { echo "Missing bundled Companion Hub" >&2; exit 1; }
   file "$hub" | grep -q "$expected_arch"
@@ -62,7 +70,10 @@ assert manifest == {
 }
 for forbidden in ('runtime-paths.json', 'runtime-python.txt'):
     assert not list(resources.rglob(forbidden)), forbidden
-for forbidden in ('__pycache__', '.pytest_cache', 'node_modules'):
+# TokenMonitorEngine closure was rebuilt and verified above; no other exception.
+for modules in resources.rglob('node_modules'):
+    assert modules.is_relative_to(resources / 'TokenMonitorEngine/vendor'), 'outside node_modules'
+for forbidden in ('__pycache__', '.pytest_cache'):
     assert not list(resources.rglob(forbidden)), forbidden
 for forbidden in ('python', 'python3', 'codex'):
     assert not list(resources.rglob(forbidden)), forbidden

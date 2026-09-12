@@ -331,13 +331,21 @@ final class CodexUsageReader {
     private static var localAnalyticsCache: LocalAnalyticsCacheEntry?
     private static let localAnalyticsLock = NSLock()
 
-    func load(context: RuntimeLoadContext, quotaOnly: Bool = false, requestTimeout: TimeInterval? = nil) -> UsageSnapshot {
+    func load(
+        context: RuntimeLoadContext, quotaOnly: Bool = false, requestTimeout: TimeInterval? = nil,
+        managedProfile: CodexProfile? = nil,
+        cancellation: TokenMonitorCancellation = TokenMonitorCancellation(),
+        selectLimitsProvider: ((TokenMonitorResponse, String) -> TokenMonitorJSON?)? = nil
+    ) -> UsageSnapshot {
         var messages: [String] = []
         let appServer = readQuotaSnapshot(
             context: context,
             quotaOnly: quotaOnly,
             messages: &messages,
-            requestTimeout: requestTimeout
+            requestTimeout: requestTimeout,
+            managedProfile: managedProfile,
+            cancellation: cancellation,
+            selectLimitsProvider: selectLimitsProvider
         )
         return finishingLoad(
             appServer: appServer,
@@ -347,21 +355,145 @@ final class CodexUsageReader {
         )
     }
 
-    /// 只读官方额度（app-server 一段）。不同账号 home 之间可并行；本地统计仍在 finishingLoad 串行完成。
+    /// Membership and callers without managed context retain same-home RPC.
+    /// Managed reads use the confirmed source-bound HTTP target before optional RPC.
     func readQuotaSnapshot(
         context: RuntimeLoadContext,
         quotaOnly: Bool,
         messages: inout [String],
         refreshingMembershipFor profile: CodexProfile? = nil,
-        requestTimeout: TimeInterval? = nil
+        requestTimeout: TimeInterval? = nil,
+        managedProfile: CodexProfile? = nil,
+        engine: TokenMonitorEngine = TokenMonitorEngine(),
+        cancellation: TokenMonitorCancellation = TokenMonitorCancellation(),
+        selectLimitsProvider: ((TokenMonitorResponse, String) -> TokenMonitorJSON?)? = nil
     ) -> AppServerSnapshot {
-        return readAppServer(
-            context: context,
-            messages: &messages,
-            quotaOnly: quotaOnly,
-            refreshingMembershipFor: profile,
-            requestTimeout: requestTimeout
-        )
+        if profile != nil || managedProfile == nil {
+            return readAppServer(
+                context: context, messages: &messages, quotaOnly: quotaOnly,
+                refreshingMembershipFor: profile, requestTimeout: requestTimeout)
+        }
+        guard !cancellation.isCancelled else {
+            messages.append(TokenMonitorFailure.cancelled.rawValue)
+            return AppServerSnapshot()
+        }
+        let budget = requestTimeout ?? 15
+        guard budget.isFinite, budget > 0 else {
+            messages.append(TokenMonitorFailure.invalidRequest.rawValue)
+            return AppServerSnapshot()
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        let home = context.codexHomeDirectory.resolvingSymlinksInPath().standardizedFileURL
+        let gate = CodexCredentialAccessGate.homeLock(forHomePath: home.path)
+        while !gate.try() {
+            guard !cancellation.isCancelled, ProcessInfo.processInfo.systemUptime - started < min(budget, 60) else {
+                messages.append(cancellation.isCancelled ? TokenMonitorFailure.cancelled.rawValue : TokenMonitorFailure.timedOut.rawValue)
+                return AppServerSnapshot()
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        defer { gate.unlock() }
+        guard !cancellation.isCancelled, let managedProfile, !managedProfile.isSystemProfile,
+            managedProfile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL == home,
+            home != context.homeDirectory.appendingPathComponent(".codex").resolvingSymlinksInPath().standardizedFileURL,
+            let before = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: home),
+            managedProfile.matchesRecordedCredential(before)
+        else {
+            messages.append(TokenMonitorFailure.invalidSource.rawValue)
+            return AppServerSnapshot()
+        }
+        let stableAuth: Data
+        do {
+            guard
+                let data = try DispatchParticipationSync.readBoundedRegularFile(
+                    home.appendingPathComponent("auth.json"), maximumBytes: 1_048_576)
+            else {
+                throw TokenMonitorFailure.invalidSource
+            }
+            stableAuth = data
+        } catch {
+            messages.append(TokenMonitorFailure.invalidSource.rawValue)
+            return AppServerSnapshot()
+        }
+        func isStable() -> Bool {
+            guard !cancellation.isCancelled,
+                ProcessInfo.processInfo.systemUptime - started < min(budget, 60),
+                let data = try? DispatchParticipationSync.readBoundedRegularFile(
+                    home.appendingPathComponent("auth.json"), maximumBytes: 1_048_576), data == stableAuth,
+                let after = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: home)
+            else { return false }
+            return before.accountID == after.accountID && before.email == after.email
+                && managedProfile.matchesRecordedCredential(after)
+        }
+        var request = TokenMonitorRequest(
+            operation: .collectLimits,
+            timezone: context.statistics.resolvedIdentifier,
+            cacheDirectory: context.cacheDirectory.appendingPathComponent("TokenMonitorEngine").path,
+            sources: [
+                TokenMonitorSource(
+                    id: managedProfile.id, providerId: "codex", kind: .managedAccount,
+                    canonicalPath: home.path, pathRole: .codexHome, accountId: managedProfile.id, toolId: "codex")
+            ])
+        do {
+            let remaining = min(budget, 60) - (ProcessInfo.processInfo.systemUptime - started)
+            guard remaining > 0 else { throw TokenMonitorFailure.timedOut }
+            // Reserve a bounded portion for a meaningful same-home fallback.
+            request.options.timeoutMs = max(1, Int(min(remaining * 0.7, 12) * 1000))
+            let response = try engine.collect(request: request, cancellation: cancellation)
+            guard isStable() else { throw TokenMonitorFailure.invalidSource }
+            guard response.status != .error,
+                let bound = TokenMonitorCodexLimits.select(response, sourceID: managedProfile.id),
+                selectLimitsProvider.map({ $0(response, managedProfile.id) == bound }) ?? true
+            else {
+                throw TokenMonitorFailure.limitsMappingUnavailable
+            }
+            let limits = try TokenMonitorCodexLimits(
+                provider: bound, sourceID: managedProfile.id,
+                accountID: managedProfile.id, response: response)
+            var result = AppServerSnapshot().replacingEngineQuota(limits, response: response)
+            result.quotaProvenance = "engine"
+            result.account = AccountInfo(
+                type: "chatgpt", planType: nil,
+                emailPresent: !before.email.isEmpty, email: before.email)
+            if result.auxiliaryReadStatus == .unavailable || !quotaOnly {
+                let remaining = min(budget, 60) - (ProcessInfo.processInfo.systemUptime - started)
+                if remaining > 2 {
+                    let auxiliary = readAppServer(
+                        context: context, messages: &messages, quotaOnly: quotaOnly,
+                        requestTimeout: min(3, remaining - 1.5), cancellation: cancellation)
+                    guard isStable() else { throw TokenMonitorFailure.invalidSource }
+                    if managedProfile.matchesRecordedAccount(email: auxiliary.account?.email) {
+                        result.account = auxiliary.account
+                        result.cloudLifetimeTokens = auxiliary.cloudLifetimeTokens
+                        if result.auxiliaryReadStatus == .unavailable, let credits = auxiliary.credits {
+                            result.credits = credits
+                            result.auxiliaryReadStatus = .legacyRPC
+                        }
+                    }
+                }
+            }
+            if result.auxiliaryReadStatus == .unavailable || (!quotaOnly && result.cloudLifetimeTokens == nil) {
+                messages.append("auxiliary_unavailable")
+            }
+            guard isStable() else { throw TokenMonitorFailure.invalidSource }
+            return result
+        } catch {
+            let reason = (error as? TokenMonitorFailure) ?? .invalidResponse
+            messages.append(reason.rawValue)
+            guard isStable() else { return AppServerSnapshot() }
+            let remaining = min(budget, 60) - (ProcessInfo.processInfo.systemUptime - started)
+            guard remaining > 1.5 else { return AppServerSnapshot() }
+            var fallback = readAppServer(
+                context: context, messages: &messages, quotaOnly: quotaOnly,
+                requestTimeout: remaining - 1, cancellation: cancellation)
+            guard isStable(), managedProfile.matchesRecordedAccount(email: fallback.account?.email) else {
+                messages.append(TokenMonitorFailure.invalidSource.rawValue)
+                return AppServerSnapshot()
+            }
+            fallback.quotaProvenance = "same_home_rpc_fallback"
+            fallback.engineFailureCode = reason
+            return fallback
+        }
     }
 
     /// 用已取回的 app-server 快照补齐本地统计，组装完整 UsageSnapshot。
@@ -369,7 +501,8 @@ final class CodexUsageReader {
         appServer: AppServerSnapshot,
         messages: [String],
         context: RuntimeLoadContext,
-        quotaOnly: Bool
+        quotaOnly: Bool,
+        statisticsEngine: StatisticsEngineChoice = StatisticsEngineChoice.stored()
     ) -> UsageSnapshot {
         var messages = messages
         func snapshot(local: LocalUsage?) -> UsageSnapshot {
@@ -390,6 +523,24 @@ final class CodexUsageReader {
             )
         }
         if quotaOnly { return snapshot(local: nil) }
+        switch statisticsEngine {
+        case .upstream:
+            // Full multidimensional statistics are owned by UsageStore.engineState.
+            // Never present the native collector as a successful engine fallback.
+            return snapshot(local: nil)
+        case .custom:
+            let entries = CustomTokenSourceStore.load().filter { $0.tokens >= 0 }
+            let shares = entries.map { AgentTokenShare(name: $0.name, tokens: $0.tokens, manual: true) }
+            let total = summedTokenCounts(shares.map(\.tokens))
+            return snapshot(
+                local: LocalUsage(
+                    lifetimeTokens: 0, todayTokens: 0, sevenDayTokens: 0, threadCount: 0,
+                    lastUpdatedAt: nil, dailyBuckets: [], recentThreads: [], detailedUsage: nil,
+                    usageTrend: nil, inferencePerformance: nil, projectBoard: nil, toolUsages: [], skillUsages: [],
+                    allAgentsLifetimeTokens: total, allAgentsTodayTokens: nil, allAgentsShares: shares,
+                    coverage: .dailyOnly))
+        case .nativeLegacy: break
+        }
 
         var local: LocalUsage?
         let ccSwitchReader = CCSwitchUsageReader()
@@ -441,13 +592,13 @@ final class CodexUsageReader {
             mergedShares.append(AgentTokenShare(name: "ZCode", tokens: zcode.lifetimeTokens))
         }
         mergedShares = replacingGrokSessionShare(in: mergedShares, with: GrokUsageReader.lifetimeTokens())
-        for entry in CustomTokenSourceStore.load() {
-            mergedShares.append(AgentTokenShare(name: entry.name, tokens: entry.tokens, manual: true))
-        }
         mergedShares.sort { $0.tokens > $1.tokens }
-        guard let mergedLifetime = summedTokenCounts(mergedShares.map(\.tokens)),
-            let mergedToday = summedTokenCounts([local?.allAgentsTodayTokens ?? 0, zcodeUsage?.todayTokens ?? 0])
+        guard let baseToday = local?.allAgentsTodayTokens,
+            let zcodeToday = zcodeUsage?.todayTokens,
+            let mergedLifetime = summedTokenCounts(mergedShares.map(\.tokens)),
+            let mergedToday = summedTokenCounts([baseToday, zcodeToday])
         else {
+            local?.coverage = .dailyOnly
             local?.allAgentsLifetimeTokens = nil
             local?.allAgentsTodayTokens = nil
             local?.allAgentsShares = []
@@ -490,6 +641,13 @@ final class CodexUsageReader {
     }
 
     struct AppServerSnapshot {
+        enum AuxiliaryReadStatus { case legacyRPC, upstreamResetCredits, unavailable }
+        // legacyRPC preserves old caller semantics; upstreamResetCredits covers only reset evidence,
+        // not membership/cloud or consumable card IDs. No historical auxiliary timestamp is advanced here.
+        var auxiliaryReadStatus: AuxiliaryReadStatus = .legacyRPC
+        var quotaProvenance: String? = nil
+        var engineFailureCode: TokenMonitorFailure? = nil
+        var engineLimits: TokenMonitorResponse?
         var account: AccountInfo?
         var membershipRefreshSucceeded = false
         var limitId: String?
@@ -501,6 +659,34 @@ final class CodexUsageReader {
         var rateLimitDiagnostics: [String] = []
         var credits: CreditsInfo?
         var cloudLifetimeTokens: Int64?
+
+        func replacingEngineQuota(_ limits: TokenMonitorCodexLimits, response: TokenMonitorResponse) -> Self {
+            func map(_ window: TokenMonitorCodexLimits.Window?) -> RateWindow? {
+                window.map { RateWindow(usedPercent: $0.usedPercent, windowDurationMins: $0.minutes, resetsAt: $0.resetsAt) }
+            }
+            var result = self
+            result.engineLimits = response
+            result.quotaReadSucceeded = true
+            if let reset = limits.original["resetCredits"],
+                let count = reset["availableCount"]?.double, count.isFinite, count >= 0,
+                let integer = Int(exactly: count)
+            {
+                let balance = limits.original["credits"]
+                result.credits = CreditsInfo(
+                    hasCredits: balance?["hasCredits"] == .bool(true),
+                    unlimited: balance?["unlimited"] == .bool(true), balance: balance?["balance"]?.string,
+                    resetCredits: integer, resetCreditDetails: nil)
+                result.auxiliaryReadStatus = .upstreamResetCredits
+            } else if result.credits == nil {
+                result.auxiliaryReadStatus = .unavailable
+            }
+            result.fiveHourQuota = map(limits.fiveHour)
+            result.sevenDayQuota = map(limits.sevenDay)
+            result.monthlyQuota = map(limits.monthly)
+            result.limitId = limits.limitID
+            result.membershipRefreshSucceeded = false
+            return result
+        }
     }
 
     /// Reads a specifically identifiable, supported reset card. This is intentionally
@@ -933,7 +1119,8 @@ final class CodexUsageReader {
         messages: inout [String],
         quotaOnly: Bool,
         refreshingMembershipFor profile: CodexProfile? = nil,
-        requestTimeout: TimeInterval? = nil
+        requestTimeout: TimeInterval? = nil,
+        cancellation: TokenMonitorCancellation? = nil
     ) -> AppServerSnapshot {
         // 系统默认 home 是官方 Codex 正在使用的登录，保持原有全局门禁不变；
         // 其他账号 home 只涉及自身凭据，按 home 互斥即可允许跨账号并行读取。
@@ -1193,7 +1380,15 @@ final class CodexUsageReader {
         ])
 
         let responseTimeout = requestTimeout.map { min(30, max(1, $0)) } ?? (quotaOnly ? 30 : 12)
-        if pendingResponses.group.wait(timeout: .now() + responseTimeout) == .timedOut {
+        let responseDeadline = ProcessInfo.processInfo.systemUptime + responseTimeout
+        var responseCompleted = false
+        while cancellation?.isCancelled != true && ProcessInfo.processInfo.systemUptime < responseDeadline {
+            if pendingResponses.group.wait(timeout: .now() + 0.05) == .success {
+                responseCompleted = true
+                break
+            }
+        }
+        if !responseCompleted {
             failPendingResponses(
                 WidgetLanguage.storedOrAutomatic().text(
                     "app-server 响应超时",

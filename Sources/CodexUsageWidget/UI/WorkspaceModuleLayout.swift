@@ -103,7 +103,7 @@ struct WorkspaceModules<Content: View>: View {
         ModuleGrid {
             ForEach(arrangement.order, id: \.self) { id in
                 VStack(alignment: .leading, spacing: 8) {
-                    if editing { handle(id) }
+                    handle(id)
                     content(id)
                     if extraSpace(id) > 0 {
                         Color.clear.frame(height: extraSpace(id))
@@ -136,10 +136,27 @@ struct WorkspaceModules<Content: View>: View {
     }
 
     private func handle(_ id: String) -> some View {
-        HStack {
-            Label(title(id), systemImage: "line.3.horizontal")
+        HStack(spacing: 8) {
+            Text(title(id))
                 .font(.caption.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if dragged == id {
+                Text(language.text("松手吸附到最近位置", "Release to snap"))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            if editing {
+                Menu {
+                    Button(language.text("增高一格", "Grow one step")) { arrangement.resizeHeight(id, by: 24) }
+                    Button(language.text("缩短一格", "Shrink one step")) { arrangement.resizeHeight(id, by: -24) }
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                }
+                .menuStyle(.borderlessButton).frame(width: 24)
+                .help(language.text("调整模块尺寸", "Resize module"))
+            }
+            Image(systemName: "line.3.horizontal")
+                .font(.caption.weight(.semibold))
+                .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 4)
@@ -162,28 +179,13 @@ struct WorkspaceModules<Content: View>: View {
                             }
                             dragged = nil
                             translation = .zero
-                        })
-            if dragged == id {
-                Text(language.text("松手吸附到最近位置", "Release to snap"))
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            Menu {
-                Button(language.text("上移", "Move up")) { move(id, delta: -1) }
-                Button(language.text("下移", "Move down")) { move(id, delta: 1) }
-                Divider()
-                Button(language.text("增高一格", "Grow one step")) { arrangement.resizeHeight(id, by: 24) }
-                Button(language.text("缩短一格", "Shrink one step")) { arrangement.resizeHeight(id, by: -24) }
-            } label: {
-                Image(systemName: "arrow.up.arrow.down")
-            }
-            .menuStyle(.borderlessButton).frame(width: 24)
+                        }
+                )
+                .help(language.text("拖动模块排序", "Drag to reorder module"))
+                .accessibilityLabel(language.text("拖动\(title(id))模块排序", "Drag \(title(id)) module to reorder"))
+                .accessibilityIdentifier("next.workspace.module.grip.\(id)")
         }
         .foregroundStyle(Color.accentColor)
-    }
-
-    private func move(_ id: String, delta: Int) {
-        guard let index = arrangement.order.firstIndex(of: id), arrangement.order.indices.contains(index + delta) else { return }
-        arrangement.move(id, to: arrangement.order[index + delta])
     }
 
     private func resizeHandle(_ id: String) -> some View {

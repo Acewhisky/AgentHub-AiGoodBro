@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import hashlib
 import os
+import platform
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,23 +13,36 @@ DOMAIN = ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift"
 READER = ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift"
 BOUNDED_READER = ROOT / "Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift"
 FIXTURE = ROOT / "tests/LocalCLIQuotaFixture.swift"
-SDK = Path("/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk")
+MODELS = ROOT / "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift"
+ENGINE = ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift"
+UPSTREAM_READER = ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift"
 
 
 class LocalCLIQuotaTests(unittest.TestCase):
     def test_actual_swift_sources_with_synthetic_fixture(self):
-        self.assertTrue(SDK.is_dir(), f"required synthetic-test SDK missing: {SDK}")
+        sdk = subprocess.check_output(
+            ["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True
+        ).strip()
+        self.assertTrue(Path(sdk).is_dir(), f"synthetic-test SDK missing: {sdk}")
         with tempfile.TemporaryDirectory(prefix="local-cli-quota-test-") as temporary:
             output = Path(temporary) / "fixture"
             cache = Path(temporary) / "module-cache"
             cache.mkdir()
+            guard = subprocess.run(
+                ["python3", str(ROOT / "scripts/check-build-target-idle.py"), str(output)],
+                cwd=ROOT, text=True, capture_output=True, timeout=30, check=False,
+            )
+            self.assertEqual(guard.returncode, 0, guard.stdout + guard.stderr)
             compile_result = subprocess.run(
                 [
-                    "swiftc",
-                    "-sdk", str(SDK),
-                    "-target", "arm64-apple-macosx13.0",
+                    "xcrun", "swiftc",
+                    "-sdk", sdk,
+                    "-target", f"{platform.machine()}-apple-macos13.0",
                     "-module-cache-path", str(cache),
                     str(DOMAIN),
+                    str(MODELS),
+                    str(ENGINE),
+                    str(UPSTREAM_READER),
                     str(BOUNDED_READER),
                     str(READER),
                     str(FIXTURE),

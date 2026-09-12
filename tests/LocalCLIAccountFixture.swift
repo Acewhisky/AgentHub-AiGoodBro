@@ -312,6 +312,39 @@ private func testManagedGrokIsolationAndStaleWriter() throws {
     try expect(fm.fileExists(atPath: auth.path), "unlink preserves Grok CLI-owned credentials")
 }
 
+private actor QuotaReadSequence {
+    private var states: [LocalCLIQuotaState] = [.available, .unavailable, .needsLogin, .available]
+    func next() -> LocalCLIQuotaResult {
+        LocalCLIQuotaResult(state: states.removeFirst(), fetchedAt: Date(), maskedIdentity: nil,
+                            identityFingerprint: nil, planLabel: "Synthetic", windows: [],
+                            balance: nil, balanceCurrency: nil, sourceLabel: "Synthetic", messageCode: nil)
+    }
+}
+
+@MainActor
+private func testTransientFailureAndConfirmedSignOut() async throws {
+    let paths = try makeRoot("read-state")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let sequence = QuotaReadSequence()
+    let store = makeStore(home: paths.home, support: paths.support, loader: { _ in await sequence.next() })
+    store.discover()
+    let directory = paths.root.appendingPathComponent("linked", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    store.link(kind: .zcode, directory: directory, name: "Synthetic")
+    guard let linked = store.profiles(for: .zcode).first(where: { !$0.isDefault }) else {
+        throw FixtureFailure.failed("synthetic linked profile")
+    }
+    for (expected, isStale) in [(LocalCLIQuotaState.available, false), (.available, true), (.needsLogin, false), (.available, false)] {
+        store.refresh(linked)
+        for _ in 0..<100 where store.refreshing.contains(linked.id) {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        try expect(store.quotas[linked.id]?.state == expected, "read state updates without retaining a false login")
+        try expect(store.stale.contains(linked.id) == isStale, "only temporary failure retains stale quota")
+        try expect(store.profiles.contains(where: { $0.id == linked.id }), "sign-out preserves saved account identity")
+    }
+}
+
 @main enum Main {
     @MainActor static func main() async throws {
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
@@ -320,6 +353,7 @@ private func testManagedGrokIsolationAndStaleWriter() throws {
         try await testUnlinkRejectsLateRefresh()
         try await testRediscoveryRemovesOtherWritersAccountState()
         try testManagedGrokIsolationAndStaleWriter()
+        try await testTransientFailureAndConfirmedSignOut()
         print("local-cli-account-fixture: ok")
     }
 }

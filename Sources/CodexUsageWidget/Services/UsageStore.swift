@@ -10,6 +10,131 @@ enum VisualEnergyMode: Equatable {
 }
 
 final class UsageStore: ObservableObject {
+    @Published private(set) var engineState = TokenMonitorEngineState()
+    @Published private(set) var statisticsEngineChoice = StatisticsEngineChoice.stored()
+    private var engineGeneration = TokenMonitorGeneration()
+    private var engineCancellation: TokenMonitorCancellation?
+    private var engineLocalSources: [TokenMonitorSource] = []
+    private var statisticsIncludesManagedCodex = true
+    @Published private(set) var engineLimitsByProfileID: [String: TokenMonitorResponse] = [:]
+    private var engineQuotaCancellation: TokenMonitorCancellation?
+    private var engineLimitsSelector: ((TokenMonitorResponse, String) -> TokenMonitorJSON?)?
+
+    /// Optional additional selector restriction; it cannot override confirmed target binding.
+    func configureStatisticsLimitsSelector(_ selector: @escaping (TokenMonitorResponse, String) -> TokenMonitorJSON?) {
+        engineLimitsSelector = selector
+        cancelStatisticsEngine()
+    }
+
+    /// Root supplies the existing local account store's metadata, never credentials.
+    /// History remains unattributed: a current CLI login does not prove historical account ownership.
+    func configureStatisticsLocalProfiles(_ localProfiles: [LocalCLIProfile]) {
+        engineLocalSources = localProfiles.compactMap { profile in
+            let provider: String
+            let logs: String
+            switch profile.kind {
+            case .grok:
+                provider = "grok"
+                logs = "sessions"
+            case .claudeCode:
+                provider = "claude"
+                logs = "projects"
+            default: return nil  // Other exact provider log-root mappings require WorkBuddy confirmation.
+            }
+            return TokenMonitorSource(
+                id: "local-" + profile.id, providerId: provider, kind: .agentLogs,
+                canonicalPath: URL(fileURLWithPath: profile.configDirectory).appendingPathComponent(logs).path,
+                pathRole: .logRoot, toolId: provider)
+        }
+        cancelStatisticsEngine()
+        if hasStarted { refresh(queueIfBusy: true) }
+    }
+
+    /// Caller supplies approved upstream collector roots and exact path roles, never inferred homes.
+    func configureStatisticsSources(_ sources: [TokenMonitorSource], includeManagedCodex: Bool = true) throws {
+        guard sources.allSatisfy({ $0.authority == .upstream }) else { throw TokenMonitorFailure.invalidSource }
+        engineLocalSources = try TokenMonitorSource.validated(sources)
+        statisticsIncludesManagedCodex = includeManagedCodex
+        cancelStatisticsEngine()
+        if hasStarted { refresh(queueIfBusy: true) }
+    }
+
+    func selectStatisticsEngine(_ choice: StatisticsEngineChoice) {
+        UserDefaults.standard.set(choice.rawValue, forKey: StatisticsEngineChoice.storageKey)
+        statisticsEngineChoice = choice
+        cancelStatisticsEngine()
+        // Previous-mode values must not be aggregated with the newly selected authority.
+        engineState = TokenMonitorEngineState()
+        engineLimitsByProfileID = [:]
+        refresh(queueIfBusy: true)
+    }
+
+    private func cancelStatisticsEngine() {
+        engineGeneration.invalidate()
+        engineCancellation?.cancel()
+        engineCancellation = nil
+        engineState.phase = .stopped
+    }
+
+    private func refreshStatisticsEngine() {
+        cancelStatisticsEngine()
+        let choice = StatisticsEngineChoice.stored()
+        statisticsEngineChoice = choice
+        guard choice == .upstream else {
+            engineState = TokenMonitorEngineState(phase: choice == .custom ? .custom : .legacy)
+            return
+        }
+        let generation = engineGeneration.value
+        let cancellation = TokenMonitorCancellation()
+        engineCancellation = cancellation
+        engineState.phase = .loading
+        engineState.failureCode = nil
+        let candidates = statisticsIncludesManagedCodex ? profiles.filter { !$0.isSystemProfile } : []
+        let localSources = engineLocalSources
+        let preference = statisticsPreference
+        DispatchQueue.global(qos: .utility).async {
+            let context = RuntimeLoadContext.live(statisticsPreference: preference)
+            var sources = localSources
+            for profile in candidates {
+                let home = profile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+                // Registered home provenance is independent of current login and historical ownership.
+                sources.append(
+                    TokenMonitorSource(
+                        id: profile.id, providerId: "codex", kind: .managedAccount,
+                        canonicalPath: home.path, pathRole: .codexHome, toolId: "codex"))
+            }
+            var request = TokenMonitorRequest(
+                operation: .collectUsage,
+                timezone: context.statistics.resolvedIdentifier,
+                cacheDirectory: context.cacheDirectory.appendingPathComponent("TokenMonitorEngine").path,
+                sources: sources)
+            // A full multi-agent history scan can outlast a single account quota request.
+            request.options.timeoutMs = 60_000
+            let result: Result<TokenMonitorEngineState, TokenMonitorFailure>
+            do {
+                guard !sources.isEmpty else { throw TokenMonitorFailure.invalidSource }
+                let response = try TokenMonitorEngine().collect(request: request, cancellation: cancellation)
+                guard response.status != .error else { throw TokenMonitorFailure.engineError }
+                let prepared = TokenMonitorEngineState(phase: response.status == .ok ? .ready : .partial, lastGood: response)
+                guard prepared.dashboardJSON != nil else { throw TokenMonitorFailure.invalidResponse }
+                result = .success(prepared)
+            } catch { result = .failure((error as? TokenMonitorFailure) ?? .invalidResponse) }
+            DispatchQueue.main.async {
+                guard self.engineGeneration.accepts(generation), !cancellation.isCancelled,
+                    choice == StatisticsEngineChoice.stored(), preference == self.statisticsPreference
+                else { return }
+                self.engineCancellation = nil
+                switch result {
+                case .success(let prepared):
+                    self.engineState = prepared
+                case .failure(let failure):
+                    self.engineState.phase = .failed
+                    self.engineState.failureCode = failure
+                }
+            }
+        }
+    }
+
     private struct StatisticsSnapshotCacheEntry {
         let snapshot: MultiRuntimeUsageSnapshot
         let cachedAt: Date
@@ -805,6 +930,19 @@ final class UsageStore: ObservableObject {
         } catch {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                 "Chrome 用户资料保存失败：\(error.localizedDescription)", "Could not save the Chrome profile: \(error.localizedDescription)")
+        }
+    }
+
+    @discardableResult
+    func reorderProfiles(_ orderedIDs: [String], expectedCurrentOrder: [String]) -> Bool {
+        do {
+            try profileStore.reorderProfiles(orderedIDs, expectedCurrentOrder: expectedCurrentOrder)
+            profiles = profileStore.profiles
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("账号顺序已保存", "Account order saved.")
+            return true
+        } catch {
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("调整顺序失败：\(error.localizedDescription)", "Could not save account order: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -3696,6 +3834,10 @@ final class UsageStore: ObservableObject {
         isRefreshingWarmUpProfiles = true
         refreshingProfileIDs = refreshingIDs
         warmUpRefreshStartedAt = Date()
+        let quotaCancellation = TokenMonitorCancellation()
+        engineQuotaCancellation?.cancel()
+        engineQuotaCancellation = quotaCancellation
+        let limitsSelector = engineLimitsSelector
         DispatchQueue.global(qos: .utility).async {
             let contexts = profiles.map { profile in
                 RuntimeLoadContext.live(
@@ -3719,7 +3861,10 @@ final class UsageStore: ObservableObject {
                     let appServer = reader.readQuotaSnapshot(
                         context: contexts[index],
                         quotaOnly: quotaOnly,
-                        messages: &readMessages
+                        messages: &readMessages,
+                        managedProfile: profiles[index],
+                        cancellation: quotaCancellation,
+                        selectLimitsProvider: limitsSelector
                     )
                     quotaResultsLock.lock()
                     quotaResults[index] = (appServer, readMessages)
@@ -3741,7 +3886,9 @@ final class UsageStore: ObservableObject {
                         statisticsPreference: preference,
                         codexHomeDirectory: profile.codexHomeURL
                     )
-                    snapshot = CodexUsageReader().load(context: retryContext, quotaOnly: quotaOnly)
+                    snapshot = CodexUsageReader().load(
+                        context: retryContext, quotaOnly: quotaOnly,
+                        managedProfile: profile, cancellation: quotaCancellation, selectLimitsProvider: limitsSelector)
                 }
                 return (profile.id, snapshot)
             }
@@ -3750,6 +3897,15 @@ final class UsageStore: ObservableObject {
                 self.refreshingProfileIDs.subtract(refreshingIDs)
                 self.warmUpRefreshStartedAt = nil
                 guard self.hasStarted else { return }
+                guard !quotaCancellation.isCancelled else {
+                    completion?(false)
+                    return
+                }
+                for index in quotaResults.indices {
+                    if let envelope = quotaResults[index].appServer.engineLimits {
+                        self.engineLimitsByProfileID[profiles[index].id] = envelope
+                    }
+                }
                 var savedSuccessfulQuota = false
                 var saveFailed = false
                 for (profileID, snapshot) in snapshots {
@@ -4190,6 +4346,9 @@ final class UsageStore: ObservableObject {
 
     @MainActor
     func stop() {
+        cancelStatisticsEngine()
+        engineQuotaCancellation?.cancel()
+        engineQuotaCancellation = nil
         feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         messageChannels.stop()
         invalidateAccountSwitchTransaction()
@@ -4263,6 +4422,7 @@ final class UsageStore: ObservableObject {
             if queueIfBusy { hasPendingRefresh = true }
             return
         }
+        refreshStatisticsEngine()
         refreshGeneration &+= 1
         let generation = refreshGeneration
         let preference = statisticsPreference

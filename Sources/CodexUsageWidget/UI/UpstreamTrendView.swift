@@ -3,12 +3,19 @@ import SwiftUI
 import WebKit
 
 /// 用 WKWebView 加载 token-monitor（Javis603，MIT）的图表资源渲染用量趋势。
-/// 不自己实现绘图：trend.html 里调用的是上游 usageCharts.js 的 areaLineChart + areaLineSvg。
+/// Standalone adapter uses the unchanged upstream heatmap and stacked-bar algorithms.
 @MainActor
 struct UpstreamTrendView: View {
     struct Point: Codable, Equatable {
         let date: String
         let tokens: Double
+    }
+
+    struct ResetAnnotation: Codable, Equatable {
+        enum Kind: String, Codable { case regular, banked }
+        let date: String
+        let kind: Kind
+        let text: String
     }
 
     enum RenderFailure: Equatable {
@@ -29,14 +36,34 @@ struct UpstreamTrendView: View {
     }
 
     let points: [Point]
+    let dashboardJSON: String?
+    let resetAnnotations: [ResetAnnotation]
     var height: CGFloat = 40
     @StateObject private var renderer: Renderer
     @Environment(\.widgetLanguage) private var language
 
     init(points: [Point], height: CGFloat = 40) {
         self.points = points
+        self.dashboardJSON = nil
+        self.resetAnnotations = []
         self.height = height
         _renderer = StateObject(wrappedValue: Renderer())
+    }
+
+    init(dashboardJSON: String, resetAnnotations: [ResetAnnotation] = [], height: CGFloat = 260) {
+        self.points = []
+        self.dashboardJSON = dashboardJSON
+        self.resetAnnotations = resetAnnotations
+        self.height = height
+        _renderer = StateObject(wrappedValue: Renderer())
+    }
+
+    private func updateRenderer() {
+        if let dashboardJSON {
+            renderer.update(dashboardJSON: dashboardJSON, resetAnnotations: resetAnnotations, height: height, language: language)
+        } else {
+            renderer.update(points: points, height: height)
+        }
     }
 
     var body: some View {
@@ -45,19 +72,22 @@ struct UpstreamTrendView: View {
                 renderer: renderer
             )
             .opacity(renderer.state == .ready ? 1 : 0)
-            .allowsHitTesting(false)
+            .allowsHitTesting(renderer.state == .ready)
 
             stateView
         }
         .frame(maxWidth: .infinity, minHeight: max(1, safeHeight))
         .onAppear {
-            renderer.update(points: points, height: height)
+            updateRenderer()
         }
         .onChange(of: points) { updated in
-            renderer.update(points: updated, height: height)
+            updateRenderer()
         }
+        .onChange(of: language) { _ in updateRenderer() }
+        .onChange(of: dashboardJSON) { _ in updateRenderer() }
+        .onChange(of: resetAnnotations) { _ in updateRenderer() }
         .onChange(of: height) { updated in
-            renderer.update(points: points, height: updated)
+            updateRenderer()
         }
     }
 
@@ -83,6 +113,7 @@ struct UpstreamTrendView: View {
             Color.clear
                 .frame(maxWidth: .infinity, minHeight: safeHeight)
                 .accessibilityHidden(true)
+                .allowsHitTesting(false)
         case .failed(let failure):
             HStack(spacing: 8) {
                 Label(failure.title(language), systemImage: "exclamationmark.triangle")
@@ -104,7 +135,7 @@ struct UpstreamTrendView: View {
 
     private var safeHeight: CGFloat {
         guard height.isFinite else { return 40 }
-        return min(240, max(24, height))
+        return min(600, max(24, height))
     }
 
     @MainActor
@@ -270,6 +301,45 @@ struct UpstreamTrendView: View {
         private var activeNavigation: WKNavigation?
         private var activeLoadID: UInt64?
         private var resourceURL: URL?
+        private var dashboardJSON: String?
+        private var dashboardSnapshotRevision: UInt64 = 0
+        private var dashboardSnapshotIsValid = false
+        private var transferredDashboardID: String?
+        private var inFlightRenderID: Lifecycle.RenderID?
+        private var renderPending = false
+        private var resetAnnotations: [ResetAnnotation] = []
+        private var language: WidgetLanguage = .zh
+
+        func permitsNavigation(_ url: URL?) -> Bool {
+            guard let url, let resourceURL else { return false }
+            return url.isFileURL && url.standardizedFileURL == resourceURL.standardizedFileURL
+        }
+
+        func update(dashboardJSON incoming: String, resetAnnotations: [ResetAnnotation], height incomingHeight: CGFloat, language: WidgetLanguage = .zh) {
+            let nextHeight = incomingHeight.isFinite ? min(600, max(24, incomingHeight)) : 260
+            guard self.language != language || dashboardJSON != incoming || self.resetAnnotations != resetAnnotations || height != nextHeight else {
+                return
+            }
+            if dashboardJSON != incoming {
+                let data = incoming.data(using: .utf8)
+                let object = data.flatMap { $0.count <= 16 * 1_024 * 1_024 ? (try? JSONSerialization.jsonObject(with: $0)) : nil } as? [String: Any]
+                dashboardSnapshotIsValid = (object?["schemaVersion"] as? Int) == 1 && object?["payload"] is [String: Any]
+                dashboardSnapshotRevision &+= 1
+                transferredDashboardID = nil
+            }
+            let valid =
+                dashboardSnapshotIsValid
+                && resetAnnotations.count <= 500 && resetAnnotations.allSatisfy { $0.text.utf8.count <= 2_048 }
+            let nextStatus: Lifecycle.InputStatus = valid ? .valid : .invalid
+            self.language = language
+            dashboardJSON = incoming
+            self.resetAnnotations = resetAnnotations
+            height = nextHeight
+            inputStatus = nextStatus
+            lifecycle.updateInput(nextStatus)
+            publishLifecycleState()
+            attemptRenderIfPossible()
+        }
 
         nonisolated static let maximumRenderableToken = Double(Int64.max - 1_024)
 
@@ -283,6 +353,7 @@ struct UpstreamTrendView: View {
         }
 
         func attach(_ web: WKWebView) {
+            if web !== webView { resetTransferredSnapshot() }
             webView = web
         }
 
@@ -291,6 +362,11 @@ struct UpstreamTrendView: View {
         }
 
         func update(points incoming: [Point], height incomingHeight: CGFloat) {
+            let wasDashboard = dashboardJSON != nil
+            dashboardJSON = nil
+            dashboardSnapshotIsValid = false
+            transferredDashboardID = nil
+            resetAnnotations = []
             let filtered = Self.sanitizedPoints(incoming)
             let newInputStatus: Lifecycle.InputStatus = {
                 if incoming.isEmpty { return .empty }
@@ -298,9 +374,9 @@ struct UpstreamTrendView: View {
             }()
             let safeHeight: CGFloat = {
                 guard incomingHeight.isFinite else { return 40 }
-                return min(240, max(24, incomingHeight))
+                return min(600, max(24, incomingHeight))
             }()
-            let changed = inputStatus != newInputStatus || points != filtered || height != safeHeight
+            let changed = wasDashboard || inputStatus != newInputStatus || points != filtered || height != safeHeight
             guard changed else { return }
             points = filtered
             height = safeHeight
@@ -314,7 +390,7 @@ struct UpstreamTrendView: View {
             attach(web)
             guard
                 let resourceURL = Bundle.main.url(
-                    forResource: "trend", withExtension: "html", subdirectory: "UpstreamCharts"
+                    forResource: "standalone", withExtension: "html", subdirectory: "UpstreamCharts"
                 )
             else {
                 self.resourceURL = nil
@@ -340,7 +416,7 @@ struct UpstreamTrendView: View {
             let resolvedResourceURL =
                 resourceURL
                 ?? Bundle.main.url(
-                    forResource: "trend", withExtension: "html", subdirectory: "UpstreamCharts"
+                    forResource: "standalone", withExtension: "html", subdirectory: "UpstreamCharts"
                 )
             guard let resolvedResourceURL else {
                 lifecycle.failWithoutNavigation(.resourceUnavailable)
@@ -373,6 +449,7 @@ struct UpstreamTrendView: View {
             attach(web)
             activeNavigation = nil
             activeLoadID = nil
+            resetTransferredSnapshot()
             lifecycle.contentProcessTerminated()
             publishLifecycleState()
         }
@@ -380,30 +457,88 @@ struct UpstreamTrendView: View {
         func render(in web: WKWebView) {
             guard web === webView, let renderID = lifecycle.beginRender() else { return }
             publishLifecycleState()
-            guard let data = try? JSONEncoder().encode(points),
-                let json = String(data: data, encoding: .utf8)
+            // Keep only one script in flight. A later option/data update invalidates
+            // its completion and renders the latest state after it finishes.
+            guard inFlightRenderID == nil else {
+                renderPending = true
+                return
+            }
+            inFlightRenderID = renderID
+            renderPending = false
+            guard let annotationData = try? JSONEncoder().encode(resetAnnotations),
+                let annotationObject = try? JSONSerialization.jsonObject(with: annotationData)
             else {
+                inFlightRenderID = nil
                 _ = lifecycle.completeRender(renderID, failure: .invalidData)
                 publishLifecycleState()
                 return
             }
-            let width = web.bounds.width.isFinite && web.bounds.width > 0 ? min(4_096, web.bounds.width) : 120
-            let safeHeight = height.isFinite ? min(240, max(24, height)) : 40
-            let script = "window.__renderTrend(\(json),{width:\(width),height:\(safeHeight)})"
-            web.evaluateJavaScript(script) { [weak self, weak web] result, error in
+            let width = web.bounds.width.isFinite && web.bounds.width > 0 ? min(4_096, web.bounds.width) : 650
+            var options: [String: Any] = ["width": width, "height": height, "resetAnnotations": annotationObject, "language": language.rawValue]
+            let snapshotID: String?
+            let input: Any
+            if let dashboardJSON {
+                let id = "\(renderID.load):\(dashboardSnapshotRevision)"
+                snapshotID = id
+                options["snapshotID"] = id
+                input = transferredDashboardID == id ? NSNull() : dashboardJSON
+            } else if let pointData = try? JSONEncoder().encode(points),
+                let pointObject = try? JSONSerialization.jsonObject(with: pointData)
+            {
+                snapshotID = nil
+                input = pointObject
+            } else {
+                inFlightRenderID = nil
+                _ = lifecycle.completeRender(renderID, failure: .invalidData)
+                publishLifecycleState()
+                return
+            }
+            web.callAsyncJavaScript(
+                "return window.__renderTrend(input, options);",
+                arguments: ["input": input, "options": options],
+                in: nil, in: .page
+            ) { [weak self, weak web] completion in
+                let result: Any?
+                let error: Error?
+                switch completion {
+                case .success(let value):
+                    result = value
+                    error = nil
+                case .failure(let failure):
+                    result = nil
+                    error = failure
+                }
                 Task { @MainActor [weak self, weak web] in
-                    guard let self, let web, web === self.webView else { return }
+                    guard let self, let web, web === self.webView, self.inFlightRenderID == renderID else { return }
+                    self.inFlightRenderID = nil
                     let failure: RenderFailure? = {
                         if error != nil { return .scriptFailed }
                         return Self.renderResultIsValid(result) ? nil : .rendererReturnedNoOutput
                     }()
-                    guard self.lifecycle.completeRender(renderID, failure: failure) else { return }
-                    self.publishLifecycleState()
+                    if failure == nil, let snapshotID, self.dashboardJSON != nil,
+                        snapshotID == "\(self.lifecycle.currentLoadID):\(self.dashboardSnapshotRevision)"
+                    {
+                        self.transferredDashboardID = snapshotID
+                    }
+                    if self.lifecycle.completeRender(renderID, failure: failure) {
+                        self.publishLifecycleState()
+                    }
+                    if self.renderPending {
+                        self.renderPending = false
+                        self.render(in: web)
+                    }
                 }
             }
         }
 
+        private func resetTransferredSnapshot() {
+            transferredDashboardID = nil
+            inFlightRenderID = nil
+            renderPending = false
+        }
+
         private func startLoad(in web: WKWebView, resourceURL: URL) {
+            resetTransferredSnapshot()
             let loadID = lifecycle.beginLoad()
             activeLoadID = loadID
             activeNavigation = web.loadFileURL(
@@ -495,6 +630,15 @@ private struct TrendWebView: NSViewRepresentable {
 
         init(renderer: UpstreamTrendView.Renderer) {
             self.renderer = renderer
+        }
+
+        func webView(
+            _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            Task { @MainActor in
+                decisionHandler(renderer.permitsNavigation(navigationAction.request.url) && navigationAction.targetFrame?.isMainFrame == true ? .allow : .cancel)
+            }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

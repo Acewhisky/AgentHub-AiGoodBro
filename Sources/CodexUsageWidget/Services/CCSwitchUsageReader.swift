@@ -1084,14 +1084,24 @@ enum CCSwitchUsageReaderSelfTest {
                 appServer: CodexUsageReader.AppServerSnapshot(),
                 messages: ["upstream-fixture"],
                 context: testContext,
-                quotaOnly: false
+                quotaOnly: false,
+                statisticsEngine: .nativeLegacy
+            )
+            let upstreamSnapshot = CodexUsageReader().finishingLoad(
+                appServer: CodexUsageReader.AppServerSnapshot(),
+                messages: ["upstream-fixture"],
+                context: testContext,
+                quotaOnly: false,
+                statisticsEngine: .upstream
             )
             if let previousOverride {
                 setenv(overrideKey, previousOverride, 1)
             } else {
                 unsetenv(overrideKey)
             }
-            guard finishingSnapshot.local?.coverage == .dailyOnly,
+            guard upstreamSnapshot.local == nil,
+                upstreamSnapshot.messages == ["upstream-fixture"],
+                finishingSnapshot.local?.coverage == .dailyOnly,
                 finishingSnapshot.local?.dailyBuckets == recentOnly,
                 finishingSnapshot.local?.allAgentsLifetimeTokens == nil,
                 finishingSnapshot.local?.allAgentsTodayTokens == nil,

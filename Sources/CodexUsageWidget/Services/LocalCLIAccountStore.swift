@@ -383,7 +383,7 @@ final class LocalCLIAccountStore: ObservableObject {
                         "官方登录窗口已结束；账号与实际调用仍需在 CLI 核验，不能仅凭退出码确认。",
                         "The official sign-in window closed. Verify the account and an actual response in the CLI; exit status alone is not proof.")
             }
-            if result.state != .available, previous?.state == .available {
+            if result.state != .available, result.state != .needsLogin, previous?.state == .available {
                 self.stale.insert(profile.id)
             } else {
                 self.quotas[profile.id] = result

@@ -14,16 +14,27 @@ struct AgentNavigationBar: View {
     var onGettingStarted: () -> Void
 
     @State private var isAdding = false
+    @State private var showsOverflow = false
+    @State private var insertionAfter = false
     @State private var isManaging = false
     @State private var manageDraft: AgentNavigationState?
     @State private var undoIDs: [String]?
+    @State private var reorder: DirectReorderTransaction?
+    @State private var dragToken = UUID().uuidString
+    @State private var insertionID: String?
+    @State private var undoResult: [String]?
     @State private var availableWidth: CGFloat = 980
 
     var body: some View {
         let visible = navigation.renderableIDs()
         let overflow = AgentNavigationOverflow.layout(
             orderedIDs: visible,
-            availableWidth: Double(availableWidth)
+            availableWidth: Double(availableWidth),
+            itemWidth: {
+                let font = NSFont.systemFont(ofSize: NSFont.preferredFont(forTextStyle: .callout).pointSize, weight: .medium)
+                let labelWidth = (AgentNavCatalog.displayName($0) as NSString).size(withAttributes: [.font: font]).width
+                return Double(labelWidth + ProviderIconSlot.navigation.container + 7 + 24 + 24)
+            }
         )
         HStack(spacing: 6) {
             navButton(
@@ -34,23 +45,32 @@ struct AgentNavigationBar: View {
                 action: onSelectHome
             )
             ForEach(overflow.visibleIDs, id: \.self) { id in
-                agentButton(id: id, selected: !showingHome && selectedID == id)
+                agentButton(id: id, selected: !showingHome && selectedID == id, visibleIDs: overflow.visibleIDs)
             }
             if overflow.showsMore {
-                Menu {
-                    ForEach(overflow.overflowIDs, id: \.self) { id in
-                        Button(AgentNavCatalog.displayName(id)) { onSelect(id) }
-                    }
+                Button {
+                    showsOverflow.toggle()
                 } label: {
-                    let title =
-                        overflow.overflowIDs.contains(selectedID ?? "") && !showingHome
-                        ? AgentNavCatalog.displayName(selectedID ?? "")
-                        : language.text("更多", "More")
-                    Label(title, systemImage: "ellipsis")
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(!showingHome && overflow.overflowIDs.contains(selectedID ?? "") ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
+                    Label(
+                        !showingHome && overflow.overflowIDs.contains(selectedID ?? "")
+                            ? AgentNavCatalog.displayName(selectedID ?? "")
+                            : language.text("更多", "More"), systemImage: "ellipsis"
+                    )
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(!showingHome && overflow.overflowIDs.contains(selectedID ?? "") ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
                 }
-                .menuStyle(.borderlessButton)
+                .buttonStyle(.plain)
+                .popover(isPresented: $showsOverflow) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(overflow.overflowIDs, id: \.self) { id in
+                                agentButton(
+                                    id: id, selected: !showingHome && selectedID == id,
+                                    visibleIDs: overflow.overflowIDs)
+                            }
+                        }.padding(12)
+                    }.frame(maxHeight: 360)
+                }
                 .accessibilityLabel(language.text("更多 Agent", "More agents"))
             }
             Spacer(minLength: 8)
@@ -87,12 +107,17 @@ struct AgentNavigationBar: View {
         .onAppear {
             navigation.bootstrapIfNeeded(existingUser: existingUser, currentVisible: defaultVisible)
         }
+        .onExitCommand { cancelReorder() }
+        .onChange(of: navigation.orderedVisibleProviderIDs) { _ in cancelReorder() }
         .sheet(isPresented: $isAdding) { addSheet }
         .sheet(isPresented: $isManaging) { manageSheet }
         .overlay(alignment: .topTrailing) {
-            if undoIDs != nil {
-                Button(language.text("撤销移除", "Undo remove")) {
-                    if let undoIDs { navigation.orderedVisibleProviderIDs = undoIDs }
+            if reorder != nil {
+                Button(language.text("取消排序", "Cancel reorder")) { cancelReorder() }
+                    .buttonStyle(.bordered).padding(.top, 36)
+            } else if undoIDs != nil {
+                Button(language.text("撤销", "Undo")) {
+                    if let undoIDs, navigation.orderedVisibleProviderIDs == undoResult { navigation.orderedVisibleProviderIDs = undoIDs }
                     self.undoIDs = nil
                 }
                 .buttonStyle(.bordered)
@@ -106,19 +131,87 @@ struct AgentNavigationBar: View {
         [AgentNavCatalog.codexID] + detectedIDs.filter { $0 != AgentNavCatalog.codexID }
     }
 
-    private func agentButton(id: String, selected: Bool) -> some View {
-        navButton(
-            id: id,
-            title: AgentNavCatalog.displayName(id),
-            selected: selected,
-            providerID: id,
-            action: { onSelect(id) }
-        )
+    private func agentButton(id: String, selected: Bool, visibleIDs: [String]) -> some View {
+        HStack(spacing: 0) {
+            navButton(
+                id: id, title: AgentNavCatalog.displayName(id), selected: selected,
+                providerID: id, action: { onSelect(id) })
+            DirectReorderGrip(
+                label: language.text("拖动调整顺序", "Drag to reorder"),
+                position: "\((reorder?.order ?? visibleIDs).firstIndex(of: id).map { $0 + 1 } ?? 0) / \(visibleIDs.count)",
+                active: reorder?.source == id,
+                onActivate: {
+                    if reorder?.source == id { commitReorder() } else { beginReorder(id, visibleIDs: visibleIDs) }
+                },
+                onMove: { offset in
+                    guard reorder?.source == id else { return }
+                    reorder?.step(offset)
+                    if let draft = reorder, let index = draft.order.firstIndex(of: id) {
+                        insertionID = draft.visible[index]
+                        insertionAfter = offset > 0
+                    }
+                },
+                onCancel: cancelReorder,
+                onDragStart: {
+                    beginReorder(id, visibleIDs: visibleIDs)
+                    return NSItemProvider(object: dragToken as NSString)
+                }
+            )
+        }
+        .overlay(alignment: insertionAfter ? .trailing : .leading) {
+            if insertionID == id { Rectangle().fill(Color.accentColor).frame(width: 3) }
+        }
+        .dropDestination(for: String.self) { items, location in
+            guard items == [dragToken], var draft = reorder,
+                visibleIDs == draft.visible, visibleIDs.contains(id)
+            else { return false }
+            if insertionAfter, let index = draft.order.firstIndex(of: id) {
+                draft.move(before: draft.order.dropFirst(index + 1).first)
+            } else {
+                draft.move(before: id)
+            }
+            reorder = draft
+            return commitReorder()
+        } isTargeted: { targeted in
+            if targeted, let draft = reorder {
+                insertionID = id
+                insertionAfter = (draft.order.firstIndex(of: draft.source) ?? 0) < (draft.order.firstIndex(of: id) ?? 0)
+            } else if insertionID == id {
+                insertionID = nil
+            }
+        }
         .contextMenu {
             Button(language.text("从导航移除", "Remove from navigation")) { remove(id) }
-            Button(language.text("左移", "Move left")) { navigation.move(id, by: -1) }
-            Button(language.text("右移", "Move right")) { navigation.move(id, by: 1) }
         }
+    }
+
+    private func beginReorder(_ id: String, visibleIDs: [String]) {
+        dragToken = UUID().uuidString
+        reorder = DirectReorderTransaction(
+            original: navigation.orderedVisibleProviderIDs,
+            visible: visibleIDs, source: id,
+            knownIDs: Set(AgentNavCatalog.workspaceProviders.map(\.id)))
+    }
+
+    @discardableResult private func commitReorder() -> Bool {
+        guard let draft = reorder, let result = draft.committed(current: navigation.orderedVisibleProviderIDs) else {
+            cancelReorder()
+            return false
+        }
+        if result != draft.original {
+            undoIDs = draft.original
+            undoResult = result
+            navigation.orderedVisibleProviderIDs = result
+            navigation.customized = true
+        }
+        cancelReorder()
+        return true
+    }
+
+    private func cancelReorder() {
+        reorder = nil
+        insertionID = nil
+        dragToken = UUID().uuidString
     }
 
     private func navButton(
@@ -151,6 +244,7 @@ struct AgentNavigationBar: View {
     private func remove(_ id: String) {
         undoIDs = navigation.orderedVisibleProviderIDs
         _ = navigation.remove(id)
+        undoResult = navigation.orderedVisibleProviderIDs
         if selectedID == id { onSelectHome() }
     }
 
@@ -237,8 +331,6 @@ struct AgentNavigationBar: View {
                         ProviderMark(providerID: id, slot: .navigation)
                         Text(AgentNavCatalog.displayName(id))
                         Spacer()
-                        Button(language.text("上移", "Up")) { manageDraft?.move(id, by: -1) }
-                        Button(language.text("下移", "Down")) { manageDraft?.move(id, by: 1) }
                         Button(language.text("移除", "Remove"), role: .destructive) { _ = manageDraft?.remove(id) }
                     }
                 }

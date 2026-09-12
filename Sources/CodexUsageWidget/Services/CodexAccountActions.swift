@@ -495,6 +495,13 @@ private final class CodexLoginSession {
         authenticatedEmail: String,
         fileManager: FileManager
     ) throws {
+        CodexCredentialAccessGate.lock.lock()
+        defer { CodexCredentialAccessGate.lock.unlock() }
+        let homes = Set([stagingHomeURL, profile.codexHomeURL].map { CodexCredentialTransaction.canonical($0).path }).sorted()
+        guard homes.count == 2 else { throw CodexCredentialTransaction.Failure.invalidRoot }
+        let locks = homes.map { CodexCredentialAccessGate.homeLock(forHomePath: $0) }
+        locks.forEach { $0.lock() }
+        defer { locks.reversed().forEach { $0.unlock() } }
         let stagedAuthURL = stagingHomeURL.appendingPathComponent("auth.json")
         let targetAuthURL = profile.codexHomeURL.appendingPathComponent("auth.json")
         guard let authData = try? DispatchParticipationSync.readBoundedRegularFile(stagedAuthURL, maximumBytes: 1024 * 1024),
@@ -516,6 +523,7 @@ private final class CodexLoginSession {
         credentialLock.lock()
         defer { credentialLock.unlock() }
         let previousAuth = try DispatchParticipationSync.readBoundedRegularFile(targetAuthURL, maximumBytes: 1024 * 1024, allowMissing: true)
+        var wroteAuth = false
         do {
             try fileManager.createDirectory(
                 at: profile.codexHomeURL,
@@ -523,13 +531,21 @@ private final class CodexLoginSession {
                 attributes: [.posixPermissions: 0o700]
             )
             try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: profile.codexHomePath)
+            guard try CodexCredentialTransaction.read(stagedAuthURL) == authData,
+                try CodexCredentialTransaction.read(targetAuthURL) == previousAuth
+            else { throw CodexCredentialTransaction.Failure.superseded }
             try authData.write(to: targetAuthURL, options: .atomic)
+            wroteAuth = true
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: targetAuthURL.path)
             guard try DispatchParticipationSync.readBoundedRegularFile(targetAuthURL, maximumBytes: 1024 * 1024) == authData else {
                 throw CodexLoginError.credentialsUnavailable
             }
         } catch {
-            restoreAuth(previousAuth, at: targetAuthURL, fileManager: fileManager)
+            if wroteAuth {
+                try CodexCredentialTransaction.restoreOwned(
+                    previous: previousAuth, written: authData, at: targetAuthURL, fileManager: fileManager
+                )
+            }
             throw error
         }
     }
@@ -664,14 +680,6 @@ private final class CodexLoginSession {
         } catch { return false }
     }
 
-    private static func restoreAuth(_ data: Data?, at url: URL, fileManager: FileManager) {
-        if let data {
-            try? data.write(to: url, options: .atomic)
-            try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        } else {
-            try? fileManager.removeItem(at: url)
-        }
-    }
 }
 
 private enum CodexWarmUpFailure: LocalizedError, Equatable {
@@ -1317,7 +1325,10 @@ final class CodexAccountActions {
                         withIntermediateDirectories: true,
                         attributes: [.posixPermissions: 0o700]
                     )
-                    try Self.restoreAuth(journal.originalAuthState, at: systemAuthURL, fileManager: fileManager)
+                    let ownedRecoveryState = try Self.authState(at: systemAuthURL)
+                    guard Self.pendingSwitchRecoveryDecision(current: ownedRecoveryState, journal: journal) == .rollbackOriginal
+                    else { throw CodexCredentialTransaction.Failure.superseded }
+                    try Self.restoreAuth(journal.originalAuthState, expected: ownedRecoveryState, at: systemAuthURL, fileManager: fileManager)
                     guard try Self.authState(at: systemAuthURL) == journal.originalAuthState else {
                         throw Self.switchError(WidgetLanguage.storedOrAutomatic().text("启动恢复写回原账号后校验失败", "Startup recovery could not verify the restored original account."))
                     }
@@ -1489,7 +1500,13 @@ final class CodexAccountActions {
                 Self.logSwitchTiming(stage: "total", startedAt: transactionStartedAt)
             }
             CodexCredentialAccessGate.lock.lock()
+            let transactionHomes = [systemHome, profile.codexHomeURL] + (sourceBackupProfile.map { [$0.codexHomeURL] } ?? [])
+            let transactionLocks = Set(transactionHomes.map { CodexCredentialTransaction.canonical($0).path }).sorted().map {
+                CodexCredentialAccessGate.homeLock(forHomePath: $0)
+            }
+            transactionLocks.forEach { $0.lock() }
             defer {
+                transactionLocks.reversed().forEach { $0.unlock() }
                 Self.releaseSwitchLock(switchLock)
                 CodexCredentialAccessGate.lock.unlock()
             }
@@ -1558,6 +1575,7 @@ final class CodexAccountActions {
                             try Self.writeManagedAuthBackup(
                                 originalAuthForRecovery,
                                 to: sourceBackupProfile,
+                                sourceHome: systemHome,
                                 fileManager: fileManager
                             )
                         }
@@ -1576,6 +1594,9 @@ final class CodexAccountActions {
                                 WidgetLanguage.storedOrAutomatic().text(
                                     "Codex Desktop 在写入前重新运行；账号未切换", "Codex Desktop restarted before writing. The account was not switched."))
                         }
+                        guard try Self.authState(at: systemAuthURL) == currentSourceAuth,
+                            try CodexCredentialTransaction.read(targetAuthURL) == targetAuth
+                        else { throw CodexCredentialTransaction.Failure.superseded }
                         try targetAuth.write(to: systemAuthURL, options: .atomic)
                         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: systemAuthURL.path)
                         guard try Data(contentsOf: systemAuthURL) == targetAuth else {
@@ -1676,7 +1697,10 @@ final class CodexAccountActions {
                                     WidgetLanguage.storedOrAutomatic().text(
                                         "恢复前凭据再次变化；已保留外部最新状态，不覆盖", "Credentials changed again before recovery. The newer external state was preserved."))
                             }
-                            try Self.restoreAuth(originalAuthForRecovery, at: systemAuthURL, fileManager: fileManager)
+                            let ownedRecoveryState = try Self.authState(at: systemAuthURL)
+                            guard Self.pendingSwitchRecoveryDecision(current: ownedRecoveryState, journal: journal) == .rollbackOriginal
+                            else { throw CodexCredentialTransaction.Failure.superseded }
+                            try Self.restoreAuth(originalAuthForRecovery, expected: ownedRecoveryState, at: systemAuthURL, fileManager: fileManager)
                             guard try Self.authState(at: systemAuthURL) == originalAuthForRecovery else {
                                 throw Self.switchError(WidgetLanguage.storedOrAutomatic().text("原账号凭据回滚后校验失败", "The original credentials could not be verified after rollback."))
                             }
@@ -2224,6 +2248,7 @@ final class CodexAccountActions {
     private static func writeManagedAuthBackup(
         _ state: AuthState,
         to profile: CodexProfile,
+        sourceHome: URL,
         fileManager: FileManager
     ) throws {
         guard !profile.isSystemProfile,
@@ -2235,16 +2260,15 @@ final class CodexAccountActions {
             throw switchError(
                 WidgetLanguage.storedOrAutomatic().text("原账号最新凭据无法安全绑定到账号卡", "The original account's latest credentials could not be safely matched to its account card."))
         }
-        try fileManager.createDirectory(
-            at: profile.codexHomeURL,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let authURL = profile.codexHomeURL.appendingPathComponent("auth.json")
-        try data.write(to: authURL, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path)
-        guard try Data(contentsOf: authURL) == data else {
-            throw switchError(WidgetLanguage.storedOrAutomatic().text("原账号最新凭据备份后校验失败", "The original account's latest credentials could not be verified after backup."))
+        guard let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: data)
+        else { throw CodexCredentialTransaction.Failure.invalidIdentity }
+        switch try CodexCredentialTransaction.copy(
+            from: sourceHome, to: profile.codexHomeURL,
+            managedRoot: fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".codex-account-manager-next/profiles", isDirectory: true),
+            expectedSource: data, identity: identity
+        ) {
+        case .copied, .unchanged, .preservedValidExisting:
+            return
         }
     }
 
@@ -2306,7 +2330,8 @@ final class CodexAccountActions {
         return normalized.isEmpty ? nil : normalized
     }
 
-    private static func restoreAuth(_ state: AuthState, at url: URL, fileManager: FileManager) throws {
+    private static func restoreAuth(_ state: AuthState, expected: AuthState, at url: URL, fileManager: FileManager) throws {
+        guard try authState(at: url) == expected else { throw CodexCredentialTransaction.Failure.superseded }
         switch state {
         case .data(let data):
             try data.write(to: url, options: .atomic)

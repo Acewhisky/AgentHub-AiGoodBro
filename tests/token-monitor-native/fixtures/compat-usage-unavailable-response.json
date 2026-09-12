@@ -1,0 +1,1016 @@
+{
+  "schemaVersion": 1,
+  "requestId": "fixture-request",
+  "engine": {
+    "repository": "Javis603/token-monitor",
+    "commit": "ef079b6fb494e1cfcb24736cfcf4d4e591222eaf",
+    "version": "0.56.0"
+  },
+  "collectedAt": "2026-09-13T02:00:00.000Z",
+  "timezone": "Asia/Shanghai",
+  "status": "partial",
+  "sources": [
+    {
+      "id": "codex-a",
+      "providerId": "codex",
+      "status": "ok",
+      "coverage": "known"
+    },
+    {
+      "id": "codex-b",
+      "providerId": "codex",
+      "status": "unavailable",
+      "coverage": "unknown",
+      "reasonCode": "collection_incomplete"
+    }
+  ],
+  "payload": {
+    "usage": {
+      "updatedAt": "2026-09-13T02:00:00.000Z",
+      "projectsEnabled": true,
+      "trackedClients": [
+        "codex"
+      ],
+      "clientStatus": {
+        "codex": "active"
+      },
+      "wslStatus": null,
+      "periodWindows": {
+        "timeZone": "Asia/Shanghai",
+        "today": {
+          "key": "2026-09-13",
+          "endsAt": "2026-09-13T16:00:00.000Z"
+        },
+        "month": {
+          "key": "2026-09",
+          "endsAt": "2026-09-30T16:00:00.000Z"
+        }
+      },
+      "historyAvailable": false,
+      "today": {
+        "capabilities": {
+          "tokenComponents": true,
+          "throughput": true
+        },
+        "totalTokens": 11,
+        "costUsd": 1.5,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "outputTokens": 0,
+        "unclassifiedTokens": 0,
+        "timedTokens": 0,
+        "timedOutputTokens": 0,
+        "timedDurationMs": 0,
+        "clients": {
+          "codex": 11
+        },
+        "clientCosts": {
+          "codex": 1.5
+        },
+        "clientCacheReads": {},
+        "clientCacheWrites": {},
+        "clientOutputs": {},
+        "clientUnclassifiedTokens": {},
+        "models": {
+          "public/model@route": 11
+        },
+        "modelCosts": {
+          "public/model@route": 1.5
+        },
+        "modelCacheReads": {},
+        "modelCacheWrites": {},
+        "modelOutputs": {},
+        "modelUnclassifiedTokens": {},
+        "clientModels": {
+          "codex": {
+            "public/model@route": 11
+          }
+        },
+        "clientModelCosts": {
+          "codex": {
+            "public/model@route": 1.5
+          }
+        },
+        "projects": {},
+        "sessions": {
+          "opaque-f691dc71b8891e09436bebfa": {
+            "client": "codex",
+            "sessionId": "opaque-c8462315c9a7e5a4901034b3",
+            "totalTokens": 11,
+            "costUsd": 1.5,
+            "messageCount": 1,
+            "inputTokens": 11,
+            "outputTokens": 0,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "startedAt": "2026-09-13T00:00:00.000Z",
+            "lastUsedAt": "2026-09-13T01:00:00.000Z",
+            "projectId": "opaque-660752609f7270159b02ef1d",
+            "projectLabel": "opaque-7f0fe54faec48bffe422a0ef",
+            "title": "opaque-9c4b231d94744999aed85e09",
+            "sessionKind": "",
+            "models": {
+              "public/model@route": 11
+            },
+            "modelCosts": {
+              "public/model@route": 1.5
+            },
+            "providers": {}
+          }
+        }
+      },
+      "month": {
+        "capabilities": {
+          "tokenComponents": true,
+          "throughput": true
+        },
+        "totalTokens": 11,
+        "costUsd": 1.5,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "outputTokens": 0,
+        "unclassifiedTokens": 0,
+        "timedTokens": 0,
+        "timedOutputTokens": 0,
+        "timedDurationMs": 0,
+        "clients": {
+          "codex": 11
+        },
+        "clientCosts": {
+          "codex": 1.5
+        },
+        "clientCacheReads": {},
+        "clientCacheWrites": {},
+        "clientOutputs": {},
+        "clientUnclassifiedTokens": {},
+        "models": {
+          "public/model@route": 11
+        },
+        "modelCosts": {
+          "public/model@route": 1.5
+        },
+        "modelCacheReads": {},
+        "modelCacheWrites": {},
+        "modelOutputs": {},
+        "modelUnclassifiedTokens": {},
+        "clientModels": {
+          "codex": {
+            "public/model@route": 11
+          }
+        },
+        "clientModelCosts": {
+          "codex": {
+            "public/model@route": 1.5
+          }
+        },
+        "projects": {},
+        "sessions": {
+          "opaque-f691dc71b8891e09436bebfa": {
+            "client": "codex",
+            "sessionId": "opaque-c8462315c9a7e5a4901034b3",
+            "totalTokens": 11,
+            "costUsd": 1.5,
+            "messageCount": 1,
+            "inputTokens": 11,
+            "outputTokens": 0,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "startedAt": "2026-09-13T00:00:00.000Z",
+            "lastUsedAt": "2026-09-13T01:00:00.000Z",
+            "projectId": "opaque-660752609f7270159b02ef1d",
+            "projectLabel": "opaque-7f0fe54faec48bffe422a0ef",
+            "title": "opaque-9c4b231d94744999aed85e09",
+            "sessionKind": "",
+            "models": {
+              "public/model@route": 11
+            },
+            "modelCosts": {
+              "public/model@route": 1.5
+            },
+            "providers": {}
+          }
+        }
+      },
+      "allTime": {
+        "capabilities": {
+          "tokenComponents": true,
+          "throughput": true
+        },
+        "totalTokens": 11,
+        "costUsd": 1.5,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "outputTokens": 0,
+        "unclassifiedTokens": 0,
+        "timedTokens": 0,
+        "timedOutputTokens": 0,
+        "timedDurationMs": 0,
+        "clients": {
+          "codex": 11
+        },
+        "clientCosts": {
+          "codex": 1.5
+        },
+        "clientCacheReads": {},
+        "clientCacheWrites": {},
+        "clientOutputs": {},
+        "clientUnclassifiedTokens": {},
+        "models": {
+          "public/model@route": 11
+        },
+        "modelCosts": {
+          "public/model@route": 1.5
+        },
+        "modelCacheReads": {},
+        "modelCacheWrites": {},
+        "modelOutputs": {},
+        "modelUnclassifiedTokens": {},
+        "clientModels": {
+          "codex": {
+            "public/model@route": 11
+          }
+        },
+        "clientModelCosts": {
+          "codex": {
+            "public/model@route": 1.5
+          }
+        },
+        "projects": {},
+        "sessions": {
+          "opaque-f691dc71b8891e09436bebfa": {
+            "client": "codex",
+            "sessionId": "opaque-c8462315c9a7e5a4901034b3",
+            "totalTokens": 11,
+            "costUsd": 1.5,
+            "messageCount": 1,
+            "inputTokens": 11,
+            "outputTokens": 0,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "startedAt": "2026-09-13T00:00:00.000Z",
+            "lastUsedAt": "2026-09-13T01:00:00.000Z",
+            "projectId": "opaque-660752609f7270159b02ef1d",
+            "projectLabel": "opaque-7f0fe54faec48bffe422a0ef",
+            "title": "opaque-9c4b231d94744999aed85e09",
+            "sessionKind": "",
+            "models": {
+              "public/model@route": 11
+            },
+            "modelCosts": {
+              "public/model@route": 1.5
+            },
+            "providers": {}
+          }
+        }
+      },
+      "history": null,
+      "clientHealth": {
+        "version": 1,
+        "clients": {
+          "codex": {
+            "source": {
+              "state": "missing",
+              "detectedCount": 0,
+              "checkedCount": 1,
+              "checks": [
+                {
+                  "id": "codex-sessions",
+                  "exists": false
+                }
+              ]
+            },
+            "collection": {
+              "state": "direct"
+            },
+            "data": {
+              "liveTokens": 11,
+              "lastActivityDay": "2026-09-13"
+            },
+            "diagnostics": [
+              {
+                "code": "source-missing"
+              }
+            ],
+            "overall": "unavailable"
+          }
+        },
+        "observedAt": "2026-09-13T02:00:00.000Z"
+      },
+      "targets": [
+        {
+          "updatedAt": "2026-09-13T02:00:00.000Z",
+          "projectsEnabled": true,
+          "trackedClients": [
+            "codex"
+          ],
+          "clientStatus": {
+            "codex": "active"
+          },
+          "wslStatus": null,
+          "periodWindows": {
+            "timeZone": "Asia/Shanghai",
+            "today": {
+              "key": "2026-09-13",
+              "endsAt": "2026-09-13T16:00:00.000Z"
+            },
+            "month": {
+              "key": "2026-09",
+              "endsAt": "2026-09-30T16:00:00.000Z"
+            }
+          },
+          "historyAvailable": false,
+          "today": {
+            "capabilities": {
+              "tokenComponents": true,
+              "throughput": true
+            },
+            "totalTokens": 11,
+            "costUsd": 1.5,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "outputTokens": 0,
+            "unclassifiedTokens": 0,
+            "timedTokens": 0,
+            "timedOutputTokens": 0,
+            "timedDurationMs": 0,
+            "clients": {
+              "codex": 11
+            },
+            "clientCosts": {
+              "codex": 1.5
+            },
+            "clientCacheReads": {},
+            "clientCacheWrites": {},
+            "clientOutputs": {},
+            "clientUnclassifiedTokens": {},
+            "models": {
+              "public/model@route": 11
+            },
+            "modelCosts": {
+              "public/model@route": 1.5
+            },
+            "modelCacheReads": {},
+            "modelCacheWrites": {},
+            "modelOutputs": {},
+            "modelUnclassifiedTokens": {},
+            "clientModels": {
+              "codex": {
+                "public/model@route": 11
+              }
+            },
+            "clientModelCosts": {
+              "codex": {
+                "public/model@route": 1.5
+              }
+            },
+            "projects": {},
+            "sessions": {
+              "opaque-f691dc71b8891e09436bebfa": {
+                "client": "codex",
+                "sessionId": "opaque-c8462315c9a7e5a4901034b3",
+                "totalTokens": 11,
+                "costUsd": 1.5,
+                "messageCount": 1,
+                "inputTokens": 11,
+                "outputTokens": 0,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0,
+                "reasoningTokens": 0,
+                "startedAt": "2026-09-13T00:00:00.000Z",
+                "lastUsedAt": "2026-09-13T01:00:00.000Z",
+                "projectId": "opaque-660752609f7270159b02ef1d",
+                "projectLabel": "opaque-7f0fe54faec48bffe422a0ef",
+                "title": "opaque-9c4b231d94744999aed85e09",
+                "sessionKind": "",
+                "models": {
+                  "public/model@route": 11
+                },
+                "modelCosts": {
+                  "public/model@route": 1.5
+                },
+                "providers": {}
+              }
+            }
+          },
+          "month": {
+            "capabilities": {
+              "tokenComponents": true,
+              "throughput": true
+            },
+            "totalTokens": 11,
+            "costUsd": 1.5,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "outputTokens": 0,
+            "unclassifiedTokens": 0,
+            "timedTokens": 0,
+            "timedOutputTokens": 0,
+            "timedDurationMs": 0,
+            "clients": {
+              "codex": 11
+            },
+            "clientCosts": {
+              "codex": 1.5
+            },
+            "clientCacheReads": {},
+            "clientCacheWrites": {},
+            "clientOutputs": {},
+            "clientUnclassifiedTokens": {},
+            "models": {
+              "public/model@route": 11
+            },
+            "modelCosts": {
+              "public/model@route": 1.5
+            },
+            "modelCacheReads": {},
+            "modelCacheWrites": {},
+            "modelOutputs": {},
+            "modelUnclassifiedTokens": {},
+            "clientModels": {
+              "codex": {
+                "public/model@route": 11
+              }
+            },
+            "clientModelCosts": {
+              "codex": {
+                "public/model@route": 1.5
+              }
+            },
+            "projects": {},
+            "sessions": {
+              "opaque-f691dc71b8891e09436bebfa": {
+                "client": "codex",
+                "sessionId": "opaque-c8462315c9a7e5a4901034b3",
+                "totalTokens": 11,
+                "costUsd": 1.5,
+                "messageCount": 1,
+                "inputTokens": 11,
+                "outputTokens": 0,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0,
+                "reasoningTokens": 0,
+                "startedAt": "2026-09-13T00:00:00.000Z",
+                "lastUsedAt": "2026-09-13T01:00:00.000Z",
+                "projectId": "opaque-660752609f7270159b02ef1d",
+                "projectLabel": "opaque-7f0fe54faec48bffe422a0ef",
+                "title": "opaque-9c4b231d94744999aed85e09",
+                "sessionKind": "",
+                "models": {
+                  "public/model@route": 11
+                },
+                "modelCosts": {
+                  "public/model@route": 1.5
+                },
+                "providers": {}
+              }
+            }
+          },
+          "allTime": {
+            "capabilities": {
+              "tokenComponents": true,
+              "throughput": true
+            },
+            "totalTokens": 11,
+            "costUsd": 1.5,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "outputTokens": 0,
+            "unclassifiedTokens": 0,
+            "timedTokens": 0,
+            "timedOutputTokens": 0,
+            "timedDurationMs": 0,
+            "clients": {
+              "codex": 11
+            },
+            "clientCosts": {
+              "codex": 1.5
+            },
+            "clientCacheReads": {},
+            "clientCacheWrites": {},
+            "clientOutputs": {},
+            "clientUnclassifiedTokens": {},
+            "models": {
+              "public/model@route": 11
+            },
+            "modelCosts": {
+              "public/model@route": 1.5
+            },
+            "modelCacheReads": {},
+            "modelCacheWrites": {},
+            "modelOutputs": {},
+            "modelUnclassifiedTokens": {},
+            "clientModels": {
+              "codex": {
+                "public/model@route": 11
+              }
+            },
+            "clientModelCosts": {
+              "codex": {
+                "public/model@route": 1.5
+              }
+            },
+            "projects": {},
+            "sessions": {
+              "opaque-f691dc71b8891e09436bebfa": {
+                "client": "codex",
+                "sessionId": "opaque-c8462315c9a7e5a4901034b3",
+                "totalTokens": 11,
+                "costUsd": 1.5,
+                "messageCount": 1,
+                "inputTokens": 11,
+                "outputTokens": 0,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0,
+                "reasoningTokens": 0,
+                "startedAt": "2026-09-13T00:00:00.000Z",
+                "lastUsedAt": "2026-09-13T01:00:00.000Z",
+                "projectId": "opaque-660752609f7270159b02ef1d",
+                "projectLabel": "opaque-7f0fe54faec48bffe422a0ef",
+                "title": "opaque-9c4b231d94744999aed85e09",
+                "sessionKind": "",
+                "models": {
+                  "public/model@route": 11
+                },
+                "modelCosts": {
+                  "public/model@route": 1.5
+                },
+                "providers": {}
+              }
+            }
+          },
+          "history": null,
+          "clientHealth": {
+            "version": 1,
+            "clients": {
+              "codex": {
+                "source": {
+                  "state": "missing",
+                  "detectedCount": 0,
+                  "checkedCount": 1,
+                  "checks": [
+                    {
+                      "id": "codex-sessions",
+                      "exists": false
+                    }
+                  ]
+                },
+                "collection": {
+                  "state": "direct"
+                },
+                "data": {
+                  "liveTokens": 11,
+                  "lastActivityDay": "2026-09-13"
+                },
+                "diagnostics": [
+                  {
+                    "code": "source-missing"
+                  }
+                ],
+                "overall": "unavailable"
+              }
+            },
+            "observedAt": "2026-09-13T02:00:00.000Z"
+          },
+          "sourceIds": [
+            "codex-a"
+          ],
+          "providerIds": [
+            "codex"
+          ]
+        }
+      ]
+    },
+    "history": {
+      "daily": [
+        {
+          "date": "2026-09-12",
+          "tokens": 11,
+          "cost": 1.5,
+          "messages": 1,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "outputTokens": 0,
+          "unclassifiedTokens": 0,
+          "tokenComponentsAvailable": true,
+          "activeTimeMs": 0,
+          "perClient": {
+            "codex": {
+              "tokens": 11,
+              "cost": 1.5,
+              "messages": 1,
+              "unclassifiedTokens": 0
+            }
+          },
+          "perModel": {
+            "vendor-x/ultra-long-context-preview-2026-09-13:free": {
+              "tokens": 11,
+              "cost": 1.5,
+              "unclassifiedTokens": 0
+            }
+          },
+          "tokenIntensity": 4,
+          "costIntensity": 4,
+          "intensity": 4
+        }
+      ],
+      "monthly": [
+        {
+          "month": "2026-09",
+          "tokens": 11,
+          "cost": 1.5,
+          "activeTimeMs": 0,
+          "perClient": {
+            "codex": {
+              "tokens": 11,
+              "cost": 1.5,
+              "messages": 1
+            }
+          },
+          "perModel": {
+            "vendor-x/ultra-long-context-preview-2026-09-13:free": {
+              "tokens": 11,
+              "cost": 1.5
+            }
+          }
+        }
+      ],
+      "summary": {
+        "totalTokens": 11,
+        "totalCost": 1.5,
+        "activeDays": 1,
+        "currentStreak": 0,
+        "longestStreak": 1,
+        "peakDayTokens": 11,
+        "favoriteModel": "vendor-x/ultra-long-context-preview-2026-09-13:free",
+        "messages": 1,
+        "activeTimeMs": 0
+      }
+    },
+    "aggregate": {
+      "today": {
+        "capabilities": {
+          "tokenComponents": true,
+          "throughput": true
+        },
+        "totalTokens": 11,
+        "costUsd": 1.5,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "outputTokens": 0,
+        "unclassifiedTokens": 0,
+        "timedTokens": 0,
+        "timedOutputTokens": 0,
+        "timedDurationMs": 0,
+        "clients": {
+          "codex": 11
+        },
+        "clientCosts": {
+          "codex": 1.5
+        },
+        "clientCacheReads": {},
+        "clientCacheWrites": {},
+        "clientOutputs": {},
+        "clientUnclassifiedTokens": {},
+        "models": {
+          "public/model@route": 11
+        },
+        "modelCosts": {
+          "public/model@route": 1.5
+        },
+        "modelCacheReads": {},
+        "modelCacheWrites": {},
+        "modelOutputs": {},
+        "modelUnclassifiedTokens": {},
+        "clientModels": {
+          "codex": {
+            "public/model@route": 11
+          }
+        },
+        "clientModelCosts": {
+          "codex": {
+            "public/model@route": 1.5
+          }
+        },
+        "projects": {
+          "opaque-7f0fe54faec48bffe422a0ef": {
+            "label": "opaque-7f0fe54faec48bffe422a0ef",
+            "tokens": 11,
+            "costUsd": 1.5,
+            "clients": {
+              "codex": 11
+            }
+          }
+        },
+        "sessions": {
+          "opaque-f691dc71b8891e09436bebfa": {
+            "client": "codex",
+            "sessionId": "opaque-c8462315c9a7e5a4901034b3",
+            "totalTokens": 11,
+            "costUsd": 1.5,
+            "messageCount": 1,
+            "inputTokens": 11,
+            "outputTokens": 0,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "startedAt": "2026-09-13T00:00:00.000Z",
+            "lastUsedAt": "2026-09-13T01:00:00.000Z",
+            "projectId": "opaque-660752609f7270159b02ef1d",
+            "projectLabel": "opaque-7f0fe54faec48bffe422a0ef",
+            "title": "opaque-9c4b231d94744999aed85e09",
+            "sessionKind": "",
+            "models": {
+              "public/model@route": 11
+            },
+            "modelCosts": {
+              "public/model@route": 1.5
+            },
+            "providers": {}
+          }
+        }
+      },
+      "month": {
+        "capabilities": {
+          "tokenComponents": true,
+          "throughput": true
+        },
+        "totalTokens": 11,
+        "costUsd": 1.5,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "outputTokens": 0,
+        "unclassifiedTokens": 0,
+        "timedTokens": 0,
+        "timedOutputTokens": 0,
+        "timedDurationMs": 0,
+        "clients": {
+          "codex": 11
+        },
+        "clientCosts": {
+          "codex": 1.5
+        },
+        "clientCacheReads": {},
+        "clientCacheWrites": {},
+        "clientOutputs": {},
+        "clientUnclassifiedTokens": {},
+        "models": {
+          "public/model@route": 11
+        },
+        "modelCosts": {
+          "public/model@route": 1.5
+        },
+        "modelCacheReads": {},
+        "modelCacheWrites": {},
+        "modelOutputs": {},
+        "modelUnclassifiedTokens": {},
+        "clientModels": {
+          "codex": {
+            "public/model@route": 11
+          }
+        },
+        "clientModelCosts": {
+          "codex": {
+            "public/model@route": 1.5
+          }
+        },
+        "projects": {
+          "opaque-7f0fe54faec48bffe422a0ef": {
+            "label": "opaque-7f0fe54faec48bffe422a0ef",
+            "tokens": 11,
+            "costUsd": 1.5,
+            "clients": {
+              "codex": 11
+            }
+          }
+        },
+        "sessions": {
+          "opaque-f691dc71b8891e09436bebfa": {
+            "client": "codex",
+            "sessionId": "opaque-c8462315c9a7e5a4901034b3",
+            "totalTokens": 11,
+            "costUsd": 1.5,
+            "messageCount": 1,
+            "inputTokens": 11,
+            "outputTokens": 0,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "startedAt": "2026-09-13T00:00:00.000Z",
+            "lastUsedAt": "2026-09-13T01:00:00.000Z",
+            "projectId": "opaque-660752609f7270159b02ef1d",
+            "projectLabel": "opaque-7f0fe54faec48bffe422a0ef",
+            "title": "opaque-9c4b231d94744999aed85e09",
+            "sessionKind": "",
+            "models": {
+              "public/model@route": 11
+            },
+            "modelCosts": {
+              "public/model@route": 1.5
+            },
+            "providers": {}
+          }
+        }
+      },
+      "allTime": {
+        "capabilities": {
+          "tokenComponents": true,
+          "throughput": true
+        },
+        "totalTokens": 11,
+        "costUsd": 1.5,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "outputTokens": 0,
+        "unclassifiedTokens": 0,
+        "timedTokens": 0,
+        "timedOutputTokens": 0,
+        "timedDurationMs": 0,
+        "clients": {
+          "codex": 11
+        },
+        "clientCosts": {
+          "codex": 1.5
+        },
+        "clientCacheReads": {},
+        "clientCacheWrites": {},
+        "clientOutputs": {},
+        "clientUnclassifiedTokens": {},
+        "models": {
+          "public/model@route": 11
+        },
+        "modelCosts": {
+          "public/model@route": 1.5
+        },
+        "modelCacheReads": {},
+        "modelCacheWrites": {},
+        "modelOutputs": {},
+        "modelUnclassifiedTokens": {},
+        "clientModels": {
+          "codex": {
+            "public/model@route": 11
+          }
+        },
+        "clientModelCosts": {
+          "codex": {
+            "public/model@route": 1.5
+          }
+        },
+        "projects": {
+          "opaque-7f0fe54faec48bffe422a0ef": {
+            "label": "opaque-7f0fe54faec48bffe422a0ef",
+            "tokens": 11,
+            "costUsd": 1.5,
+            "clients": {
+              "codex": 11
+            }
+          }
+        },
+        "sessions": {
+          "opaque-f691dc71b8891e09436bebfa": {
+            "client": "codex",
+            "sessionId": "opaque-c8462315c9a7e5a4901034b3",
+            "totalTokens": 11,
+            "costUsd": 1.5,
+            "messageCount": 1,
+            "inputTokens": 11,
+            "outputTokens": 0,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "startedAt": "2026-09-13T00:00:00.000Z",
+            "lastUsedAt": "2026-09-13T01:00:00.000Z",
+            "projectId": "opaque-660752609f7270159b02ef1d",
+            "projectLabel": "opaque-7f0fe54faec48bffe422a0ef",
+            "title": "opaque-9c4b231d94744999aed85e09",
+            "sessionKind": "",
+            "models": {
+              "public/model@route": 11
+            },
+            "modelCosts": {
+              "public/model@route": 1.5
+            },
+            "providers": {}
+          }
+        }
+      },
+      "customSources": {
+        "accepted": [],
+        "excluded": []
+      }
+    }
+  },
+  "coverage": {
+    "entries": [
+      {
+        "sourceId": "codex-a",
+        "providerId": "codex",
+        "date": "2026-09-12",
+        "metric": "tokens",
+        "status": "known"
+      },
+      {
+        "sourceId": "codex-a",
+        "providerId": "codex",
+        "date": "2026-09-12",
+        "metric": "cost",
+        "status": "unknown"
+      },
+      {
+        "sourceId": "codex-a",
+        "providerId": "codex",
+        "date": "2026-09-12",
+        "metric": "quota",
+        "status": "unknown"
+      },
+      {
+        "sourceId": "codex-a",
+        "providerId": "codex",
+        "date": "2026-09-13",
+        "metric": "tokens",
+        "status": "known"
+      },
+      {
+        "sourceId": "codex-a",
+        "providerId": "codex",
+        "date": "2026-09-13",
+        "metric": "cost",
+        "status": "unknown"
+      },
+      {
+        "sourceId": "codex-a",
+        "providerId": "codex",
+        "date": "2026-09-13",
+        "metric": "quota",
+        "status": "unknown"
+      },
+      {
+        "sourceId": "codex-b",
+        "providerId": "codex",
+        "date": "2026-09-12",
+        "metric": "tokens",
+        "status": "unknown"
+      },
+      {
+        "sourceId": "codex-b",
+        "providerId": "codex",
+        "date": "2026-09-12",
+        "metric": "cost",
+        "status": "unknown"
+      },
+      {
+        "sourceId": "codex-b",
+        "providerId": "codex",
+        "date": "2026-09-12",
+        "metric": "quota",
+        "status": "unknown"
+      },
+      {
+        "sourceId": "codex-b",
+        "providerId": "codex",
+        "date": "2026-09-13",
+        "metric": "tokens",
+        "status": "unknown"
+      },
+      {
+        "sourceId": "codex-b",
+        "providerId": "codex",
+        "date": "2026-09-13",
+        "metric": "cost",
+        "status": "unknown"
+      },
+      {
+        "sourceId": "codex-b",
+        "providerId": "codex",
+        "date": "2026-09-13",
+        "metric": "quota",
+        "status": "unknown"
+      }
+    ],
+    "days": [
+      {
+        "date": "2026-09-12",
+        "status": "partial"
+      },
+      {
+        "date": "2026-09-13",
+        "status": "partial"
+      }
+    ],
+    "cost": "unknown"
+  },
+  "errors": [
+    {
+      "code": "collection_failed",
+      "retryable": true,
+      "sourceId": "codex-b"
+    },
+    {
+      "code": "collection_failed",
+      "retryable": true,
+      "sourceId": "codex-b"
+    }
+  ]
+}

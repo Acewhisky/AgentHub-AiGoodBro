@@ -45,7 +45,7 @@ struct TokenMonitorFloatingBubbleView: View {
                 if preferences.showIcon {
                     ProviderMark(providerID: snapshot.providerID, slot: .navigation)
                 }
-                Text(snapshot.providerName).font(.caption.weight(.semibold)).lineLimit(1)
+                Text(snapshot.providerName).font(font.weight(.semibold)).lineLimit(1)
                 Spacer(minLength: 8)
                 Button(action: onOpenEditor) {
                     Image(systemName: "slider.horizontal.3").font(.caption)
@@ -54,27 +54,41 @@ struct TokenMonitorFloatingBubbleView: View {
                     Image(systemName: "chevron.right").font(.caption)
                 }.buttonStyle(.plain).help(language.text("收起", "Collapse"))
             }
-            if preferences.showQuotaBar {
-                QuotaProgressTrack(percent: snapshot.percentRemaining)
+            if !snapshot.accountName.isEmpty {
+                Text(snapshot.accountName).font(font).lineLimit(1)
+            }
+            if !snapshot.metricName.isEmpty {
+                Text(snapshot.metricName).font(.caption2).foregroundStyle(.secondary)
+            }
+            if preferences.showQuotaBar, snapshot.valueLabel == nil {
+                QuotaProgressTrack(percent: displayedPercent)
             }
             HStack {
                 if preferences.showPercent {
-                    Text(percentText).font(.title3.weight(.semibold).monospacedDigit())
+                    Text(percentText).font(valueFont)
                 }
                 Spacer()
                 if preferences.showResetTime {
                     Text(snapshot.resetLabel).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            if preferences.showCost {
+            if preferences.showCost && snapshot.hasCost {
                 Text(snapshot.costLabel).font(.caption2).foregroundStyle(.secondary)
             }
             if !preferences.customText.isEmpty {
                 Text(preferences.customText).font(font).foregroundStyle(.secondary).lineLimit(2)
             }
-            if snapshot.isUnknown {
+            if let fetchedAt = snapshot.fetchedAt {
+                Text(language.dateTime(fetchedAt)).font(.caption2).foregroundStyle(.secondary)
+            }
+            if snapshot.isStale {
+                Text(language.text("数据已过期", "Stale data")).font(.caption2).foregroundStyle(.secondary)
+            }
+            if snapshot.isUnavailable {
+                Text(language.text("暂不可用", "Unavailable")).font(.caption2).foregroundStyle(.secondary)
+            } else if snapshot.isUnknown {
                 Text(language.text("暂无数据", "No data yet")).font(.caption2).foregroundStyle(.secondary)
-            } else if snapshot.isZero {
+            } else if displayedPercent == 0 {
                 Text(language.text("当前为 0", "Currently 0")).font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -88,15 +102,30 @@ struct TokenMonitorFloatingBubbleView: View {
     }
 
     private var percentText: String {
-        if snapshot.isUnknown { return "—" }
-        guard let percent = snapshot.percentRemaining else { return "—" }
+        if snapshot.isUnknown || snapshot.isUnavailable { return "—" }
+        if let label = snapshot.valueLabel { return label }
+        guard let percent = displayedPercent else { return "—" }
         return "\(Int(percent.rounded()))%"
+    }
+
+    private var displayedPercent: Double? {
+        snapshot.displayedPercent(valueMode: preferences.valueMode)
+    }
+
+    private var valueFont: Font {
+        switch preferences.fontStyle {
+        case "normal": return .system(size: 20, weight: .regular)
+        case "condensed": return .system(size: 18, weight: .semibold).width(.condensed)
+        case "compactMono": return .system(size: 16, weight: .medium, design: .monospaced)
+        default: return .system(size: 14, weight: .semibold).monospacedDigit()
+        }
     }
 
     private var font: Font {
         switch preferences.fontStyle {
-        case "condensed": return .system(.caption, design: .default).weight(.medium)
-        case "compactMono": return .system(.caption, design: .monospaced)
+        case "normal": return .body
+        case "condensed": return .system(size: 13, weight: .medium).width(.condensed)
+        case "compactMono": return .system(size: 12, design: .monospaced)
         default: return .caption
         }
     }
@@ -107,12 +136,14 @@ struct TokenMonitorFloatingBubbleEditor: View {
     var snapshot: TokenMonitorFloatingBubbleSnapshot
     var language: WidgetLanguage
     var providers: [AgentNavProvider]
+    var sources: [TokenMonitorFloatingBubbleAccount]
+    var embeddedInSettings: Bool
     var previewUsesSyntheticData: Bool
     var onShowDesktop: () -> Void
     var onCancel: () -> Void
     var onDone: () -> Void
 
-    @State private var draft: TokenMonitorFloatingBubblePreferences
+    @State private var session: TokenMonitorFloatingBubbleDraft
 
     init(
         preferences: Binding<TokenMonitorFloatingBubblePreferences>,
@@ -120,6 +151,8 @@ struct TokenMonitorFloatingBubbleEditor: View {
         language: WidgetLanguage,
         providers: [AgentNavProvider],
         previewUsesSyntheticData: Bool = true,
+        sources: [TokenMonitorFloatingBubbleAccount] = [],
+        embeddedInSettings: Bool = false,
         onShowDesktop: @escaping () -> Void,
         onCancel: @escaping () -> Void,
         onDone: @escaping () -> Void
@@ -128,76 +161,197 @@ struct TokenMonitorFloatingBubbleEditor: View {
         self.snapshot = snapshot
         self.language = language
         self.providers = providers
+        self.sources = sources
+        self.embeddedInSettings = embeddedInSettings
         self.previewUsesSyntheticData = previewUsesSyntheticData
         self.onShowDesktop = onShowDesktop
         self.onCancel = onCancel
         self.onDone = onDone
-        _draft = State(initialValue: preferences.wrappedValue)
+        _session = State(initialValue: TokenMonitorFloatingBubbleDraft(preferences: preferences.wrappedValue))
+    }
+
+    private var draftSnapshot: TokenMonitorFloatingBubbleSnapshot {
+        TokenMonitorFloatingBubbleProjection.resolve(preferences: session.preferences, sources: sources)
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 20) {
-            TokenMonitorFloatingBubbleView(
-                snapshot: snapshot,
-                preferences: draft,
-                collapsed: false,
-                side: "left",
-                language: language,
-                onToggle: {},
-                onOpenEditor: {}
+        GeometryReader { geometry in
+            VStack(spacing: 12) {
+                ScrollView(.vertical) {
+                    editorContent(width: geometry.size.width - 40)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Divider()
+                editorActions
+            }
+            .padding(20)
+        }
+    }
+
+    @ViewBuilder
+    private func editorContent(width: CGFloat) -> some View {
+        if width >= 680 {
+            HStack(alignment: .top, spacing: 20) {
+                preview
+                controls.frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 20) {
+                controls
+                preview.frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var preview: some View {
+        TokenMonitorFloatingBubbleView(
+            snapshot: draftSnapshot,
+            preferences: session.preferences,
+            collapsed: false,
+            side: "left",
+            language: language,
+            onToggle: {},
+            onOpenEditor: {}
+        )
+        .allowsHitTesting(false)
+        .disabled(true)
+        .accessibilityLabel(language.text("只读悬浮窗预览", "Read-only floating bubble preview"))
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(language.text("自定义悬浮窗", "Customize floating bubble")).font(.headline)
+            Toggle(language.text("显示图标", "Show icon"), isOn: $session.preferences.showIcon)
+            Toggle(language.text("显示额度条", "Show quota bar"), isOn: $session.preferences.showQuotaBar)
+            Toggle(language.text("显示百分比", "Show percent"), isOn: $session.preferences.showPercent)
+            Toggle(language.text("显示恢复时间", "Show reset time"), isOn: $session.preferences.showResetTime)
+            if draftSnapshot.hasCost {
+                Toggle(language.text("显示费用", "Show cost"), isOn: $session.preferences.showCost)
+            }
+            FloatingBubbleSelectionFields(preferences: $session.preferences, sources: sources, language: language)
+            Picker(language.text("数值", "Value"), selection: $session.preferences.valueMode) {
+                Text(language.text("剩余", "Remaining")).tag("remaining")
+                Text(language.text("已用", "Used")).tag("used")
+            }
+            TextField(language.text("自定义文字", "Custom text"), text: $session.preferences.customText)
+                .textFieldStyle(.roundedBorder)
+            Picker(language.text("字体", "Font"), selection: $session.preferences.fontStyle) {
+                Text(language.text("菜单栏", "Menu bar")).tag("menubar")
+                Text(language.text("常规", "Regular")).tag("normal")
+                Text(language.text("压缩", "Condensed")).tag("condensed")
+                Text(language.text("等宽", "Monospace")).tag("compactMono")
+            }
+            Text(
+                previewUsesSyntheticData
+                    ? language.text("预览使用合成数据；不会登录、通知或改真实账号。", "Preview uses synthetic data. It does not sign in, notify or change real accounts.")
+                    : language.text("预览使用当前已获取的数据；缺失数据会显示为待获取。", "Preview uses currently available data; missing data is shown as pending.")
             )
-            VStack(alignment: .leading, spacing: 12) {
-                Text(language.text("自定义悬浮窗", "Customize floating bubble")).font(.headline)
-                Toggle(language.text("显示图标", "Show icon"), isOn: $draft.showIcon)
-                Toggle(language.text("显示额度条", "Show quota bar"), isOn: $draft.showQuotaBar)
-                Toggle(language.text("显示百分比", "Show percent"), isOn: $draft.showPercent)
-                Toggle(language.text("显示恢复时间", "Show reset time"), isOn: $draft.showResetTime)
-                Toggle(language.text("显示费用", "Show cost"), isOn: $draft.showCost)
-                TextField(language.text("自定义文字", "Custom text"), text: $draft.customText)
-                    .textFieldStyle(.roundedBorder)
-                Picker(language.text("字体", "Font"), selection: $draft.fontStyle) {
-                    Text(language.text("菜单栏", "Menu bar")).tag("menubar")
-                    Text(language.text("常规", "Regular")).tag("normal")
-                    Text(language.text("压缩", "Condensed")).tag("condensed")
-                    Text(language.text("等宽", "Monospace")).tag("compactMono")
-                }
-                Picker(
-                    language.text("账号 / 窗口", "Account / window"),
-                    selection: Binding(
-                        get: { draft.selectedProviderID ?? snapshot.providerID },
-                        set: { draft.selectedProviderID = $0 }
-                    )
-                ) {
-                    ForEach(providers.filter(\.addable)) { provider in
-                        Text(provider.displayName).tag(provider.id)
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var editorActions: some View {
+        HStack {
+            Button(language.text("在桌面显示", "Show on desktop")) {
+                preferences = session.saved(enabled: true)
+                onShowDesktop()
+            }
+            Spacer()
+            Button(language.text("取消", "Cancel")) {
+                session.cancel(saved: preferences)
+                onCancel()
+            }
+            Button(embeddedInSettings ? language.text("保存", "Save") : language.text("完成", "Done")) {
+                preferences = session.saved(enabled: preferences.enabled)
+                onDone()
+            }.keyboardShortcut(.defaultAction)
+        }
+    }
+}
+
+private struct FloatingBubbleSelectionFields: View {
+    @Binding var preferences: TokenMonitorFloatingBubblePreferences
+    var sources: [TokenMonitorFloatingBubbleAccount]
+    var language: WidgetLanguage
+
+    private var providers: [TokenMonitorFloatingBubbleAccount] {
+        var seen = Set<String>()
+        return sources.filter { $0.isLoggedIn && seen.insert($0.providerID).inserted }
+    }
+
+    private var accounts: [TokenMonitorFloatingBubbleAccount] {
+        TokenMonitorFloatingBubbleProjection.accounts(in: sources, providerID: preferences.selectedProviderID)
+    }
+
+    private var metrics: [TokenMonitorFloatingBubbleMetric] {
+        accounts.first { $0.accountID == preferences.selectedProfileID }?.metrics ?? []
+    }
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            Picker(
+                language.text("显示平台", "Display provider"),
+                selection: Binding(
+                    get: { preferences.selectedProviderID ?? "" },
+                    set: {
+                        preferences.selectedProviderID = $0
+                        preferences.selectedProfileID = nil
+                        preferences.selectedMetricID = nil
                     }
-                }
-                Text(
-                    previewUsesSyntheticData
-                        ? language.text("预览使用合成数据；不会登录、通知或改真实账号。", "Preview uses synthetic data. It does not sign in, notify or change real accounts.")
-                        : language.text("预览使用当前已获取的数据；缺失数据会显示为待获取。", "Preview uses currently available data; missing data is shown as pending.")
                 )
-                .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button(language.text("在桌面显示", "Show on desktop")) {
-                        draft.enabled = true
-                        preferences = draft.normalized()
-                        onShowDesktop()
+            ) {
+                Text(language.text("请选择 / 暂不可用", "Select / unavailable"))
+                    .tag(providers.contains { $0.providerID == preferences.selectedProviderID } ? "" : preferences.selectedProviderID ?? "")
+                ForEach(providers, id: \.providerID) { Text($0.providerName).tag($0.providerID) }
+            }
+            .pickerStyle(.menu)
+            .frame(minWidth: 0, maxWidth: .infinity)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .accessibilityValue(providers.first { $0.providerID == preferences.selectedProviderID }?.providerName ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
+            .help(providers.first { $0.providerID == preferences.selectedProviderID }?.providerName ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
+            Picker(
+                language.text("显示账号", "Display account"),
+                selection: Binding(
+                    get: { preferences.selectedProfileID ?? "" },
+                    set: {
+                        preferences.selectedProfileID = $0
+                        preferences.selectedMetricID = nil
                     }
-                    Spacer()
-                    Button(language.text("取消", "Cancel")) {
-                        onCancel()
-                    }
-                    Button(language.text("完成", "Done")) {
-                        draft.enabled = preferences.enabled
-                        preferences = draft.normalized()
-                        onDone()
-                    }.keyboardShortcut(.defaultAction)
+                )
+            ) {
+                Text(language.text("请选择 / 暂不可用", "Select / unavailable"))
+                    .tag(accounts.contains { $0.accountID == preferences.selectedProfileID } ? "" : preferences.selectedProfileID ?? "")
+                ForEach(accounts, id: \.accountID) { Text($0.accountName).tag($0.accountID) }
+            }
+            .pickerStyle(.menu)
+            .frame(minWidth: 0, maxWidth: .infinity)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .accessibilityValue(accounts.first { $0.accountID == preferences.selectedProfileID }?.accountName ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
+            .help(accounts.first { $0.accountID == preferences.selectedProfileID }?.accountName ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
+            Picker(
+                language.text("显示指标", "Display metric"),
+                selection: Binding(
+                    get: { preferences.selectedMetricID ?? "" },
+                    set: { preferences.selectedMetricID = $0 }
+                )
+            ) {
+                Text(language.text("请选择 / 暂不可用", "Select / unavailable"))
+                    .tag(metrics.contains { $0.id == preferences.selectedMetricID } ? "" : preferences.selectedMetricID ?? "")
+                ForEach(metrics) { metric in
+                    Text(metric.name + (metric.isAvailable ? "" : language.text(" · 暂不可用", " · Unavailable")))
+                        .tag(metric.id)
                 }
             }
-            .frame(minWidth: 280)
+            .pickerStyle(.menu)
+            .frame(minWidth: 0, maxWidth: .infinity)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .accessibilityValue(metrics.first { $0.id == preferences.selectedMetricID }?.name ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
+            .help(metrics.first { $0.id == preferences.selectedMetricID }?.name ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
         }
-        .padding(20)
     }
 }
 
@@ -322,12 +476,25 @@ final class TokenMonitorFloatingBubbleController: NSObject, NSWindowDelegate {
         )
         if let hosting {
             hosting.rootView = view
+            fitExpandedContent(hosting, panel: panel)
             return
         }
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(origin: .zero, size: panel.frame.size)
         panel.contentView = host
         hosting = host
+        fitExpandedContent(host, panel: panel)
+    }
+
+    private func fitExpandedContent(_ host: NSHostingView<TokenMonitorFloatingBubbleView>, panel: NSPanel) {
+        guard !isCollapsed else { return }
+        let height = max(168, ceil(host.fittingSize.height))
+        guard height.isFinite, abs(expanded.height - height) > 1 else { return }
+        expanded.height = height
+        if let bounded = TokenMonitorFloatingBubbleGeometry.clampBounds(expanded, workArea: currentWorkArea()) {
+            expanded = bounded
+        }
+        apply(expanded, on: panel)
     }
 
     private func apply(_ bounds: TokenMonitorFloatingBubbleGeometry.Rect, on panel: NSPanel) {

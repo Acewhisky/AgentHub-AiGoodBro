@@ -16,6 +16,7 @@ struct LocalCLIWorkspaceView: View {
     @State private var nameDraft = ""
     @State private var addingGrok = false
     @State private var newAccountName = ""
+    @State private var avatarEditor: AccountAvatarTarget?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -107,6 +108,19 @@ struct LocalCLIWorkspaceView: View {
                 if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
             }.padding(24).frame(width: 400)
         }
+        .sheet(item: $avatarEditor) { target in
+            AccountAvatarEditor(
+                target: target, language: language,
+                initial: settings.accountAvatars.record(for: target.profileID),
+                existingImage: settings.avatarImage(for: target.profileID),
+                store: settings.avatarAssetStore,
+                onSave: { record, _ in
+                    settings.setAvatar(record, for: target.profileID)
+                    avatarEditor = nil
+                },
+                onCancel: { avatarEditor = nil }
+            )
+        }
         .sheet(item: $editing) { profile in
             VStack(alignment: .leading, spacing: 16) {
                 Text(language.text("账号名称", "Account name")).font(.headline)
@@ -143,6 +157,12 @@ struct LocalCLIWorkspaceView: View {
         for profile in profiles { byID[profile.id] = profile }
         return ResetCardPresentation.prioritizedOrder(profiles.map(\.id), expiring: expiring, pinnedAccountID: pinned)
             .compactMap { byID[$0] }
+    }
+
+    private func profileAvatar(_ profile: LocalCLIProfile, slot: ProviderIconSlot) -> some View {
+        let providerID = AgentNavCatalog.workspaceProviders.first(where: { $0.localKind == kind })?.id ?? kind.rawValue
+        let target = AccountAvatarTarget(profileID: profile.id, providerID: providerID, displayName: profile.displayName)
+        return AccountProfileAvatarView(settings: settings, target: target, slot: slot, onEdit: { avatarEditor = $0 })
     }
 
     private func moreMenuRequest(for profile: LocalCLIProfile, includeUnlink: Bool = false) -> AnchoredMenuRequest {
@@ -204,7 +224,7 @@ struct LocalCLIWorkspaceView: View {
         return arrangement {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    LocalCLIIcon(kind: kind).frame(width: 20, height: 20)
+                    profileAvatar(profile, slot: layout == .cards ? .card : .list)
                     Text(profile.displayName).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text(kind.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 }
@@ -377,7 +397,7 @@ struct LocalCLIWorkspaceView: View {
             evidenceFresh: !isStale)
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                LocalCLIIcon(kind: kind).frame(width: 24, height: 24)
+                profileAvatar(profile, slot: .detail)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         Text(profile.displayName).font(.headline).lineLimit(2)

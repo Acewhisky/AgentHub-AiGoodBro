@@ -1,0 +1,54 @@
+{
+  "mode": "override",
+  "fork": "Javis603/tokscale",
+  "commit": "8ef7aa98add33f5ff65b495cf30807ce89b78e69",
+  "baseVersion": "4.16.0",
+  "releaseTag": "token-monitor-8ef7aa98",
+  "platformSha256": {
+    "android-arm64": {
+      "package": "@tokscale/cli-android-arm64",
+      "asset": "tokscale-android-arm64",
+      "sha256": "6f7943c0019cef72ffae9e31fd1a795791622d620831f75d62f2df9f87914932"
+    },
+    "darwin-arm64": {
+      "package": "@tokscale/cli-darwin-arm64",
+      "asset": "tokscale-darwin-arm64",
+      "sha256": "575a4bdeb27f8f2fe0b085985caaec54b39e4240f41bd7fc1628ac9b8ae71751"
+    },
+    "darwin-x64": {
+      "package": "@tokscale/cli-darwin-x64",
+      "asset": "tokscale-darwin-x64",
+      "sha256": "4e6760390451b4e178a49e6f99aff00d6f0ceb412a05a913f994f2a8fd1cd615"
+    },
+    "linux-arm64": {
+      "package": "@tokscale/cli-linux-arm64-gnu",
+      "asset": "tokscale-linux-arm64",
+      "sha256": "8ef1e41a87fd51fe8f7c0826ea9c9b4fef6807ddad875fc88186bbc6114b4d9f"
+    },
+    "linux-arm64-musl": {
+      "package": "@tokscale/cli-linux-arm64-musl",
+      "asset": "tokscale-linux-arm64-musl",
+      "sha256": "dc12912da13b01f666567a11418fa6f5d48a6508641aa972360026be9e2c6844"
+    },
+    "linux-x64": {
+      "package": "@tokscale/cli-linux-x64-gnu",
+      "asset": "tokscale-linux-x64",
+      "sha256": "c75057ba1b45fa2b5feacfaa6ff9fb5a54ddff545b2bbc178ccb89ef27af6f9a"
+    },
+    "linux-x64-musl": {
+      "package": "@tokscale/cli-linux-x64-musl",
+      "asset": "tokscale-linux-x64-musl",
+      "sha256": "a6c748a731165a665cbc17bb87a6855634f0a83fe0c14e950a227f3750ae27eb"
+    },
+    "win32-arm64": {
+      "package": "@tokscale/cli-win32-arm64-msvc",
+      "asset": "tokscale-win32-arm64.exe",
+      "sha256": "d133cc39c693e16a31528069deab680939e14b28a0ee33ee9a8de55ff00daa43"
+    },
+    "win32-x64": {
+      "package": "@tokscale/cli-win32-x64-msvc",
+      "asset": "tokscale-win32-x64.exe",
+      "sha256": "bb0f7a5ea70ea879584bf6a2736b03c79d904354f11f26ac079eadf2bee7f49c"
+    }
+  }
+}

@@ -40,3 +40,8 @@ explore/
 
 # Private local visual-acceptance artifacts (screenshots, logs, and capture helpers)
 /.local-artifacts/
+
+# Build verification receipts and local acceptance outputs
+/.build-receipts/
+/task-test-outputs/
+/review-outputs/

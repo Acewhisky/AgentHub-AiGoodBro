@@ -21,11 +21,16 @@ OUTPUT="$TMP_DIR/grok-reset-cards-fixture"
 CACHE_DIR="$TMP_DIR/module-cache"
 mkdir -p "$CACHE_DIR"
 
-swiftc \
+python3 scripts/check-build-target-idle.py "$OUTPUT"
+
+xcrun swiftc \
   -sdk "$SDK" \
   -target "$TARGET" \
   -module-cache-path "$CACHE_DIR" \
   Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift \
+  Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift \
+  Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift \
+  Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift \
   Sources/CodexUsageWidget/Domain/ResetCardPresentation.swift \
   Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
   Sources/CodexUsageWidget/Services/GrokResetStatusObservationReader.swift \

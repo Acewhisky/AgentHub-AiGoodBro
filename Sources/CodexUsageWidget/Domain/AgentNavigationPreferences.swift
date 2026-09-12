@@ -40,6 +40,7 @@ struct AgentNavigationState: Codable, Equatable {
     mutating func bootstrapIfNeeded(existingUser: Bool, currentVisible: [String]) {
         guard !initialized else { return }
         initialized = true
+        guard !customized, orderedVisibleProviderIDs.isEmpty else { return }
         customized = true
         orderedVisibleProviderIDs = existingUser ? dedupe(currentVisible) : []
     }
@@ -97,6 +98,19 @@ struct AgentNavigationState: Codable, Equatable {
     private func dedupe(_ ids: [String]) -> [String] {
         var seen = Set<String>()
         return ids.filter { seen.insert($0).inserted && $0 != AgentNavCatalog.homeID }
+    }
+}
+
+// Older records may omit flags. Presence of the selection (including []) is
+// explicit configuration; bootstrap must not replace it with detected providers.
+extension AgentNavigationState {
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.schemaVersion
+        orderedVisibleProviderIDs = try values.decodeIfPresent([String].self, forKey: .orderedVisibleProviderIDs) ?? []
+        let hasSelection = values.contains(.orderedVisibleProviderIDs)
+        initialized = try values.decodeIfPresent(Bool.self, forKey: .initialized) ?? hasSelection
+        customized = try values.decodeIfPresent(Bool.self, forKey: .customized) ?? hasSelection
     }
 }
 

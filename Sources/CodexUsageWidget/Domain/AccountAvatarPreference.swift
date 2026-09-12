@@ -184,6 +184,7 @@ struct AccountAvatarAssetStore {
 enum ProviderIconSlot: String, CaseIterable {
     case navigation
     case menu
+    case compactRow
     case list
     case card
     case detail
@@ -194,6 +195,7 @@ enum ProviderIconSlot: String, CaseIterable {
         switch self {
         case .navigation: 20
         case .menu: 16
+        case .compactRow: 20
         case .list: 24
         case .card: 32
         case .detail: 48
@@ -206,6 +208,7 @@ enum ProviderIconSlot: String, CaseIterable {
         switch self {
         case .navigation: 17
         case .menu: 16
+        case .compactRow: 20
         case .list: 24
         case .card: 32
         case .detail: 48
@@ -216,7 +219,7 @@ enum ProviderIconSlot: String, CaseIterable {
 
     var hitTarget: CGFloat {
         switch self {
-        case .list, .navigation, .menu, .badge:
+        case .compactRow, .list, .navigation, .menu, .badge:
             container
         default:
             max(32, container)

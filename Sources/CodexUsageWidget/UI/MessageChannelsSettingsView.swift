@@ -4,6 +4,7 @@ struct MessageChannelsSettingsView: View {
     @ObservedObject var controller: MessageChannelsController
     @Environment(\.widgetLanguage) private var language
     @Environment(\.dismiss) private var dismiss
+    var recentOutcomes: [PublicResetChannelResult] = []
     @State private var telegramToken = ""
     @State private var telegramTarget = ""
     @State private var weChatKey = ""
@@ -18,6 +19,24 @@ struct MessageChannelsSettingsView: View {
                     .fixedSize()
             }.padding(20)
             Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text(language.text("通知渠道", "Notification channels")).font(.headline)
+                channelStatus("Telegram", phase: controller.telegramPhase)
+                channelStatus(language.text("企业微信群机器人", "WeCom group bot"), phase: controller.weChatPhase)
+                ForEach(Array(recentOutcomes.enumerated()), id: \.offset) { _, outcome in
+                    HStack {
+                        Text(outcome.summary(language))
+                        Spacer()
+                        Text(outcome.checkedAt, style: .time)
+                    }.font(.caption).accessibilityElement(children: .combine)
+                }
+                Text(
+                    language.text(
+                        "渠道已接受仅表示 API 接受请求，不代表收件人已收到或已读。保存配置后，请主动发送测试消息。",
+                        "Channel accepted means the API accepted the request; receipt and reading are unconfirmed. Send a test explicitly after saving.")
+                )
+                .font(.caption).foregroundStyle(.secondary)
+            }.padding(.horizontal, 20).padding(.vertical, 10)
             MessageChannelsView(
                 telegramPhase: controller.telegramPhase,
                 weChatCapabilities: WeChatChannelCapabilities.all(workGroupBotPhase: controller.weChatPhase),
@@ -56,4 +75,22 @@ struct MessageChannelsSettingsView: View {
             weChatKey = ""
         }
     }
+    private func channelStatus(_ title: String, phase: MessageChannelPhase) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(phaseLabel(phase)).foregroundStyle(.secondary)
+        }.font(.caption).accessibilityElement(children: .combine)
+    }
+
+    private func phaseLabel(_ phase: MessageChannelPhase) -> String {
+        switch phase {
+        case .disabled: return language.text("已关闭", "Disabled")
+        case .needsSetup: return language.text("未配置", "Unconfigured")
+        case .pendingVerification: return language.text("已配置，待测试或核验", "Configured · test or verification needed")
+        case .ready: return language.text("渠道已接受", "Channel accepted")
+        case .unavailable: return language.text("需要处理", "Needs attention")
+        }
+    }
+
 }

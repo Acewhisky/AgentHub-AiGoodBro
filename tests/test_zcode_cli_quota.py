@@ -12,16 +12,23 @@ class ZCodeCLIQuotaTests(unittest.TestCase):
     def test_actual_production_source_with_synthetic_fixture(self):
         sources = [
             ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift",
+            ROOT / "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/ZCodeCLIQuotaReader.swift",
             ROOT / "tests/ZCodeCLIQuotaFixture.swift",
         ]
         with tempfile.TemporaryDirectory(prefix="zcode-cli-quota-") as directory:
             output = pathlib.Path(directory) / "fixture"
-            sdk = pathlib.Path("/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk")
-            if not sdk.is_dir():
-                sdk = pathlib.Path(subprocess.check_output(
-                    ["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip())
+            sdk = subprocess.check_output(
+                ["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True
+            ).strip()
+            guard = subprocess.run(
+                ["python3", str(ROOT / "scripts/check-build-target-idle.py"), str(output)],
+                cwd=ROOT, text=True, capture_output=True, timeout=30, check=False,
+            )
+            self.assertEqual(guard.returncode, 0, guard.stdout + guard.stderr)
             compiled = subprocess.run([
                 "xcrun", "swiftc", "-target", f"{platform.machine()}-apple-macos13.0",
                 "-sdk", str(sdk), "-module-cache-path", str(pathlib.Path(directory) / "ModuleCache"),

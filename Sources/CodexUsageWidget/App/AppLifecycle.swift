@@ -116,6 +116,7 @@ final class MainAppWindow: NSWindow {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate, TokenMonitorFloatingBubbleSessionOwner {
     private let startupPerformanceSpan = PerformanceMonitor.shared.begin(.appStartup)
     private let store = UsageStore()
+    private let localCLIAccounts = LocalCLIAccountStore()
     private let paletteCatalog = PaletteCatalog.loadFromMainBundle()
     private lazy var settings = AppSettings(paletteCatalog: paletteCatalog)
     private lazy var updateStore = AppUpdateStore(settings: settings)
@@ -139,6 +140,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var globalHotKeyRef: EventHotKeyRef?
     private var globalHotKeyHandler: EventHandlerRef?
     private var cancellables = Set<AnyCancellable>()
+    private var statisticsSourceManifest: [TokenMonitorSource]?
+    private var statisticsIncludesCodex: Bool?
     private let statusItemPresentationBuilder = StatusItemPresentationBuilder()
     private let statusItemRenderer = StatusItemRenderer()
     private var lastRenderedStatusItemPresentation: StatusItemPresentation?
@@ -190,6 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             store.stageLaunchProfileID(CommandLine.arguments[argumentIndex + 1])
         }
         store.updateVisibleRuntimeScopes(settings.visibleRuntimeScopes)
+        setupStatisticsSources()
         store.start()
         setupFloatingBubbleSync()
         showMainWindow()
@@ -216,7 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 store: store,
                 settings: settings,
                 paletteCatalog: paletteCatalog,
-                screenshotRequests: screenshotRequests.eraseToAnyPublisher()
+                screenshotRequests: screenshotRequests.eraseToAnyPublisher(),
+                localCLIAccounts: localCLIAccounts
             ),
             cornerRadius: CodexAccountManagerView.windowCornerRadius
         )
@@ -224,6 +229,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         _ = mainWindow.setFrameAutosaveName("CodexAccountManagerNext.mainWindow")
         window = mainWindow
         applyMainWindowLevel()
+    }
+
+    private func setupStatisticsSources() {
+        syncStatisticsSources()
+        // Account snapshots change frequently; only metadata/selection changes restart statistics.
+        localCLIAccounts.$profiles
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncStatisticsSources() }
+            .store(in: &cancellables)
+        store.$profiles
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncStatisticsSources() }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: StatisticsSources.selectionChanged)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncStatisticsSources() }
+            .store(in: &cancellables)
+    }
+
+    private func syncStatisticsSources() {
+        do {
+            let catalog = try StatisticsClientCatalog.load()
+            let enabled = catalog.enabledIDs()
+            let sources = try StatisticsSources.make(
+                catalog: catalog, enabledIDs: enabled,
+                userHome: FileManager.default.homeDirectoryForCurrentUser,
+                systemCodexHome: store.profiles.first(where: \.isSystemProfile)?.codexHomeURL,
+                localProfiles: localCLIAccounts.profiles
+            )
+            let includeCodex = enabled.contains("codex")
+            guard sources != statisticsSourceManifest || includeCodex != statisticsIncludesCodex else { return }
+            try store.configureStatisticsSources(sources, includeManagedCodex: includeCodex)
+            statisticsSourceManifest = sources
+            statisticsIncludesCodex = includeCodex
+        } catch {
+            // The engine reports missing/invalid packaged resources in its existing error state.
+            debugLog("statistics source catalog unavailable")
+        }
     }
 
     private func setupFloatingBubbleSync() {
@@ -246,28 +289,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.syncFloatingBubble() }
             .store(in: &cancellables)
+        localCLIAccounts.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncFloatingBubble() }
+            .store(in: &cancellables)
     }
 
     private func syncFloatingBubble(reveal: Bool = false) {
         guard !floatingBubbleShuttingDown else { return }
         let prefs = settings.floatingBubble
-        let language = settings.language
-        let providerID = prefs.selectedProviderID ?? AgentNavCatalog.codexID
-        // Only the Codex store has a proven quota source here.
-        let quota = providerID == AgentNavCatalog.codexID ? store.snapshot.fiveHourQuota : nil
         let bubble = floatingBubbleController
-        bubble.language = language
+        bubble.language = settings.language
         bubble.preferences = prefs
-        bubble.snapshot = TokenMonitorFloatingBubbleSnapshot(
-            providerID: providerID,
-            providerName: AgentNavCatalog.displayName(providerID),
-            percentRemaining: quota?.remainingPercent,
-            resetLabel: quota?.resetsAt.map { language.dateTime($0) }
-                ?? language.text("待获取", "Pending"),
-            costLabel: "—",
-            customText: prefs.customText,
-            isUnknown: quota?.remainingPercent == nil,
-            isZero: quota?.remainingPercent == 0
+        bubble.snapshot = TokenMonitorFloatingBubbleProjection.resolve(
+            preferences: prefs,
+            sources: FloatingBubbleEvidence.make(store: store, localAccounts: localCLIAccounts, language: settings.language)
         )
         if prefs.enabled {
             if reveal || !floatingBubbleEnabled { bubble.show() } else { bubble.refreshContent() }
@@ -302,15 +338,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         editor.delegate = self
         editor.title = settings.language.text("自定义悬浮窗", "Customize floating bubble")
         editor.contentView = NSHostingView(
-            rootView: TokenMonitorFloatingBubbleEditor(
-                preferences: Binding(
-                    get: { [weak self] in self?.settings.floatingBubble ?? .init() },
-                    set: { [weak self] in self?.settings.floatingBubble = $0 }
-                ),
-                snapshot: floatingBubbleController.snapshot,
-                language: settings.language,
-                providers: AgentNavCatalog.workspaceProviders,
-                previewUsesSyntheticData: false,
+            rootView: LiveFloatingBubbleEditor(
+                settings: settings,
+                store: store,
+                localAccounts: localCLIAccounts,
                 onShowDesktop: { [weak self] in
                     guard let self else { return }
                     self.showFloatingBubble(settings: self.settings, language: self.settings.language)
@@ -790,6 +821,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 updateStore: updateStore,
                 paletteCatalog: paletteCatalog,
                 initialScreen: initialScreen,
+                localCLIAccounts: localCLIAccounts,
                 openFullWindow: { [weak self] in
                     self?.openMainWindow(selecting: nil)
                 },
@@ -843,6 +875,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 settings: settings,
                 updateStore: updateStore,
                 paletteCatalog: paletteCatalog,
+                localCLIAccounts: localCLIAccounts,
                 openFullWindow: { [weak self] in
                     self?.openMainWindow(selecting: nil)
                 },

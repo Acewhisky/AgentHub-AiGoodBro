@@ -1,0 +1,134 @@
+{
+  "manifestVersion": 2,
+  "upstream": {
+    "repository": "Javis603/token-monitor",
+    "commit": "ef079b6fb494e1cfcb24736cfcf4d4e591222eaf",
+    "version": "0.56.0"
+  },
+  "note": "The pinned upstream checkout is never edited. Each entry below is a minimal capability hook applied as a require-cache overlay at load time (engine/lib/upstream/loader.cjs). 'upstreamSha256' pins the exact upstream file the overlay was written against, so drift is detectable. 'patch.anchorLine' + 'patch.insertLines' describe the same gate as a source edit; engine/scripts/generate-hook-patch.cjs renders them into hooks.patch as a review artifact. Entries that share a file and an anchorLine are merged into one hunk in manifest order.",
+  "hooks": [
+    {
+      "id": "cursor-self-sync",
+      "capability": "allowSelfSync",
+      "upstreamFile": "src/shared/providers/cursor/selfSync.js",
+      "upstreamSha256": "d85903c15f9b7881e6afb1e54b4100aea6297f96c6f91273e2e49c0d42c8b734",
+      "overlay": "hooks/cursor-self-sync.cjs",
+      "wrappedExport": "createCursorSelfSync",
+      "rationale": "The collector calls maybeSyncCursor() on every tick whose client set contains cursor; no option suppresses it and the 5 minute throttle only delays it.",
+      "patch": {
+        "anchorLine": "  async function maybeSyncCursor(clientsCsv, logger, options = {}) {",
+        "insertLines": [
+          "    if (!bridgeCapabilities().allowSelfSync) return;"
+        ]
+      }
+    },
+    {
+      "id": "antigravity-self-sync",
+      "capability": "allowSelfSync",
+      "upstreamFile": "src/shared/providers/antigravity/selfSync.js",
+      "upstreamSha256": "0fd43baf9d818557644ef730edec1eb8968d4811d74d344c98eb0f79efca99b6",
+      "overlay": "hooks/antigravity-self-sync.cjs",
+      "wrappedExport": "createAntigravitySelfSync",
+      "rationale": "Same tick-driven self-sync as cursor; the collector passes an injectable run() but still reaches it, so the gate is placed at the entry point.",
+      "patch": {
+        "anchorLine": "  async function maybeSyncAntigravity(clientsCsv, logger, home = os.homedir(), options = {}) {",
+        "insertLines": [
+          "    if (!bridgeCapabilities().allowSelfSync) return;"
+        ]
+      }
+    },
+    {
+      "id": "provider-network",
+      "capability": "allowProviderNetwork",
+      "upstreamFile": "src/shared/limits/providerHelpers.js",
+      "upstreamSha256": "2dced568f92a94b4fa14a88679f72c611cc7ea1f3fb5925a0777b83a52e648fb",
+      "overlay": "hooks/limits-provider-helpers.cjs",
+      "wrappedExport": "fetchJson",
+      "rationale": "Lets a host run a local-reads-only limits pass. Not one of the contract defaults, which leave provider quota APIs reachable; the engine extension is documented in DELIVERY-0913v1.md.",
+      "patch": {
+        "anchorLine": "async function fetchJson(url, headers, deps = {}, options = {}) {",
+        "insertLines": [
+          "  if (!bridgeCapabilities().allowProviderNetwork) {",
+          "    throw errorWithStatus('unavailable', 'provider network disabled by caller');",
+          "  }"
+        ]
+      }
+    },
+    {
+      "id": "provider-credential-refresh",
+      "capability": "allowCredentialRefresh",
+      "upstreamFile": "src/shared/limits/providerHelpers.js",
+      "upstreamSha256": "2dced568f92a94b4fa14a88679f72c611cc7ea1f3fb5925a0777b83a52e648fb",
+      "overlay": "hooks/limits-provider-helpers.cjs",
+      "wrappedExport": "fetchJson",
+      "rationale": "refreshClaudeCredentials -> refreshClaudeAccessToken calls fetchJson() with the OAuth token endpoint. Blocking that URL refuses a collect-time token mint and, because persistClaudeRefresh only runs after a successful refresh, also prevents the credential write.",
+      "patch": {
+        "anchorLine": "async function fetchJson(url, headers, deps = {}, options = {}) {",
+        "insertLines": [
+          "  if (!bridgeCapabilities().allowCredentialRefresh && isCredentialEndpoint(url)) {",
+          "    throw errorWithStatus('unauthorized', 'credential refresh disabled by caller');",
+          "  }"
+        ]
+      }
+    },
+    {
+      "id": "provider-credential-refresh-cli",
+      "capability": "allowCredentialRefresh",
+      "upstreamFile": "src/shared/limits/providerHelpers.js",
+      "upstreamSha256": "2dced568f92a94b4fa14a88679f72c611cc7ea1f3fb5925a0777b83a52e648fb",
+      "overlay": "hooks/limits-provider-helpers.cjs",
+      "wrappedExport": "runProcessText",
+      "rationale": "claude/limits.js spawns `claude /status` in a PTY so Claude Code itself refreshes the OAuth token. With credentialRefresh disabled that spawn is the refresh.",
+      "patch": {
+        "anchorLine": "function runProcessText(command, args = [], options = {}) {",
+        "insertLines": [
+          "  if (!bridgeCapabilities().allowCredentialRefresh && isCredentialCli(command)) {",
+          "    return Promise.reject(capabilityDisabled('credential refresh disabled by caller'));",
+          "  }"
+        ]
+      }
+    }
+  ],
+  "patchShims": {
+    "note": "hooks.patch is a review artifact: it shows the gate that the require-cache overlay applies, against the pinned upstream file. It is not applied to the shipped tree. The names below are what the patch assumes is in scope at the edit site; the real overlay reaches the same values through engine/lib/upstream/capabilities.cjs and engine/lib/upstream/credential-endpoints.cjs.",
+    "bridgeCapabilities": "returns the per-request capability record ({allowSelfSync, allowProviderNetwork, allowCredentialRefresh, ...})",
+    "isCredentialEndpoint": "engine/lib/upstream/credential-endpoints.cjs isCredentialEndpoint(url)",
+    "isCredentialCli": "engine/lib/upstream/credential-endpoints.cjs isCredentialCli(command)",
+    "capabilityDisabled": "builds an Error with code CAPABILITY_DISABLED"
+  },
+  "injectionPoints": [
+    {
+      "id": "usage-pricing-lookup",
+      "capability": "allowPriceNetwork",
+      "mechanism": "option injection",
+      "upstreamOption": "collectUsageOnce({ lookupModelPricing })",
+      "rationale": "The collector threads lookupModelPricing into resolvePromaPricing and resolveQoderCnPricing. Substituting a non-network resolver removes the `tokscale pricing` spawn (which refreshes the catalog over the network) without patching collector.js."
+    },
+    {
+      "id": "usage-runners",
+      "capability": "fixture mode",
+      "mechanism": "option injection",
+      "upstreamOption": "collectUsageOnce({ runTokscale, runGraph, collectWslUsage, probeWslState })",
+      "rationale": "Documented upstream injection seams used by the upstream test suite; the bridge uses the same seams so fixture tests exercise real collector logic."
+    },
+    {
+      "id": "limits-runners",
+      "capability": "fixture mode",
+      "mechanism": "deps injection",
+      "upstreamOption": "collectLimitsOnce(options, { providerFetchers, fetch, now })",
+      "rationale": "collectLimitsOnce merges deps.providerFetchers over its own table, so a fixture can supply the whole provider probe set."
+    }
+  ],
+  "collectorBindings": {
+    "upstreamFile": "src/shared/collector.js",
+    "upstreamSha256": "36216cb8954828f62f9ce3684d1c7d9f5aed67d8db5906022aee5fc2eb4f3d84",
+    "appendFile": "hooks/collector-bindings.cjs",
+    "purpose": "Expose original scan/graph runners; select only bundled native scanner, never downloaded pointer or JS shim.",
+    "scopedProma": {
+      "upstreamFile": "src/shared/providers/proma/usage.js",
+      "upstreamSha256": "b47192572932a1e7f155a85f631960757b241f841ccd5a8aa4014bbea9092cd8",
+      "wrappedExport": "collectPromaRows",
+      "purpose": "Pass original roots option from the active scoped HOME instead of module-load home constant."
+    }
+  }
+}

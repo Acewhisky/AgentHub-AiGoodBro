@@ -150,7 +150,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
     func title(_ language: WidgetLanguage) -> String {
         switch self {
-        case .appearance: return language.text("外观", "Appearance")
+        case .appearance: return language.text("显示与图标", "Display & Icons")
         case .menuBar: return language.text("菜单栏", "Menu Bar")
         case .automation: return language.text("自动化", "Automation")
         case .workspace: return language.text("工作区", "Workspace")
@@ -160,7 +160,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
     func detail(_ language: WidgetLanguage) -> String {
         switch self {
-        case .appearance: return language.text("主题、语言、透明度与额度环动效。", "Theme, language, opacity and ring motion.")
+        case .appearance: return language.text("主题、语言、透明度与额度环动效；账号头像在账号详情中修改。", "Theme, language, opacity and ring motion. Change account avatars in account details.")
         case .menuBar: return language.text("选择展示模式、额度口径与可见指标。", "Choose display mode, usage display and visible metrics.")
         case .automation: return language.text("按窗口预约暖号，默认关闭。", "Schedule warm-up per window. Off by default.")
         case .workspace: return language.text("数据口径、窗口行为与快捷入口。", "Data, window behavior and shortcuts.")
@@ -228,6 +228,7 @@ struct SettingsPanelView: View {
     let onOpenPaletteLibrary: () -> Void
     var compact = false
     var showsHeader = true
+    var floatingBubbleSources: [TokenMonitorFloatingBubbleAccount]
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.visualTokens) private var visualTokens
     @State private var selectedPage: SettingsPage
@@ -239,7 +240,8 @@ struct SettingsPanelView: View {
         onOpenPaletteLibrary: @escaping () -> Void,
         compact: Bool = false,
         showsHeader: Bool = true,
-        initialPage: SettingsPage = .appearance
+        initialPage: SettingsPage = .appearance,
+        floatingBubbleSources: [TokenMonitorFloatingBubbleAccount] = []
     ) {
         self.settings = settings
         self.store = store
@@ -247,6 +249,7 @@ struct SettingsPanelView: View {
         self.onOpenPaletteLibrary = onOpenPaletteLibrary
         self.compact = compact
         self.showsHeader = showsHeader
+        self.floatingBubbleSources = floatingBubbleSources
         _selectedPage = State(initialValue: initialPage)
     }
 
@@ -340,18 +343,14 @@ struct SettingsPanelView: View {
                 StatusItemSettingsView(settings: settings, store: store)
                 TokenMonitorFloatingBubbleEditor(
                     preferences: $settings.floatingBubble,
-                    snapshot: TokenMonitorFloatingBubbleSnapshot(
-                        providerID: AgentNavCatalog.codexID,
-                        providerName: "Codex",
-                        percentRemaining: store.snapshot.fiveHourQuota?.remainingPercent,
-                        resetLabel: store.snapshot.fiveHourQuota?.resetsAt.map { language.dateTime($0) } ?? language.text("待获取", "Pending"),
-                        costLabel: "—",
-                        customText: settings.floatingBubble.customText,
-                        isUnknown: store.snapshot.fiveHourQuota == nil,
-                        isZero: store.snapshot.fiveHourQuota?.remainingPercent == 0
+                    snapshot: TokenMonitorFloatingBubbleProjection.resolve(
+                        preferences: settings.floatingBubble, sources: floatingBubbleSources
                     ),
                     language: language,
                     providers: AgentNavCatalog.workspaceProviders,
+                    previewUsesSyntheticData: false,
+                    sources: floatingBubbleSources,
+                    embeddedInSettings: true,
                     onShowDesktop: { TokenMonitorFloatingBubbleSession.show(settings: settings, language: language) },
                     onCancel: {},
                     onDone: {}
@@ -448,13 +447,43 @@ struct SettingsPanelView: View {
     private var workspacePage: some View {
         VStack(alignment: .leading, spacing: 6) {
             SettingsPickerRow(
-                title: language.text("数据来源", "Data sources"),
-                detail: language.text("至少保留一个 Runtime；不重复导入历史记录", "Keep at least one source. Existing history is not counted twice.")
+                title: language.text("统计方式", "Statistics mode"),
+                detail: language.text("主页按所选方式汇总；切换后分别计算，不混加", "The home page uses the selected engine. Each mode keeps its own totals.")
             ) {
-                SettingsRuntimeMultiSelectControl(
-                    selectedScopes: settings.visibleRuntimeScopes, language: language
-                ) { scope in
-                    settings.setRuntime(scope, visible: !settings.isRuntimeVisible(scope))
+                Picker(
+                    language.text("统计方式", "Statistics mode"),
+                    selection: Binding(
+                        get: { store.statisticsEngineChoice },
+                        set: { choice in
+                            settings.statisticsEngine = choice
+                            store.selectStatisticsEngine(choice)
+                        }
+                    )
+                ) {
+                    Text(language.text("Token Monitor（默认）", "Token Monitor (default)")).tag(StatisticsEngineChoice.upstream)
+                    Text(language.text("自定义（原有模式）", "Custom (previous mode)")).tag(StatisticsEngineChoice.custom)
+                    if store.statisticsEngineChoice == .nativeLegacy {
+                        Text(language.text("旧版统计", "Legacy statistics")).tag(StatisticsEngineChoice.nativeLegacy)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .frame(width: settingsAccessoryColumnWidth)
+                .accessibilityIdentifier("next.statistics.engine")
+            }
+            if store.statisticsEngineChoice == .upstream {
+                StatisticsSourceSettings(language: language)
+            } else {
+                SettingsPickerRow(
+                    title: language.text("数据来源", "Data sources"),
+                    detail: language.text("保留原有自定义来源与统计方式", "Use the existing custom sources and statistics")
+                ) {
+                    SettingsRuntimeMultiSelectControl(
+                        selectedScopes: settings.visibleRuntimeScopes, language: language
+                    ) { scope in
+                        settings.setRuntime(scope, visible: !settings.isRuntimeVisible(scope))
+                    }
                 }
             }
             SettingsPickerRow(title: language.text("统计时区", "Usage time zone"), detail: statisticsTimeZoneDetail) {

@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="standalone.css"></head><body>
+<nav aria-label="用量视图"><button data-mode="overview">概览</button><button data-mode="trends">趋势</button><button data-mode="details">明细</button></nav>
+<p id="context"></p>
+<section id="overview"><div id="calendar"></div><p id="month"></p></section>
+<section id="trends" hidden><label><span data-label="group">分组</span> <select id="group"><option value="client">工具</option><option value="model">模型</option></select></label> <label><span data-label="from">起始日期</span> <input id="from" type="date"></label> <label><span data-label="to">结束日期</span> <input id="to" type="date"></label><div id="bars"></div><p id="legend"></p></section>
+<section id="details" hidden><label><span data-label="date">日期</span> <input id="date" type="date"></label><label><span data-label="period">期间</span> <select id="period"><option value="day">所选日</option><option value="today">今天</option><option value="month">本月</option><option value="allTime">全部时间</option></select></label><div id="dimensions"></div></section>
+<p id="selection" role="status" aria-live="polite"></p>
+<script src="usageCharts.js"></script><script src="standalone.js"></script></body></html>

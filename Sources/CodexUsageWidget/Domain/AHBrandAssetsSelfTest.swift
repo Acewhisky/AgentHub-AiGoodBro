@@ -24,7 +24,8 @@ enum AHBrandAssetsSelfTest {
             print("brand-assets self-test failed: bundle resource URL unavailable")
             return false
         }
-        let iconURL = resources.appendingPathComponent("AiGoodBro-icon.png")
+        expect(AHBrandSymbol.resourceFilename == "AiGoodBro-icon.png", "brand view must use the selected packaged image")
+        let iconURL = resources.appendingPathComponent(AHBrandSymbol.resourceFilename)
         expect(FileManager.default.fileExists(atPath: iconURL.path), "bundled runtime brand icon AiGoodBro-icon.png must exist")
         if let data = try? Data(contentsOf: iconURL), let image = NSImage(data: data) {
             let pixelWidth = image.representations.first?.pixelsWide ?? 0

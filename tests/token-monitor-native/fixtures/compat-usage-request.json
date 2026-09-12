@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "requestId": "fixture-request",
+  "operation": "collectUsage",
+  "now": "2026-09-13T02:00:00.000Z",
+  "timezone": "Asia/Shanghai",
+  "cacheDirectory": "/tmp/token-monitor-native-fixture/cache",
+  "sources": [
+    {
+      "kind": "managedAccount",
+      "pathRole": "codexHome",
+      "authority": "upstream",
+      "enabled": true,
+      "id": "codex-a",
+      "providerId": "codex",
+      "canonicalPath": "/tmp/token-monitor-native-fixture/managed-0"
+    },
+    {
+      "kind": "managedAccount",
+      "pathRole": "codexHome",
+      "authority": "upstream",
+      "enabled": true,
+      "id": "codex-b",
+      "providerId": "codex",
+      "canonicalPath": "/tmp/token-monitor-native-fixture/managed-1"
+    }
+  ],
+  "options": {
+    "timeoutMs": 20000,
+    "allowPriceNetwork": false,
+    "allowSelfSync": false,
+    "allowCredentialRefresh": false,
+    "includeLiveCodexAccount": false
+  },
+  "customSources": []
+}

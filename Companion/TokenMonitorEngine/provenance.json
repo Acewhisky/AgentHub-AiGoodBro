@@ -1,0 +1,57 @@
+{
+  "provenanceVersion": 1,
+  "recordedAt": "2026-09-13T02:11:43+08:00",
+  "upstream": {
+    "repository": "Javis603/token-monitor",
+    "commit": "ef079b6fb494e1cfcb24736cfcf4d4e591222eaf",
+    "version": "0.56.0",
+    "license": "MIT",
+    "licenseFile": "upstream/LICENSE",
+    "licenseCopyright": "Copyright (c) 2026 Javis",
+    "packageName": "token-monitor",
+    "engines": {
+      "node": ">=20"
+    },
+    "hashes": {
+      "upstream/package.json": "851a6d9dc03b8bad3f43834649b91ce997cf71303d45b5bc7f29e8ff5b93d10e",
+      "upstream/package-lock.json": "0911f87173e01b0af3bacab06d4d3baee4a08f7e9b3892f8af2ba29687f82653",
+      "upstream/LICENSE": "250136de456c31d659e54c1804c43a27dadad175336b67226e9509d6310f923c"
+    },
+    "edits": "Pinned upstream files unchanged. Reviewed overlays and collector bindings are listed in hooks/manifest.json."
+  },
+  "tokscale": {
+    "mode": "override",
+    "upstream": "junhoyeo/tokscale",
+    "fork": "Javis603/tokscale",
+    "commit": "8ef7aa98add33f5ff65b495cf30807ce89b78e69",
+    "commitTitle": "feat(report): join sessions to workspaces and expose session activity",
+    "releaseTag": "token-monitor-8ef7aa98",
+    "baseVersion": "4.16.0",
+    "manifest": "upstream/scripts/vendor/tokscale.json",
+    "note": "The staged native binary must match the Javis603/tokscale fork hash recorded in upstream/scripts/vendor/tokscale.json. The development npm vendor binary does not satisfy this pin."
+  },
+  "engine": {
+    "name": "token-monitor-engine",
+    "version": "0.1.0",
+    "agentVersion": "token-monitor-engine/0.1.0",
+    "entry": "bridge.cjs",
+    "handler": "lib/handler.cjs",
+    "protocolVersion": 1
+  },
+  "runtime": {
+    "node": "v22.23.2",
+    "packagingAuthority": "SOURCE.json supplied by AiGoodBro packaging",
+    "note": "Architecture-specific runtime and Javis tokscale override hashes must be verified during resource staging; no development machine path is packaged."
+  },
+  "repository": "Javis603/token-monitor",
+  "commit": "ef079b6fb494e1cfcb24736cfcf4d4e591222eaf",
+  "version": "0.56.0",
+  "hostCorrection": {
+    "version": "0913v2",
+    "changes": [
+      "Remove private development runtime path",
+      "Describe flat production resource root",
+      "Record mandatory fork binary pin instead of claiming the development npm binary is equivalent"
+    ]
+  }
+}

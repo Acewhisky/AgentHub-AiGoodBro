@@ -1,6 +1,6 @@
 # AiGoodBro · AgentHub
 
-**AiGoodBro** 是原生 macOS 的 Codex 多账号工作台，主页名为 **AgentHub**。集中查看额度、接收重置消息、一键切换账号，并为其他账号派发独立 CLI 任务。升级保留已有账号与设置。
+**AiGoodBro** 是原生 macOS 的 Codex 多账号工作台，主页名为 **AgentHub**。集中查看额度与多 Agent 的 Token 用量、接收重置消息、一键切换账号，并为其他账号派发独立 CLI 任务。升级保留已有账号与设置。
 
 **中文** | [English](README.en.md)
 
@@ -13,6 +13,7 @@ AiGoodBro 把额度提醒与消息放在前面，让你及时知道什么时候�
 | 你要做的事 | AiGoodBro 提供的功能 |
 |---|---|
 | 看还剩多少额度 | 读取官方返回的 5 小时、7 天等额度窗口，显示剩余比例、重置时间和数据更新时间；低额度阈值可调整，未知数据显示“—” |
+| 看多 Agent 用量 | 原样复用 [Token Monitor](https://github.com/Javis603/token-monitor) 的统计引擎与图表；按工具、模型、日期汇总，默认年度热图，可切换趋势与明细，保留原有自定义模式 |
 | 及时知道重置消息 | 跟踪 [Codex Resets](https://codex-resets.com/) 的公开公告，区分普通额度重置与可储存重置卡，保留事件时间和原文入口；它与账号自己的重置倒计时分别显示 |
 | 把提醒送到常用渠道 | macOS 本机通知、可选飞书提醒，以及可配置的 Telegram / 企业微信群机器人；各渠道需要相应权限和配置，具体事件范围见下文 |
 | 一键切换账号 | 从账号卡发起 Desktop 切换，展示准备、退出、写入、重新打开和验证进度；隔离 CLI 可独立使用其他账号 |
@@ -21,9 +22,9 @@ AiGoodBro 把额度提醒与消息放在前面，让你及时知道什么时候�
 
 单账号也能只读使用。公开重置公告、某个账号的额度恢复、账号持有的重置卡是三种不同信息：收到公告不会自动使用重置卡，也不能替代账号额度刷新。软件内的微信接入指**企业微信群机器人**；个人微信未接入。
 
-**当前源码预览：0912v1 · 9.5.22 (36)。** 可按下方口令从源码构建和安装；本版尚无 Release 安装包，多 CLI 的支持范围见下方说明。[候选改动与验证边界](docs/release-notes-v9.5.22.md)
+**当前源码预览：0913v1 · 9.6.0 (37)。** 可按下方口令从源码构建和安装；本版尚无 Release 安装包，多 CLI 的支持范围见下方说明。[候选改动与验证边界](docs/release-notes-v9.6.0.md)
 
-一句话安装口令和 4 个调用模板都在下面。9.5.22 尚未发布到 GitHub Releases；当前请从源码构建。
+一句话安装口令和 4 个调用模板都在下面。9.6.0 尚未发布到 GitHub Releases；当前请从源码构建。
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -47,11 +48,17 @@ cd AgentHub-AiGoodBro
 make build
 ```
 
-构建结果应为 `build/AiGoodBro.app`。构建不会自动安装或启动；升级时先备份旧版，再迁移为唯一的 `AiGoodBro.app`，不要留下两个可启动副本。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；9.5.22 没有已发布的 Apple 公证下载包。
+构建结果应为 `build/AiGoodBro.app`。构建不会自动安装或启动；升级时先备份旧版，再迁移为唯一的 `AiGoodBro.app`，不要留下两个可启动副本。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；9.6.0 没有已发布的 Apple 公证下载包。
 
-后续若发布，安装包名称应为 `AiGoodBro-<version>-mac-<arch>.dmg`；当前没有可下载的 9.5.22 安装包。
+后续若发布，安装包名称应为 `AiGoodBro-<version>-mac-<arch>.dmg`；当前没有可下载的 9.6.0 安装包。
 
 ## 打开后，先看这张工作台
+
+0913v1 主页顺序为：可编辑的 Agent 导航、最新额度重置消息、Token 汇总、已登录账号。公告同时保留北京时间、中文说明与原文；翻译使用系统能力，系统不支持或尚未完成时保留原文及明确状态。Token 图表在日期提示中列出当天用量和已获取的重置公告，公告不代表该账号已经到账。
+
+统计默认采用 Token Monitor v0.56.0 的原始采集器与图表，固定源码版本和依赖。上游目录包含 28 种 Agent，遵循其默认启用 26 种的规则；MiMo Code 与 Qoder CN 可在设置中选用。实际读到的工具、模型、会话与项目维度按上游数据展示，未能确认的历史账号归属保持未知。设置 → 工作台 → 统计方式可以切回原有自定义模式，两套结果分别计算。
+
+统计运行时随 App 打包，不需要另外安装 Node.js。首次源码构建需要联网获取固定版本依赖；更新流程与统计边界见 [Token Monitor 集成说明](docs/token-monitor-integration-0913v1.md)。
 
 主页顶部可选择**专业**或**极简**。专业模式默认展开功能与各平台；极简提供总览、账号卡片、自定义三种内容，最多四个模块开关。显示方式只影响界面，各平台的完整操作仍可从顶部进入。总览按账号显示真实状态，未读到的额度保留“—”。
 
@@ -171,11 +178,11 @@ AiGoodBro 的终端按钮会登记占用并等待启动回执；退出码 0 只�
 
 0910v1 的既有改动：重置消息默认通过本机提醒，飞书成为可选转发；Desktop 切换改为后台执行和阶段反馈。修复终端启动路径、工作目录与启动状态误报，增加私有回执、参与时段和登录维护占用，保留暖号成功与失败历史。登录子进程未确认退出时继续保留占用。
 
-9.5.22 为源码预览；本轮实际完成的离线验证与未验证边界以[候选记录](docs/release-notes-v9.5.22.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据。
+9.6.0 为源码预览；本轮实际完成的离线验证与未验证边界以[候选记录](docs/release-notes-v9.6.0.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据。
 
-既有打包流程会在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；9.5.22 尚未打包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
+既有打包流程会在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；9.6.0 尚未生成 Release 安装包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
 
-[9.5.22 候选记录](docs/release-notes-v9.5.22.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
+[9.6.0 候选记录](docs/release-notes-v9.6.0.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
 
 ## 还有哪些功能
 
