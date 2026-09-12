@@ -1,6 +1,6 @@
 # AiGoodBro · AgentHub
 
-**AiGoodBro** is a native macOS workspace for accounts and tasks, with **AgentHub** as its Home view. Upgrades preserve existing accounts and settings.
+**AiGoodBro** is a native macOS workspace for multiple Codex accounts, with **AgentHub** as its Home view. Check quota, receive reset announcements, switch accounts from one place, and dispatch isolated CLI tasks to other accounts. Upgrades preserve existing accounts and settings.
 
 [中文](README.md) | **English**
 
@@ -8,7 +8,18 @@
 
 Before starting work, answer four questions: how much quota remains, when it resets, whether the account is usable now, and how far the task has progressed.
 
-AiGoodBro puts quota, official reset times, account availability, and task progress in one native macOS workspace. A single account can use read-only monitoring; multiple accounts can keep isolated CLI environments and execution preferences.
+AiGoodBro puts quota alerts and reset news first, so you can see when work can continue and choose the account to use.
+
+| What you need | What AiGoodBro provides |
+|---|---|
+| Check remaining quota | Officially returned windows, including five-hour and weekly limits, with remaining percentages, reset times and snapshot timestamps. Alert thresholds are adjustable; unknown values stay “—”. |
+| Hear about resets | Public announcements from [Codex Resets](https://codex-resets.com/), distinguishing regular resets from banked reset credits, with event times and original-source links. Account-specific reset countdowns remain separate. |
+| Receive notifications | Native macOS notifications, optional Feishu alerts, and configurable Telegram / WeCom group bots. Permissions, configuration and supported event types apply to each channel; see below. |
+| Switch accounts | Start a Desktop switch from an account card and follow preparation, graceful exit, write, relaunch and verification. Isolated CLIs can use other accounts independently. |
+| Switch automatically when safe | Opt in to quota-based selection with participation, fresh identity/quota and task-occupancy checks. The current implementation requires Codex to have exited and task state to be safe; otherwise it pauses with a reason. |
+| Coordinate and troubleshoot | Per-account CLI environments and model preferences, reservations before launch, task states, execution receipts and operational issue logs. |
+
+A single account can use read-only monitoring. A public announcement, an account's recovered quota and its available reset credits are separate facts: an announcement neither spends a credit nor replaces an account refresh. The WeChat integration is a **WeCom group bot**; personal WeChat is not connected.
 
 **Current source preview: 0911v3 · 9.5.21 (35).** Build and install using the prompt below. This version has no binary Release yet; provider coverage is described below. [Candidate changes and validation boundaries](docs/release-notes-v9.5.21.md)
 
