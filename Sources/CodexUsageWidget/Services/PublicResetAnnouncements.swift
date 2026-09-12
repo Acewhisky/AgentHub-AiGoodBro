@@ -1130,7 +1130,7 @@ extension PublicResetAnnouncementMonitor {
             source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/101")))
         let page = PublicResetPage(
             data: [event], pagination: .init(hasMore: true, nextCursor: "older"), meta: .init(apiVersion: "v1", generatedAt: now))
-        let delivery = Task.detached { () -> Bool in
+        let delivery = Task.detached { [ledger] () -> Bool in
             do {
                 try await monitor.deliverLocally(page, ledger: ledger)
                 return true
