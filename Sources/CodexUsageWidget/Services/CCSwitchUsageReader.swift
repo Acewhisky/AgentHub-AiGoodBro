@@ -1280,12 +1280,41 @@ enum CCSwitchUsageReaderSelfTest {
             expect(shanghai.dailyBuckets.map(\.tokens) == [31], "Asia/Shanghai bucket mapping")
             expect(halfHour.dailyBuckets.map(\.tokens) == [7, 24], "half-hour Asia/Kolkata bucket mapping")
             expect(utc.realTotalTokens == shanghai.realTotalTokens && shanghai.realTotalTokens == halfHour.realTotalTokens, "zone lifetime total is stable")
-            let differentZone = TimeZone.current.identifier == "UTC" ? "Asia/Kolkata" : "UTC"
-            let differentContext = context(now: utcNow, timeZoneID: differentZone)
+            func independentZone(from systemZone: TimeZone, candidates: [TimeZone]) -> TimeZone {
+                let systemOffset = systemZone.secondsFromGMT(for: utcNow)
+                return candidates.first { $0.secondsFromGMT(for: utcNow) != systemOffset }
+                    ?? TimeZone(secondsFromGMT: systemOffset == 0 ? 19_800 : 0)!
+            }
+            let systemZone = TimeZone.current
+            let requestedZone = independentZone(
+                from: systemZone,
+                candidates: ["UTC", "Asia/Kolkata"].compactMap(TimeZone.init(identifier:))
+            )
+            let differentContext = context(now: utcNow, timeZoneID: requestedZone.identifier)
+            let requestedOffset = requestedZone.secondsFromGMT(for: utcNow)
             expect(
-                differentContext.statistics.timeZone.identifier != TimeZone.current.identifier,
+                differentContext.statistics.timeZone.secondsFromGMT(for: utcNow) == requestedOffset
+                    && requestedOffset != systemZone.secondsFromGMT(for: utcNow),
                 "statistics timezone is independent from machine local timezone"
             )
+            guard case .success(let different) = CCSwitchUsageReader(databaseURL: zoneDatabase).load(context: differentContext) else {
+                print("CC Switch reader self-test failed: independent-zone fixture did not load")
+                return false
+            }
+            expect(
+                different.dailyBuckets == (requestedOffset == 0 ? utc.dailyBuckets : halfHour.dailyBuckets),
+                "reader uses the requested independent statistics timezone"
+            )
+            for offset in [0, 19_800] {
+                let sameZone = TimeZone(secondsFromGMT: offset)!
+                let fallback = independentZone(from: sameZone, candidates: [sameZone])
+                let fallbackContext = context(now: utcNow, timeZoneID: fallback.identifier)
+                expect(
+                    fallback.secondsFromGMT(for: utcNow) != offset
+                        && fallbackContext.statistics.timeZone.secondsFromGMT(for: utcNow) == fallback.secondsFromGMT(for: utcNow),
+                    "independent statistics timezone fallback remains distinct and resolves explicitly"
+                )
+            }
 
             let fallDatabase = directory.appendingPathComponent("calendar-fall.db")
             try createBareFixture(at: fallDatabase)
