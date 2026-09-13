@@ -170,12 +170,12 @@ export function Settings() {
           <Section title={t('settings.dataPaths')}>
             <PathField
               label={t('settings.codexDataRoot')}
-              value={config.codex_root}
+              value={config.codex_root ? t('settings.configuredLocalFolder') : t('settings.notConfigured')}
               onBrowse={() => pickDirectory('codex_root')}
             />
             <PathField
               label={t('settings.cacheDirectory')}
-              value={config.cache_dir}
+              value={config.cache_dir ? t('settings.configuredLocalFolder') : t('settings.notConfigured')}
               onBrowse={() => pickDirectory('cache_dir')}
             />
           </Section>
@@ -311,7 +311,7 @@ export function Settings() {
 
           <Section title={t('settings.about')}>
             <p className="text-sm text-secondary">{t('settings.version')}</p>
-            <p className="text-xs text-tertiary mt-2">{t('settings.dataFolder', { path: settings.app_data_dir })}</p>
+            <p className="text-xs text-tertiary mt-2">{t('settings.dataFolder')}</p>
             <p className="text-xs text-tertiary mt-2">{t('settings.privacy')}</p>
             {!canInvokeTauri && (
               <p className="text-xs text-status-warn mt-3">

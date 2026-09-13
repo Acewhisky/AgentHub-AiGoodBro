@@ -6,11 +6,31 @@ use crate::app_state::{
     AppConfig, AppState, InterfaceLanguage, ResolvedLanguage, ThemeMode, TrayDensity,
 };
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SettingsDto {
-    #[serde(flatten)]
-    pub config: AppConfig,
-    pub app_data_dir: PathBuf,
+    /// Only expose presence to the WebView; the selected local paths stay in
+    /// the Rust state and settings file rather than crossing the UI boundary.
+    pub codex_root_configured: bool,
+    pub cache_dir_configured: bool,
+    pub theme: ThemeMode,
+    pub palette_id: String,
+    pub refresh_interval_secs: u64,
+    pub tray_density: TrayDensity,
+    pub language: InterfaceLanguage,
+}
+
+impl SettingsDto {
+    fn from_config(config: &AppConfig) -> Self {
+        Self {
+            codex_root_configured: !config.codex_root.as_os_str().is_empty(),
+            cache_dir_configured: !config.cache_dir.as_os_str().is_empty(),
+            theme: config.theme,
+            palette_id: config.palette_id.clone(),
+            refresh_interval_secs: config.refresh_interval_secs,
+            tray_density: config.tray_density,
+            language: config.language,
+        }
+    }
 }
 
 #[tauri::command]
@@ -50,10 +70,7 @@ pub async fn get_settings(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<SettingsDto, String> {
     let config = state.config.read().await.clone();
-    Ok(SettingsDto {
-        config,
-        app_data_dir: state.app_data_dir.clone(),
-    })
+    Ok(SettingsDto::from_config(&config))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -72,7 +89,14 @@ pub async fn set_settings(
     app: AppHandle,
     state: State<'_, std::sync::Arc<AppState>>,
     req: UpdateSettingsRequest,
-) -> Result<AppConfig, String> {
+) -> Result<SettingsDto, String> {
+    if let Some(path) = req.codex_root.as_ref() {
+        validate_settings_path("Codex data root", path)?;
+    }
+    if let Some(path) = req.cache_dir.as_ref() {
+        validate_settings_path("Cache directory", path)?;
+    }
+
     let config = state
         .update_config(|config| {
             if let Some(path) = req.codex_root {
@@ -109,8 +133,19 @@ pub async fn set_settings(
         state.inner().set_runtime_language(language).await;
         apply_language(&app, language);
     }
-    let _ = app.emit("settings:changed", config.clone());
-    Ok(config)
+    let dto = SettingsDto::from_config(&config);
+    let _ = app.emit("settings:changed", dto.clone());
+    Ok(dto)
+}
+
+fn validate_settings_path(label: &str, path: &PathBuf) -> Result<(), String> {
+    if path.as_os_str().is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    if !path.is_absolute() {
+        return Err(format!("{label} must be an absolute path"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
