@@ -63,9 +63,15 @@ struct FirstRunOnboardingView: View {
             AHBrandSymbol(size: 48)
             Text(language.text("把账号和额度放在一起", "Your accounts and limits, together"))
                 .font(.system(size: 26, weight: .semibold))
-            guideRow("megaphone", language.text("及时看到重置消息", "Catch reset updates"), language.text("首页保留中文、原文与来源，时间统一为北京时间。", "Home shows the original, translation and source, with Beijing time."))
-            guideRow("chart.bar.xaxis", language.text("看清使用记录", "Understand your usage"), language.text("在日历、趋势和模型明细中查看已采集的 Token。", "Explore collected tokens by calendar, trend and model."))
-            guideRow("terminal", language.text("从账号开始使用", "Start from an account"), language.text("查看可用额度，选择模型，再进入终端或切换 Desktop。", "Check availability, choose a model, then open a terminal or switch Desktop."))
+            guideRow(
+                "megaphone", language.text("及时看到重置消息", "Catch reset updates"),
+                language.text("首页保留中文、原文与来源，时间统一为北京时间。", "Home shows the original, translation and source, with Beijing time."))
+            guideRow(
+                "chart.bar.xaxis", language.text("看清使用记录", "Understand your usage"),
+                language.text("在日历、趋势和模型明细中查看已采集的 Token。", "Explore collected tokens by calendar, trend and model."))
+            guideRow(
+                "terminal", language.text("从账号开始使用", "Start from an account"),
+                language.text("查看可用额度，选择模型，再进入终端或切换 Desktop。", "Check availability, choose a model, then open a terminal or switch Desktop."))
         }
     }
 
@@ -116,8 +122,12 @@ struct FirstRunOnboardingView: View {
             if let connectedExample {
                 AccountQuotaCard(model: connectedExample, size: .standard)
             } else {
-                guideRow("person.badge.plus", language.text("连接你的账号", "Connect your account"), language.text("进入平台后添加账号，或关联本机已有配置。登录在官方页面完成。", "Add an account or link an existing local configuration. Sign-in takes place on the official page."))
-                guideRow("arrow.clockwise", language.text("读取后再使用", "Read limits before starting"), language.text("账号连接后刷新额度。没有读到的数据会保留为未知。", "Refresh limits after connecting. Missing data stays unknown."))
+                guideRow(
+                    "person.badge.plus", language.text("连接你的账号", "Connect your account"),
+                    language.text("进入平台后添加账号，或关联本机已有配置。登录在官方页面完成。", "Add an account or link an existing local configuration. Sign-in takes place on the official page."))
+                guideRow(
+                    "arrow.clockwise", language.text("读取后再使用", "Read limits before starting"),
+                    language.text("账号连接后刷新额度。没有读到的数据会保留为未知。", "Refresh limits after connecting. Missing data stays unknown."))
             }
         }
     }

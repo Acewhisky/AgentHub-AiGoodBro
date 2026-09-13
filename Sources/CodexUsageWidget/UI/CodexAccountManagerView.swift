@@ -446,8 +446,7 @@ struct CodexAccountManagerView: View {
                 onEnterWorkspace: {
                     isOnboardingPresented = false
                     if let providerID = settings.onboarding.selectedProviderID {
-                        if providerID == AgentNavCatalog.codexID { openCodexTab() }
-                        else if let kind = AgentNavCatalog.localKind(providerID) { openLocalCLITab(kind) }
+                        if providerID == AgentNavCatalog.codexID { openCodexTab() } else if let kind = AgentNavCatalog.localKind(providerID) { openLocalCLITab(kind) }
                     }
                 },
                 onSkip: {
@@ -3571,8 +3570,10 @@ struct CodexAccountMenuView: View {
             }
             .font(.system(size: 11, weight: screen == target ? .semibold : .regular))
             .frame(maxWidth: .infinity, minHeight: 30)
-            .background(screen == target ? Color.accentColor.opacity(0.12) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 8))
+            .background(
+                screen == target ? Color.accentColor.opacity(0.12) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

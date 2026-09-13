@@ -189,20 +189,25 @@ struct AccountOrderSheet: View {
                     .disabled(draft.orderedVisibleIDs.first == id)
                 Button(language.text("向下移动", "Move down")) { draft.move(id, by: 1) }
                     .disabled(draft.orderedVisibleIDs.last == id)
-            } label: { Image(systemName: "ellipsis") }
-                .menuStyle(.borderlessButton)
-                .frame(width: 22)
-                .padding(.trailing, 10)
-                .accessibilityLabel(language.text("调整此账号位置", "Move this account"))
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 22)
+            .padding(.trailing, 10)
+            .accessibilityLabel(language.text("调整此账号位置", "Move this account"))
         }
         .frame(height: 40)
         .background(dropTargetID == id ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        .onDrop(of: [UTType.utf8PlainText], isTargeted: Binding(
-            get: { dropTargetID == id },
-            set: { targeted in
-                if targeted { dropTargetID = id } else if dropTargetID == id { dropTargetID = nil }
-            }
-        )) { providers, location in
+        .onDrop(
+            of: [UTType.utf8PlainText],
+            isTargeted: Binding(
+                get: { dropTargetID == id },
+                set: { targeted in
+                    if targeted { dropTargetID = id } else if dropTargetID == id { dropTargetID = nil }
+                }
+            )
+        ) { providers, location in
             guard providers.count == 1, let provider = providers.first,
                 provider.canLoadObject(ofClass: NSString.self), draft.isDragging
             else { return false }

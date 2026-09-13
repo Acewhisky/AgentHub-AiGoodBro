@@ -341,7 +341,9 @@ struct SettingsPanelView: View {
             }
             .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 20)
             ForEach(SettingsPage.allCases) { page in
-                Button { selectedPage = page } label: {
+                Button {
+                    selectedPage = page
+                } label: {
                     Label(page.title(language), systemImage: page.symbol)
                         .font(.system(size: 13, weight: selectedPage == page ? .semibold : .regular))
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -648,39 +650,55 @@ struct SettingsPanelView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(language.text("鸣谢与开源项目", "Acknowledgements & open source"))
                 .font(.headline)
-            Text(language.text(
-                "感谢愿意分享代码、经验和时间的开发者。AiGoodBro 的许多能力建立在这些项目的成果之上。",
-                "Thank you to the developers who share their code, experience and time. Their work makes many of AiGoodBro’s capabilities possible."
-            ))
+            Text(
+                language.text(
+                    "感谢愿意分享代码、经验和时间的开发者。AiGoodBro 的许多能力建立在这些项目的成果之上。",
+                    "Thank you to the developers who share their code, experience and time. Their work makes many of AiGoodBro’s capabilities possible."
+                )
+            )
             .font(.callout).foregroundStyle(.secondary)
-            acknowledgement("Token Monitor · Javis603 / Javis", url: "https://github.com/Javis603/token-monitor", detail: language.text(
-                "特别感谢 Token Monitor 开放多工具 Token 采集、年度热图、趋势图和用量看板。本 App 的统计引擎与图表由这些成果直接支持。",
-                "Special thanks for the multi-tool token collectors, annual heatmap, trend charts and usage dashboard that directly support this app’s statistics engine and charts."
-            ))
-            acknowledgement("Tokscale · junhoyeo & Javis603", url: "https://github.com/Javis603/tokscale", detail: language.text(
-                "感谢原项目作者 junhoyeo 与分支维护者 Javis603 提供本地用量扫描能力，为统计采集打下基础。",
-                "Thanks to original author junhoyeo and fork maintainer Javis603 for the local usage scanner at the foundation of token collection."
-            ))
-            acknowledgement("codexU · Guomeiqing / shanggqm", url: "https://github.com/shanggqm/codexU", detail: language.text(
-                "感谢分享早期 SwiftUI 工作台、额度展示和配色基础，让后续界面迭代有了可靠的起点。",
-                "Thank you for the early SwiftUI workspace, quota presentation and palette foundations that gave this interface a starting point."
-            ))
-            acknowledgement("Codex-Manager · hongshun.gao / qxcnm", url: "https://github.com/qxcnm/Codex-Manager", detail: language.text(
-                "感谢公开账号暖号协议的实现，为自动维护能力提供参考与基础。",
-                "Thank you for sharing the account warm-up protocol implementation that informs automatic maintenance."
-            ))
-            acknowledgement("Codex Resets", url: "https://codex-resets.com/", detail: language.text(
-                "感谢持续追踪和整理公开重置公告，为消息时间线与重置日历提供可核对的来源。",
-                "Thank you for tracking and preserving public reset announcements, providing verifiable sources for the update timeline and calendar."
-            ))
-            acknowledgement("Node.js contributors", url: "https://nodejs.org/", detail: language.text(
-                "感谢维护随 App 打包的 JavaScript 运行时，让统计引擎无需依赖用户另行安装 Node.js。",
-                "Thank you for the bundled JavaScript runtime that lets the statistics engine run without a separate Node.js installation."
-            ))
-            Text(language.text(
-                "也感谢持续反馈问题、测试新版本和提出改进建议的每一位使用者。各项目的版权和许可证随 App 保留。",
-                "Thanks as well to everyone who reports issues, tests new versions and suggests improvements. Project copyrights and licenses are retained in the app."
-            ))
+            acknowledgement(
+                "Token Monitor · Javis603 / Javis", url: "https://github.com/Javis603/token-monitor",
+                detail: language.text(
+                    "特别感谢 Token Monitor 开放多工具 Token 采集、年度热图、趋势图和用量看板。本 App 的统计引擎与图表由这些成果直接支持。",
+                    "Special thanks for the multi-tool token collectors, annual heatmap, trend charts and usage dashboard that directly support this app’s statistics engine and charts."
+                ))
+            acknowledgement(
+                "Tokscale · junhoyeo & Javis603", url: "https://github.com/Javis603/tokscale",
+                detail: language.text(
+                    "感谢原项目作者 junhoyeo 与分支维护者 Javis603 提供本地用量扫描能力，为统计采集打下基础。",
+                    "Thanks to original author junhoyeo and fork maintainer Javis603 for the local usage scanner at the foundation of token collection."
+                ))
+            acknowledgement(
+                "codexU · Guomeiqing / shanggqm", url: "https://github.com/shanggqm/codexU",
+                detail: language.text(
+                    "感谢分享早期 SwiftUI 工作台、额度展示和配色基础，让后续界面迭代有了可靠的起点。",
+                    "Thank you for the early SwiftUI workspace, quota presentation and palette foundations that gave this interface a starting point."
+                ))
+            acknowledgement(
+                "Codex-Manager · hongshun.gao / qxcnm", url: "https://github.com/qxcnm/Codex-Manager",
+                detail: language.text(
+                    "感谢公开账号暖号协议的实现，为自动维护能力提供参考与基础。",
+                    "Thank you for sharing the account warm-up protocol implementation that informs automatic maintenance."
+                ))
+            acknowledgement(
+                "Codex Resets", url: "https://codex-resets.com/",
+                detail: language.text(
+                    "感谢持续追踪和整理公开重置公告，为消息时间线与重置日历提供可核对的来源。",
+                    "Thank you for tracking and preserving public reset announcements, providing verifiable sources for the update timeline and calendar."
+                ))
+            acknowledgement(
+                "Node.js contributors", url: "https://nodejs.org/",
+                detail: language.text(
+                    "感谢维护随 App 打包的 JavaScript 运行时，让统计引擎无需依赖用户另行安装 Node.js。",
+                    "Thank you for the bundled JavaScript runtime that lets the statistics engine run without a separate Node.js installation."
+                ))
+            Text(
+                language.text(
+                    "也感谢持续反馈问题、测试新版本和提出改进建议的每一位使用者。各项目的版权和许可证随 App 保留。",
+                    "Thanks as well to everyone who reports issues, tests new versions and suggests improvements. Project copyrights and licenses are retained in the app."
+                )
+            )
             .font(.caption).foregroundStyle(.secondary)
         }
     }

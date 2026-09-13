@@ -673,11 +673,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         mainMenu.addItem(windowMenuItem)
         let windowMenu = NSMenu(title: language.text("窗口", "Window"))
         windowMenuItem.submenu = windowMenu
-        windowMenu.addItem(NSMenuItem(
-            title: language.text("关闭窗口", "Close Window"),
-            action: #selector(NSWindow.performClose(_:)),
-            keyEquivalent: "w"
-        ))
+        windowMenu.addItem(
+            NSMenuItem(
+                title: language.text("关闭窗口", "Close Window"),
+                action: #selector(NSWindow.performClose(_:)),
+                keyEquivalent: "w"
+            ))
         windowMenu.addItem(.separator())
         let minimizeItem = NSMenuItem(
             title: language.text("最小化", "Minimize"),
@@ -707,10 +708,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             )
             panel.isReleasedWhenClosed = false
             panel.contentMinSize = NSSize(width: 740, height: 520)
-            panel.contentViewController = NSHostingController(rootView: SettingsWindowContent(
-                settings: settings, store: store, updateStore: updateStore, localAccounts: localCLIAccounts,
-                onOpenPaletteLibrary: { [weak self] in self?.openPaletteLibraryWindow() }
-            ))
+            panel.contentViewController = NSHostingController(
+                rootView: SettingsWindowContent(
+                    settings: settings, store: store, updateStore: updateStore, localAccounts: localCLIAccounts,
+                    onOpenPaletteLibrary: { [weak self] in self?.openPaletteLibraryWindow() }
+                ))
             panel.center()
             settingsWindow = panel
         }

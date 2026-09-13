@@ -61,15 +61,23 @@ struct PublicResetCalendarView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             HStack {
-                Button { shiftMonth(-1) } label: { Image(systemName: "chevron.left") }
-                    .disabled(month <= earliestMonth)
-                    .accessibilityLabel(language.text("上个月", "Previous month"))
+                Button {
+                    shiftMonth(-1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .disabled(month <= earliestMonth)
+                .accessibilityLabel(language.text("上个月", "Previous month"))
                 Spacer()
                 Text(monthTitle).font(.callout.weight(.semibold)).monospacedDigit()
                 Spacer()
-                Button { shiftMonth(1) } label: { Image(systemName: "chevron.right") }
-                    .disabled(month >= PublicResetCalendarModel.monthStart(Date()))
-                    .accessibilityLabel(language.text("下个月", "Next month"))
+                Button {
+                    shiftMonth(1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .disabled(month >= PublicResetCalendarModel.monthStart(Date()))
+                .accessibilityLabel(language.text("下个月", "Next month"))
             }
             .buttonStyle(.borderless)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 4) {
@@ -80,8 +88,7 @@ struct PublicResetCalendarView: View {
                 }
                 let days = PublicResetCalendarModel.days(in: month)
                 ForEach(days.indices, id: \.self) { index in
-                    if let day = days[index] { dayButton(day) }
-                    else { Color.clear.frame(height: 31).accessibilityHidden(true) }
+                    if let day = days[index] { dayButton(day) } else { Color.clear.frame(height: 31).accessibilityHidden(true) }
                 }
             }
             HStack(spacing: 10) {
@@ -125,7 +132,9 @@ struct PublicResetCalendarView: View {
         let selected = selectedDay.map { calendar.isDate($0, inSameDayAs: day) } ?? false
         let today = calendar.isDate(day, inSameDayAs: Date())
         let dateLabel = day.formatted(Date.FormatStyle(date: .numeric, time: .omitted, locale: language.locale, calendar: calendar, timeZone: calendar.timeZone))
-        return Button { selectedDay = day } label: {
+        return Button {
+            selectedDay = day
+        } label: {
             VStack(spacing: 2) {
                 Text("\(calendar.component(.day, from: day))")
                     .font(.caption.weight(selected || today ? .bold : .regular))
@@ -181,7 +190,9 @@ struct PublicResetRecentView: View {
                     .padding(.vertical, 16)
             } else {
                 ForEach(visibleEvents.prefix(5)) { event in
-                    Button { selectedAnnouncement = event } label: {
+                    Button {
+                        selectedAnnouncement = event
+                    } label: {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 6) {
                                 Circle().fill(event.resetType == .banked ? Color.purple : Color.blue).frame(width: 5, height: 5)

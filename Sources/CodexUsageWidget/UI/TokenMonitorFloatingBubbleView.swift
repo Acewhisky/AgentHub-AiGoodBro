@@ -34,7 +34,7 @@ struct TokenMonitorFloatingBubbleView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(language.text("展开悬浮窗", "Expand floating bubble"))
-            .help(language.text("展开悬浮窗", "Expand floating bubble"))
+        .help(language.text("展开悬浮窗", "Expand floating bubble"))
     }
 
     private var expandedCard: some View {
@@ -262,9 +262,11 @@ struct TokenMonitorFloatingBubbleEditor: View {
 
     private var editorActions: some View {
         HStack {
-            Button(preferences.enabled
-                   ? language.text("隐藏悬浮窗", "Hide floating bubble")
-                   : language.text("在桌面显示", "Show on desktop")) {
+            Button(
+                preferences.enabled
+                    ? language.text("隐藏悬浮窗", "Hide floating bubble")
+                    : language.text("在桌面显示", "Show on desktop")
+            ) {
                 if preferences.enabled {
                     preferences.enabled = false
                 } else {

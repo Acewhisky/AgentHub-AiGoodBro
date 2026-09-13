@@ -306,8 +306,7 @@ struct ResetUpdatesBanner: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if showsHistory { announcementDashboard }
-            else { announcementCard }
+            if showsHistory { announcementDashboard } else { announcementCard }
             DisclosureGroup(language.text("账号额度与消息说明", "Account limits and announcement details")) {
                 VStack(alignment: .leading, spacing: 8) {
                     labeledRow(
@@ -466,8 +465,9 @@ private struct ResetDashboardLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         for (view, frame) in zip(subviews, frames(width: bounds.width, subviews: subviews)) {
-            view.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), anchor: .topLeading,
-                       proposal: ProposedViewSize(width: frame.width, height: frame.height))
+            view.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), anchor: .topLeading,
+                proposal: ProposedViewSize(width: frame.width, height: frame.height))
         }
     }
 
@@ -485,15 +485,19 @@ private struct ResetDashboardLayout: Layout {
         if width >= 940 {
             let recentWidth = min(400, max(260, width * 0.3))
             let latestWidth = width - 348 - recentWidth
-            return [box(0, x: 0, y: 0, width: latestWidth),
-                    box(1, x: latestWidth + 24, y: 0, width: 300),
-                    box(2, x: latestWidth + 348, y: 0, width: recentWidth)]
+            return [
+                box(0, x: 0, y: 0, width: latestWidth),
+                box(1, x: latestWidth + 24, y: 0, width: 300),
+                box(2, x: latestWidth + 348, y: 0, width: recentWidth),
+            ]
         }
         if width >= 620 {
             let left = width - 324
             let latest = box(0, x: 0, y: 0, width: left)
-            return [latest, box(1, x: left + 24, y: 0, width: 300),
-                    box(2, x: 0, y: latest.maxY + 18, width: left)]
+            return [
+                latest, box(1, x: left + 24, y: 0, width: 300),
+                box(2, x: 0, y: latest.maxY + 18, width: left),
+            ]
         }
         let latest = box(0, x: 0, y: 0, width: width)
         let calendar = box(1, x: 0, y: latest.maxY + 20, width: min(300, width))

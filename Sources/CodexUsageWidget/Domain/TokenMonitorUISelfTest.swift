@@ -36,7 +36,8 @@ enum TokenMonitorUISelfTest {
         let lateUTC = parser.date(from: "2026-09-03T23:12:00Z")!
         let beijingDay = parser.date(from: "2026-09-03T16:00:00Z")!
         let earlierDay = parser.date(from: "2026-09-02T16:00:00Z")!
-        let event = PublicResetAnnouncement(id: "fixture-reset-calendar", resetType: .banked, announcedAt: lateUTC, text: "A public reset announcement", source: .init(type: "observed", author: nil, url: nil))
+        let event = PublicResetAnnouncement(
+            id: "fixture-reset-calendar", resetType: .banked, announcedAt: lateUTC, text: "A public reset announcement", source: .init(type: "observed", author: nil, url: nil))
         expect(PublicResetCalendarModel.events(on: beijingDay, from: [event]).count == 1, "reset calendar uses Beijing day boundaries")
         expect(PublicResetCalendarModel.events(on: earlierDay, from: [event]).isEmpty, "UTC date is not incorrectly used as Beijing calendar day")
         expect(PublicResetCalendarModel.normalized([event, event]).count == 1, "latest announcement and API page do not duplicate calendar counts")
