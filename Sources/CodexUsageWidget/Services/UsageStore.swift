@@ -1212,7 +1212,6 @@ final class UsageStore: ObservableObject {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在检查桌面任务…", "Checking Desktop tasks…")
             let client = taskClient
             let isAutomatic = automaticSwitchTargetID == profileID
-            let isForcedManual = !isAutomatic && forceWithoutSessionRestore
             if isAutomatic { automaticSwitchContext?.completeTasks = nil }
             let refreshed = await Task.detached(priority: .userInitiated) {
                 client.awaitSnapshot(timeout: 5)
@@ -1223,7 +1222,9 @@ final class UsageStore: ObservableObject {
                 if isAutomatic { automaticSwitchContext?.completeTasks = refreshed }
             } else {
                 codexLiveTasks = .disconnected
-                guard isForcedManual else {
+                // Manual requests still need to reach beginCodexSwitch's explicit
+                // confirmation. Missing task evidence never grants force itself.
+                guard !isAutomatic else {
                     accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                         "完整任务读取失败，切换已取消", "Complete task read failed; switching cancelled.")
                     return

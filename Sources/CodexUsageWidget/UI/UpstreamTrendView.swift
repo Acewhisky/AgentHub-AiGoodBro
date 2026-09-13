@@ -41,6 +41,44 @@ struct UpstreamTrendView: View {
     var height: CGFloat = 40
     @StateObject private var renderer: Renderer
     @Environment(\.widgetLanguage) private var language
+    @Environment(\.workspaceTrendScreenshots) private var screenshots
+
+    struct Screenshot {
+        let image: NSImage
+        let dashboardJSON: String?
+        let points: [Point]
+    }
+
+    /// Export uses pixels from the live WebKit view, including its current JS
+    /// range, filters, tab and selection. It must never create another renderer.
+    final class ScreenshotContext {
+        let captures: [Screenshot]
+        private(set) var missingSource = false
+
+        init(captures: [Screenshot]) { self.captures = captures }
+
+        func image(dashboardJSON: String?, points: [Point]) -> NSImage? {
+            let matches = captures.filter { $0.dashboardJSON == dashboardJSON && $0.points == points }
+            guard matches.count == 1 else {
+                missingSource = true
+                return nil
+            }
+            return matches[0].image
+        }
+    }
+
+    static func captureScreenshots(in root: NSView) async throws -> ScreenshotContext {
+        func charts(in view: NSView) -> [ResizeAwareTrendWebView] {
+            if let chart = view as? ResizeAwareTrendWebView { return [chart] }
+            return view.subviews.flatMap { charts(in: $0) }
+        }
+        var captures: [Screenshot] = []
+        for chart in charts(in: root) {
+            guard let renderer = chart.renderer else { throw WorkspaceScreenshotExporter.unavailable("renderer_detached") }
+            captures.append(try await renderer.captureScreenshot())
+        }
+        return ScreenshotContext(captures: captures)
+    }
 
     init(points: [Point], height: CGFloat = 40) {
         self.points = points
@@ -67,6 +105,22 @@ struct UpstreamTrendView: View {
     }
 
     var body: some View {
+        if let screenshots {
+            if let image = screenshots.image(dashboardJSON: dashboardJSON, points: points) {
+                Image(nsImage: image)
+                    .resizable()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: image.size.height)
+            } else {
+                // The exporter rejects this capture after layout, before saving.
+                Color.clear.frame(height: safeHeight)
+            }
+        } else {
+            liveContent
+        }
+    }
+
+    private var liveContent: some View {
         ZStack {
             TrendWebView(
                 renderer: renderer
@@ -602,6 +656,26 @@ struct UpstreamTrendView: View {
     }
 }
 
+private extension UpstreamTrendView.Renderer {
+    func captureScreenshot() async throws -> UpstreamTrendView.Screenshot {
+        guard state == .ready, let web = webView, web.bounds.width > 0, web.bounds.height > 0 else {
+            throw WorkspaceScreenshotExporter.unavailable("chart_not_ready")
+        }
+        let input = dashboardJSON
+        let capturedPoints = points
+        let revision = lifecycle
+        let rect = web.bounds
+        let configuration = WKSnapshotConfiguration()
+        configuration.rect = rect
+        configuration.afterScreenUpdates = true
+        let image = try await web.takeSnapshot(configuration: configuration)
+        guard web === webView, state == .ready, dashboardJSON == input, points == capturedPoints,
+            lifecycle.currentLoadID == revision.currentLoadID, web.bounds == rect
+        else { throw WorkspaceScreenshotExporter.unavailable("chart_changed_during_capture") }
+        return UpstreamTrendView.Screenshot(image: image, dashboardJSON: input, points: capturedPoints)
+    }
+}
+
 private extension UpstreamTrendView.RenderFailure {
     func title(_ language: WidgetLanguage) -> String {
         switch self {
@@ -674,6 +748,7 @@ private struct TrendWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> ResizeAwareTrendWebView {
         let web = ResizeAwareTrendWebView(frame: .zero)
+        web.renderer = renderer
         web.navigationDelegate = context.coordinator
         web.setValue(false, forKey: "drawsBackground")
         web.onSizeChange = { [weak renderer, weak web] in
@@ -687,12 +762,14 @@ private struct TrendWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ web: ResizeAwareTrendWebView, context: Context) {
+        web.renderer = renderer
         renderer.attach(web)
     }
 }
 
 @MainActor
 private final class ResizeAwareTrendWebView: WKWebView {
+    weak var renderer: UpstreamTrendView.Renderer?
     var onSizeChange: (() -> Void)?
     private var previousSize: CGSize = .zero
 
@@ -703,5 +780,16 @@ private final class ResizeAwareTrendWebView: WKWebView {
         if changed {
             onSizeChange?()
         }
+    }
+}
+
+private struct WorkspaceTrendScreenshotsKey: EnvironmentKey {
+    static let defaultValue: UpstreamTrendView.ScreenshotContext? = nil
+}
+
+extension EnvironmentValues {
+    var workspaceTrendScreenshots: UpstreamTrendView.ScreenshotContext? {
+        get { self[WorkspaceTrendScreenshotsKey.self] }
+        set { self[WorkspaceTrendScreenshotsKey.self] = newValue }
     }
 }

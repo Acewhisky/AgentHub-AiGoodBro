@@ -122,6 +122,7 @@ final class UsageStore {
     let taskClient = FakeTaskClient()
     var reserved = true
     var transactions = 0
+    var manualEntries = 0
     var forcedManualEntries = 0
     var transactionFails = false
     var excluded: Set<String> = []
@@ -152,8 +153,9 @@ final class UsageStore {
     }
     // Injected transaction boundary: no credentials or process actions.
     func beginCodexSwitch(with profileID: String, forceWithoutSessionRestore: Bool, visibleThreadID: String?) {
-        if automaticSwitchTargetID != profileID, forceWithoutSessionRestore {
-            forcedManualEntries += 1
+        if automaticSwitchTargetID != profileID {
+            manualEntries += 1
+            if forceWithoutSessionRestore { forcedManualEntries += 1 }
             isLaunchingCodex = false
             return
         }
@@ -171,10 +173,19 @@ final class UsageStore {
     }
 }
 
+// Synthetic credential state for the extracted pre-write guard; no auth files are read.
+enum CodexCredentialTransaction {
+    enum Failure: Error { case superseded }
+    static var targetChanged = false
+    static func read(_ url: URL) throws -> Data { Data([targetChanged ? 1 : 0]) }
+}
+
 final class AtomicProbeFixture {
     static var processIDs: [Int] = []
     static var unknown = false
+    static var sourceChanged = false
     var writes = 0
+    static func authState(at url: URL) throws -> Data { Data([sourceChanged ? 1 : 0]) }
     static func codexProcessIDs(appURL: URL) throws -> [Int] {
         if unknown { throw NSError(domain: "fixture", code: 1) }
         return processIDs
@@ -182,6 +193,10 @@ final class AtomicProbeFixture {
     static func switchError(_ message: String) -> Error { NSError(domain: "fixture", code: 2) }
     func write() throws {
         let appURL = URL(fileURLWithPath: "fixture-desktop")
+        let systemAuthURL = URL(fileURLWithPath: "fixture-source")
+        let targetAuthURL = URL(fileURLWithPath: "fixture-target")
+        let currentSourceAuth = Data([0])
+        let targetAuth = Data([0])
         // PRODUCTION_ATOMIC_PROBE
         writes += 1 // Injected write: no credential or file operation.
     }
@@ -268,14 +283,25 @@ final class AtomicProbeFixture {
             await settle(s)
             check(mode, s.transactions == 0 && s.automaticSwitchContext == nil)
         }
-        for mode in ["safe", "restarted", "unknown", "application"] {
+        for mode in ["safe", "restarted", "unknown", "application", "source-changed", "target-changed"] {
             AtomicProbeFixture.processIDs = mode == "restarted" ? [1] : []
             AtomicProbeFixture.unknown = mode == "unknown"
+            AtomicProbeFixture.sourceChanged = mode == "source-changed"
+            CodexCredentialTransaction.targetChanged = mode == "target-changed"
             NSRunningApplication.desktopRunning = mode == "application"
             let writer = AtomicProbeFixture()
             do { try writer.write() } catch {}
             check("actual prewrite probe \(mode)", writer.writes == (mode == "safe" ? 1 : 0))
         }
+        let firstManual = store(); firstManual.taskClient.result = nil
+        firstManual.launchCodex(with: "target")
+        await settle(firstManual)
+        check("missing task snapshot reaches unconfirmed manual boundary", firstManual.manualEntries == 1 && firstManual.forcedManualEntries == 0 && firstManual.transactions == 0)
+        check("manual missing snapshot invalidates cached task display", firstManual.codexLiveTasks.connectionMode == .disconnected)
+        let occupiedManual = store(); occupiedManual.taskClient.result = nil; occupiedManual.reserved = false
+        occupiedManual.launchCodex(with: "target")
+        await settle(occupiedManual)
+        check("manual missing snapshot still respects maintenance reservation", occupiedManual.manualEntries == 0 && !occupiedManual.isLaunchingCodex)
         let manual = store(); manual.taskClient.result = nil
         manual.launchCodex(with: "target", forceWithoutSessionRestore: true)
         await settle(manual)

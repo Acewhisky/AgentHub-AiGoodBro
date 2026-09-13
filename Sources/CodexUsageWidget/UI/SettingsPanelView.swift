@@ -246,6 +246,7 @@ struct SettingsWindowContent: View {
         .environment(\.widgetLanguage, settings.language)
         .environment(\.locale, settings.language.locale)
         .preferredColorScheme(settings.themeMode.preferredColorScheme)
+        .disclosureGroupStyle(FullRowDisclosureGroupStyle())
     }
 }
 

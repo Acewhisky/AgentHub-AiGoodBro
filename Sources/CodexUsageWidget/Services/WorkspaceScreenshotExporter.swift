@@ -6,8 +6,13 @@ import UniformTypeIdentifiers
 enum WorkspaceScreenshotExporter {
     static let maximumRGBABytes: CGFloat = 128_000_000
 
+    static func unavailable(_ reason: String) -> ExportError {
+        NSLog("WorkspaceScreenshot rejected: %@", reason)
+        return .liveContentUnavailable
+    }
+
     enum ExportError: LocalizedError {
-        case invalidSize, tooLarge, renderingFailed
+        case invalidSize, tooLarge, renderingFailed, liveContentUnavailable
 
         var errorDescription: String? {
             message(.storedOrAutomatic())
@@ -18,6 +23,7 @@ enum WorkspaceScreenshotExporter {
             case .invalidSize: return language.text("主界面尚未完成排版，请稍后再试。", "The workspace is still laying out. Please try again shortly.")
             case .tooLarge: return language.text("内容超出安全图片尺寸，请收起部分栏目后再试；未截断内容。", "The image exceeds the safe size limit. Collapse a section and try again; no content was cropped.")
             case .renderingFailed: return language.text("未能生成图片，请重试。", "Could not capture the workspace. Please try again.")
+            case .liveContentUnavailable: return language.text("图表尚未就绪或刚刚更新，请稍后再保存截图。", "The chart is still loading or has just changed. Please try saving again shortly.")
             }
         }
     }
@@ -56,13 +62,17 @@ enum WorkspaceScreenshotExporter {
         let plan: RasterPlan
     }
 
-    static func render<Content: View>(_ content: Content, width: CGFloat, scheme: ColorScheme) throws -> Capture {
+    @MainActor static func render<Content: View>(
+        _ content: Content, width: CGFloat, scheme: ColorScheme,
+        liveCharts: UpstreamTrendView.ScreenshotContext? = nil
+    ) throws -> Capture {
         guard Thread.isMainThread, width.isFinite, width > 0, width <= 32_768 else { throw ExportError.invalidSize }
         let root =
             content
             .frame(width: width)
             .fixedSize(horizontal: false, vertical: true)
             .environment(\.colorScheme, scheme)
+            .environment(\.workspaceTrendScreenshots, liveCharts)
             .background(Color(nsColor: .windowBackgroundColor))
         let host = NSHostingView(rootView: root)
         let window = NSWindow(
@@ -89,6 +99,9 @@ enum WorkspaceScreenshotExporter {
         else { throw ExportError.renderingFailed }
         bitmap.size = plan.size
         host.cacheDisplay(in: host.bounds, to: bitmap)
+        guard liveCharts?.missingSource != true else {
+            throw unavailable("export_source_mismatch; live_chart_count=\(liveCharts?.captures.count ?? 0)")
+        }
         guard let png = bitmap.representation(using: .png, properties: [:]), !png.isEmpty else {
             throw ExportError.renderingFailed
         }

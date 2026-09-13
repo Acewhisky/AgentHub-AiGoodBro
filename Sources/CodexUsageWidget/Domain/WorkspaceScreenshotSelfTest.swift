@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 /// Offline tests: isolated defaults, synthetic accounts, no dialogs or runtime connections.
+@MainActor
 enum WorkspaceScreenshotSelfTest {
     static func run() -> Bool {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-screenshot-test-\(UUID().uuidString)")
@@ -195,6 +196,45 @@ enum WorkspaceScreenshotSelfTest {
             } else {
                 failures.append("export must decode as a complete PNG")
             }
+
+            // A selected chart is represented by distinct pixels, not a newly
+            // loaded WebKit instance. The complete export must keep those pixels.
+            let chartPixels = try WorkspaceScreenshotExporter.render(
+                VStack(spacing: 0) {
+                    Color.red.frame(height: 40)
+                    Color.blue.frame(height: 180)
+                    Color.green.frame(height: 40)
+                }, width: 320, scheme: .dark)
+            guard let chartImage = NSImage(data: chartPixels.png) else { throw WorkspaceScreenshotExporter.ExportError.renderingFailed }
+            chartImage.size = chartPixels.plan.size
+            let chartInput = "{\"schemaVersion\":1,\"payload\":{}}"
+            let selectedChart = UpstreamTrendView.Screenshot(image: chartImage, dashboardJSON: chartInput, points: [])
+            let chartExport = try WorkspaceScreenshotExporter.render(
+                UpstreamTrendView(dashboardJSON: chartInput), width: 320, scheme: .dark,
+                liveCharts: .init(captures: [selectedChart]))
+            expect(chartExport.plan.size.height == 260, "export keeps the live chart height")
+            if let bitmap = NSBitmapImageRep(data: chartExport.png),
+                let top = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: 20)?.usingColorSpace(.deviceRGB),
+                let bottom = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh - 20)?.usingColorSpace(.deviceRGB)
+            {
+                expect(top.redComponent > 0.8 && bottom.greenComponent > 0.4, "selected chart pixels survive the offscreen export instead of a loading placeholder")
+            } else {
+                failures.append("selected chart export must decode")
+            }
+            for captures in [[], [selectedChart, selectedChart]] {
+                do {
+                    _ = try WorkspaceScreenshotExporter.render(
+                        UpstreamTrendView(dashboardJSON: chartInput), width: 320, scheme: .dark,
+                        liveCharts: .init(captures: captures))
+                    failures.append("missing or ambiguous live chart must not be exported")
+                } catch WorkspaceScreenshotExporter.ExportError.liveContentUnavailable {}
+            }
+            do {
+                _ = try WorkspaceScreenshotExporter.render(
+                    UpstreamTrendView(dashboardJSON: chartInput + " "), width: 320, scheme: .dark,
+                    liveCharts: .init(captures: [selectedChart]))
+                failures.append("a changed dashboard must not be paired with stale chart pixels")
+            } catch WorkspaceScreenshotExporter.ExportError.liveContentUnavailable {}
             let output = root.appendingPathComponent("roundtrip.png")
             expect(try WorkspaceScreenshotExporter.finishSave(stripeCapture, to: nil) == nil, "cancel must return without saving")
             expect(!FileManager.default.fileExists(atPath: output.path), "cancel must not create a file")
@@ -276,7 +316,9 @@ enum WorkspaceScreenshotSelfTest {
             failures.append("render or persistence test threw an error")
         }
         if failures.isEmpty {
-            print("Workspace screenshot self-test passed: bounds, 2x/1x, offscreen bottom, cancel/save/failure, row growth through nine, 6 nine-account layouts")
+            print(
+                "Workspace screenshot self-test passed: live chart pixels and stale/missing source rejection, bounds, 2x/1x, offscreen bottom, cancel/save/failure, row growth through nine, 6 nine-account layouts"
+            )
             return true
         }
         failures.forEach { print("Workspace screenshot self-test failed: \($0)") }

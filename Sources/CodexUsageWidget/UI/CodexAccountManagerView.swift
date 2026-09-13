@@ -131,6 +131,7 @@ private struct UpstreamHomeStatistics: View {
     let language: WidgetLanguage
     let annotations: [UpstreamTrendView.ResetAnnotation]
     let annotationsHasMore: Bool?
+    @Binding var detailsExpanded: Bool
     let refresh: () -> Void
 
     private var total: Int64? { HomeEngineProjection.total(state.lastGood) }
@@ -197,7 +198,7 @@ private struct UpstreamHomeStatistics: View {
                 UpstreamTrendView(dashboardJSON: dashboardJSON, resetAnnotations: annotations)
                     .environment(\.widgetLanguage, language)
             }
-            DisclosureGroup(language.text("统计详情", "Statistics details")) {
+            DisclosureGroup(language.text("统计详情", "Statistics details"), isExpanded: $detailsExpanded) {
                 VStack(alignment: .leading, spacing: 5) {
                     if let response = state.lastGood {
                         Text(
@@ -283,6 +284,7 @@ struct CodexAccountManagerView: View {
     @StateObject private var quotaProviders = QuotaProviderStore()
     @State private var usageQuery = ""
     @State private var usageDimension: String? = nil
+    @State private var statisticsDetailsExpanded = false
 
     private enum ProfessionalWorkspaceSection: String, CaseIterable, Identifiable {
         case overview
@@ -500,6 +502,7 @@ struct CodexAccountManagerView: View {
         }
         .environment(\.widgetLanguage, language)
         .environment(\.locale, language.locale)
+        .disclosureGroupStyle(FullRowDisclosureGroupStyle())
     }
 
     private var workspaceContent: some View {
@@ -911,6 +914,7 @@ struct CodexAccountManagerView: View {
                 state: store.engineState, language: language,
                 annotations: HomeEngineProjection.annotations(resetAnnouncementMonitor.announcements, context: statisticsContext),
                 annotationsHasMore: resetAnnouncementMonitor.announcementsHasMore,
+                detailsExpanded: $statisticsDetailsExpanded,
                 refresh: { store.refresh() })
         case .custom:
             VStack(alignment: .leading, spacing: 10) {
@@ -1665,6 +1669,7 @@ struct CodexAccountManagerView: View {
         .preferredColorScheme(settings.themeMode.preferredColorScheme)
         .environment(\.widgetLanguage, language)
         .environment(\.locale, language.locale)
+        .disclosureGroupStyle(FullRowDisclosureGroupStyle())
     }
 
     private func saveLongScreenshot(for window: NSWindow) {
@@ -1675,22 +1680,30 @@ struct CodexAccountManagerView: View {
         }
         isSavingScreenshot = true
         screenshotFeedback = nil
-        do {
-            let capture = try WorkspaceScreenshotExporter.render(
-                screenshotContent, width: window.contentLayoutRect.width, scheme: effectiveColorScheme
-            )
-            WorkspaceScreenshotExporter.save(capture, for: window, language: language) { result in
-                isSavingScreenshot = false
-                switch result {
-                case .success(.some): screenshotFeedback = language.text("长截图已保存到所选位置。", "Screenshot saved.")
-                case .success(.none): break
-                case .failure: screenshotFeedback = language.text("截图未保存，请检查目标文件夹的写入权限后重试。", "Could not save the screenshot. Check folder permissions and try again.")
+        Task { @MainActor in
+            do {
+                guard let contentView = window.contentView else { throw WorkspaceScreenshotExporter.ExportError.invalidSize }
+                let width = window.contentLayoutRect.width
+                let charts = try await UpstreamTrendView.captureScreenshots(in: contentView)
+                guard window.contentLayoutRect.width == width, window.attachedSheet == nil else {
+                    throw WorkspaceScreenshotExporter.unavailable("window_changed_during_capture")
                 }
+                let capture = try WorkspaceScreenshotExporter.render(
+                    screenshotContent, width: width, scheme: effectiveColorScheme, liveCharts: charts
+                )
+                WorkspaceScreenshotExporter.save(capture, for: window, language: language) { result in
+                    isSavingScreenshot = false
+                    switch result {
+                    case .success(.some): screenshotFeedback = language.text("长截图已保存到所选位置。", "Screenshot saved.")
+                    case .success(.none): break
+                    case .failure: screenshotFeedback = language.text("截图未保存，请检查目标文件夹的写入权限后重试。", "Could not save the screenshot. Check folder permissions and try again.")
+                    }
+                }
+            } catch {
+                isSavingScreenshot = false
+                screenshotFeedback =
+                    (error as? WorkspaceScreenshotExporter.ExportError)?.message(language) ?? language.text("未能生成截图，请重试。", "Could not capture the workspace. Please try again.")
             }
-        } catch {
-            isSavingScreenshot = false
-            screenshotFeedback =
-                (error as? WorkspaceScreenshotExporter.ExportError)?.message(language) ?? language.text("未能生成截图，请重试。", "Could not capture the workspace. Please try again.")
         }
     }
 
