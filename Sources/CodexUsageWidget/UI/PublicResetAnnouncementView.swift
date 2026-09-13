@@ -60,7 +60,7 @@ struct PublicResetAnnouncementView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     PublicResetAnnouncementLinks(source: announcement.source, language: language)
                 } else {
-                    Link("codex-resets.com", destination: PublicResetClient.siteURL)
+                    Link(language.text("查看公开记录", "Browse public history"), destination: PublicResetClient.siteURL)
                         .font(.caption)
                 }
                 HStack {
@@ -187,7 +187,7 @@ private struct PublicResetTranslationContent: View {
                     Text(vetted ? language.text("已核对译文", "Vetted translation") : language.text("系统翻译 · 简体中文", "System translation · Simplified Chinese"))
                         .foregroundStyle(.secondary)
                 }
-                Text(verbatim: text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Text(verbatim: PublicResetAnnouncementPresentation.readableText(text)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             case .unavailable:
                 Text(language.text("系统翻译暂不可用；请阅读原文。", "System translation unavailable; read the original."))
                 if supported {

@@ -95,7 +95,7 @@ struct NativeFixtures {
 '''
 
 
-def adapter_typecheck_fixture(model, adapter):
+def adapter_typecheck_fixture(model, adapter, readable_text):
     return '''import SwiftUI
 #if canImport(Translation) && compiler(>=6.0)
 import Translation
@@ -110,7 +110,7 @@ struct AnnouncementOriginalText: View {
     let compact: Bool
     var body: some View { Text(text) }
 }
-''' + '/// Identity resets' + adapter
+''' + '\nenum PublicResetAnnouncementPresentation {\n' + readable_text + '\n}\n' + '/// Identity resets' + adapter
 
 
 def main():
@@ -268,7 +268,9 @@ print("Pure model proof only: no real Apple translation engine exercised.")
         print('BLOCKED: process guard unverified; no compilation attempted')
         return 77
     (OUT / 'native-callback-fixtures.swift').write_text(native_fixture(model, ui))
-    (OUT / 'adapter-sdk-typecheck.swift').write_text(adapter_typecheck_fixture(model, adapter))
+    presentation = (ROOT / 'Sources/CodexUsageWidget/UI/ResetUpdatesBanner.swift').read_text()
+    readable_text = production_block(presentation, 'static func readableText(')
+    (OUT / 'adapter-sdk-typecheck.swift').write_text(adapter_typecheck_fixture(model, adapter, readable_text))
     sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
     architecture = platform.machine()
     assert architecture in ('arm64', 'x86_64')

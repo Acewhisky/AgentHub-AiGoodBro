@@ -565,10 +565,7 @@ struct CodexAccountManagerView: View {
     }
 
     private var homeHeader: some View {
-        HomeHeaderView(language: language) {
-            showingHome = true
-            selectedLocalCLI = nil
-        }
+        HomeHeaderView(language: language)
     }
 
     private var homeDisplayModePicker: some View {
@@ -3207,11 +3204,10 @@ struct AccountAutomationCenterView: View {
 @MainActor
 private struct HomeHeaderView: View {
     let language: WidgetLanguage
-    let onHome: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Button(action: onHome) {
+            Link(destination: AHBrandIdentity.siteURL) {
                 HStack(spacing: 10) {
                     AHBrandSymbol(size: 30)
                     Text(AHBrandIdentity.displayName)
@@ -3220,7 +3216,8 @@ private struct HomeHeaderView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(language.text("AiGoodBro 首页", "AiGoodBro home"))
+            .accessibilityLabel(language.text("打开 AiGoodBro 官网", "Open the AiGoodBro website"))
+            .help(language.text("访问 AiGoodBro 官网", "Visit the AiGoodBro website"))
             Text(language.text("账号、额度与使用记录", "Accounts, limits and usage"))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

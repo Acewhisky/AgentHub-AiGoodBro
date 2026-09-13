@@ -165,18 +165,19 @@ struct PublicResetCalendarView: View {
 struct PublicResetRecentView: View {
     let announcements: [PublicResetAnnouncement]
     let language: WidgetLanguage
+    var featuredID: String? = nil
     @Binding var selectedDay: Date?
     @State private var selectedAnnouncement: PublicResetAnnouncement?
 
     private var visibleEvents: [PublicResetAnnouncement] {
         selectedDay.map { PublicResetCalendarModel.events(on: $0, from: announcements) }
-            ?? Array(announcements.prefix(3))
+            ?? Array(announcements.filter { $0.id != featuredID }.prefix(4))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(selectedDay == nil ? language.text("近期公告", "Recent announcements") : language.text("所选日期的公告", "Announcements on this date"))
+                Text(selectedDay == nil ? language.text("更多动态", "More updates") : language.text("所选日期的公告", "Announcements on this date"))
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 4)
                 if selectedDay != nil {
@@ -189,26 +190,30 @@ struct PublicResetRecentView: View {
                     .font(.callout).foregroundStyle(.secondary)
                     .padding(.vertical, 16)
             } else {
-                ForEach(visibleEvents.prefix(5)) { event in
-                    Button {
-                        selectedAnnouncement = event
-                    } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(spacing: 6) {
-                                Circle().fill(event.resetType == .banked ? Color.purple : Color.blue).frame(width: 5, height: 5)
-                                Text(PublicResetAnnouncementPresentation.compactEventTime(event.announcedAt, language: language))
-                                    .font(.caption.weight(.medium))
-                                Spacer(minLength: 0)
-                                Image(systemName: "chevron.right").font(.caption2)
-                            }
-                            Text(verbatim: event.text)
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), alignment: .topLeading)], alignment: .leading, spacing: 10) {
+                    ForEach(visibleEvents.prefix(5)) { event in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Button {
+                                selectedAnnouncement = event
+                            } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack(spacing: 6) {
+                                        Circle().fill(event.resetType == .banked ? Color.purple : Color.blue).frame(width: 5, height: 5)
+                                        Text(PublicResetAnnouncementPresentation.compactEventTime(event.announcedAt, language: language))
+                                            .font(.caption.weight(.medium))
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "chevron.right").font(.caption2)
+                                    }
+                                    Text(verbatim: PublicResetAnnouncementPresentation.readableText(event.text))
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            Divider()
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 5)
-                        .contentShape(Rectangle())
-                    }.buttonStyle(.plain)
-                    Divider()
+                    }
                 }
             }
             if visibleEvents.count > 5 {

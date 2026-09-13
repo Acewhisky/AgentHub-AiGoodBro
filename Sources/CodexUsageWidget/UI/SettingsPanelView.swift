@@ -630,6 +630,16 @@ struct SettingsPanelView: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 16) {
+                Link(destination: AHBrandIdentity.siteURL) {
+                    Label("aigoodbro.com", systemImage: "globe")
+                }
+                Link(destination: AHBrandIdentity.repositoryURL) {
+                    Label("GitHub · AiGoodBro", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+            }
+            .font(.callout.weight(.medium))
+            .padding(.vertical, 8)
             SettingsValueRow(
                 title: language.text("当前 Runtime", "Current runtime"),
                 detail: language.text("当前工作台的数据范围", "Data scope of the current workspace"),
@@ -686,6 +696,12 @@ struct SettingsPanelView: View {
                 detail: language.text(
                     "感谢持续追踪和整理公开重置公告，为消息时间线与重置日历提供可核对的来源。",
                     "Thank you for tracking and preserving public reset announcements, providing verifiable sources for the update timeline and calendar."
+                ))
+            acknowledgement(
+                "AIHOT · Tibo 重置监控", url: "https://aihot.news/codex-reset",
+                detail: language.text(
+                    "感谢公开重置动态的中文整理、状态解释与时间说明，为信息呈现提供参考。",
+                    "Thank you for the Chinese summaries, status explanations and time guidance that inform the presentation of public reset updates."
                 ))
             acknowledgement(
                 "Node.js contributors", url: "https://nodejs.org/",

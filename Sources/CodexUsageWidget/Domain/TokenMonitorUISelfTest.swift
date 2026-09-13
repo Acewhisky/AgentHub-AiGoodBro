@@ -532,7 +532,15 @@ enum TokenMonitorUISelfTest {
         let observedLabel = PublicResetAnnouncementPresentation.sourceLabel(observedSource, language: .zh)
         expect(xLabel.contains("X") && xLabel.contains("thsottiaux"), "X source keeps its author visible")
         expect(!xLabel.contains("网友观察"), "X source is not mislabeled as generic user observation")
-        expect(observedLabel.contains("codex-resets.com") && observedLabel.contains("观察记录"), "observed source is identified as aggregator observation")
+        expect(observedLabel.contains("观察记录") && !observedLabel.contains(".com"), "observed source keeps its meaning without showing a bare domain")
+        expect(
+            PublicResetAnnouncementPresentation.readableText("Reset complete. https://t.co/example") == "Reset complete.",
+            "announcement presentation removes trailing web addresses"
+        )
+        expect(
+            PublicResetAnnouncementPresentation.readableText("第一行\nHTTPS://example.com/reset\n确认完成") == "第一行\n\n确认完成",
+            "URL filtering preserves surrounding multilingual content and paragraph boundaries"
+        )
         expect(
             PublicResetAnnouncementPresentation.sourceLinkTitle(observedSource, language: .zh).contains("来源"),
             "an aggregator URL is labeled as its source"

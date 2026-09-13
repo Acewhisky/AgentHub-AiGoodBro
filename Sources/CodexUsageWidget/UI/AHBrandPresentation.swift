@@ -6,6 +6,7 @@ enum AHBrandIdentity {
     static let workspaceName = "AgentHub"
     /// 官网地址，供主界面图标处的隐藏跳转按钮使用。
     static let siteURL = URL(string: "https://AiGoodBro.com")!
+    static let repositoryURL = URL(string: "https://github.com/BLACKIELF/AgentHub-AiGoodBro")!
     /// 兼容旧命名，值同 siteURL，勿再新增第三个。
     static var brandSiteURL: URL { siteURL }
 

@@ -70,6 +70,15 @@ enum PublicResetAnnouncementPresentation {
         language.text("来源原文", "Original source text")
     }
 
+    /// Hide bare web addresses in presentation; retain the exact source bytes in the DTO.
+    static func readableText(_ text: String) -> String {
+        let stripped = text.replacingOccurrences(
+            of: #"https?://[^\s<>]+|www\.[^\s<>]+"#, with: "", options: [.regularExpression, .caseInsensitive]
+        )
+        return stripped.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func sourceLabel(_ source: PublicResetAnnouncement.Source, language: WidgetLanguage) -> String {
         switch source.type {
         case "x_post":
@@ -78,7 +87,7 @@ enum PublicResetAnnouncementPresentation {
             }
             return "X"
         case "observed":
-            return language.text("codex-resets.com · 观察记录", "codex-resets.com · observed record")
+            return language.text("公开观察记录", "Publicly observed record")
         default:
             return language.text("来源类型：\(source.type)", "Source type: \(source.type)")
         }
@@ -106,14 +115,14 @@ struct AnnouncementOriginalText: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             if compact && !isExpanded {
-                Text(verbatim: text)
+                Text(verbatim: PublicResetAnnouncementPresentation.readableText(text))
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(Self.collapsedLineLimit)
                     .textSelection(.enabled)
             } else {
                 ScrollView(.vertical) {
-                    Text(verbatim: text)
+                    Text(verbatim: PublicResetAnnouncementPresentation.readableText(text))
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(.primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -159,7 +168,7 @@ struct PublicResetAnnouncementLinks: View {
                 destination: sourceURL
             )
         }
-        Link("codex-resets.com", destination: PublicResetClient.siteURL)
+        Link(language.text("查看完整记录", "Browse full history"), destination: PublicResetClient.siteURL)
     }
 }
 
@@ -188,6 +197,7 @@ struct ResetUpdatesBanner: View {
     var announcementsHasMore: Bool?
     var showsHistory = false
     @State private var selectedCalendarDay: Date?
+    @State private var showsExplanation = false
 
     private var calendarAnnouncements: [PublicResetAnnouncement] {
         PublicResetCalendarModel.normalized(announcements + (announcement.map { [$0] } ?? []))
@@ -199,14 +209,16 @@ struct ResetUpdatesBanner: View {
     }
 
     private var recentAnnouncements: some View {
-        PublicResetRecentView(announcements: calendarAnnouncements, language: language, selectedDay: $selectedCalendarDay)
+        PublicResetRecentView(announcements: calendarAnnouncements, language: language, featuredID: announcement?.id, selectedDay: $selectedCalendarDay)
     }
 
+    @MainActor
     private var announcementDashboard: some View {
         ResetDashboardLayout {
             announcementCard
             resetCalendar
             recentAnnouncements
+            accountSummary
         }
     }
 
@@ -271,13 +283,10 @@ struct ResetUpdatesBanner: View {
                 PublicResetTranslatedText(eventID: ann.id, original: ann.text, language: language, compact: true)
                 Text(PublicResetAnnouncementPresentation.sourceLabel(ann.source, language: language))
                     .font(.caption2).foregroundStyle(.secondary)
-                PublicResetAnnouncementLinks(source: ann.source, language: language)
             } else {
                 Text(announcementDetail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Link("codex-resets.com", destination: PublicResetClient.siteURL)
-                    .font(.caption2)
             }
             if let checkedAt {
                 Text(language.text("上次检查：", "Last checked: ") + PublicResetAnnouncementPresentation.compactEventTime(checkedAt, language: language))
@@ -299,44 +308,22 @@ struct ResetUpdatesBanner: View {
                 Text(language.text("重置消息", "Reset updates"))
                     .font(.system(size: 12.5, weight: .semibold))
                 Spacer(minLength: 4)
-                if hasAttention {
-                    Text(attentionCaption)
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(FixedVisualPalette.statusInfo)
-                        .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    showsExplanation.toggle()
+                } label: {
+                    Image(systemName: "info.circle").font(.caption)
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(language.text("公告与个人额度说明", "Announcement and account limit details"))
+                .popover(isPresented: $showsExplanation) { explanation }
             }
-            if showsHistory { announcementDashboard } else { announcementCard }
-            DisclosureGroup(language.text("账号额度与消息说明", "Account limits and announcement details")) {
-                VStack(alignment: .leading, spacing: 8) {
-                    labeledRow(
-                        systemImage: "clock",
-                        title: language.text("当前监控账号 · 窗口重置时间", "Monitored account · window reset time"),
-                        detail: windowDetail,
-                        emphasized: false,
-                        action: nil
-                    )
-                    labeledRow(
-                        systemImage: "arrow.counterclockwise.circle",
-                        title: language.text("可用重置卡", "Available reset cards"),
-                        detail: resetCardDetail,
-                        emphasized: confirmedResetCardAccounts > 0,
-                        action: confirmedResetCardAccounts > 0 ? onOpenAccounts : nil
-                    )
-                    if let announcement {
-                        Text(announcement.meaning(language))
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let refreshStatus, !refreshStatus.isEmpty {
-                        Text(refreshStatus)
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .padding(.top, 6)
+            if showsHistory {
+                announcementDashboard
+            } else {
+                announcementCard
+                accountSummary
             }
-            .font(.caption)
         }
         .padding(embedded ? 0 : 12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -357,11 +344,55 @@ struct ResetUpdatesBanner: View {
         .accessibilityLabel(language.text("额度窗口与重置消息", "Limit windows and reset updates"))
     }
 
-    private var attentionCaption: String {
-        if announcement != nil {
-            return "codex-resets.com"
+    private var accountSummary: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            Text(language.text("当前账号的窗口重置", "Monitored account reset windows"))
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 16) {
+                windowSummary("5h", date: fiveHourResetsAt)
+                windowSummary("7d", date: sevenDayResetsAt)
+            }
+            labeledRow(
+                systemImage: "arrow.counterclockwise.circle",
+                title: language.text("可用重置卡", "Available reset cards"),
+                detail: resetCardDetail,
+                emphasized: confirmedResetCardAccounts > 0,
+                action: confirmedResetCardAccounts > 0 ? onOpenAccounts : nil
+            )
         }
-        return resetCardDetail
+    }
+
+    private func windowSummary(_ title: String, date: Date?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(
+                date.map { PublicResetAnnouncementPresentation.compactEventTime($0, language: language) }
+                    ?? language.text("时间未知", "Time unknown")
+            )
+            .font(.caption.weight(.medium)).monospacedDigit()
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var explanation: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(language.text("公告与个人额度", "Announcements and account limits")).font(.headline)
+            Text(language.text("日历标记公开公告的发布日期；个人窗口和重置卡以账号读取结果为准。", "The calendar marks public announcement dates. Account readings determine personal windows and reset cards."))
+            if let announcement { Text(announcement.meaning(language)) }
+            if let refreshStatus, !refreshStatus.isEmpty {
+                Text(PublicResetAnnouncementPresentation.readableText(refreshStatus)).foregroundStyle(.secondary)
+            }
+            Button(language.text("查看公告详情", "View announcement details")) {
+                showsExplanation = false
+                onOpenAnnouncements()
+            }
+        }
+        .font(.callout)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(18)
+        .frame(width: 330)
     }
 
     private var windowDetail: String {
@@ -477,7 +508,7 @@ private struct ResetDashboardLayout: Layout {
     }
 
     private func frames(width: CGFloat, subviews: Subviews) -> [CGRect] {
-        guard subviews.count == 3 else { return [] }
+        guard subviews.count == 4 else { return [] }
         func box(_ index: Int, x: CGFloat, y: CGFloat, width: CGFloat) -> CGRect {
             let size = subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil))
             return CGRect(x: x, y: y, width: width, height: max(1, size.height))
@@ -485,22 +516,28 @@ private struct ResetDashboardLayout: Layout {
         if width >= 940 {
             let recentWidth = min(400, max(260, width * 0.3))
             let latestWidth = width - 348 - recentWidth
+            let latest = box(0, x: 0, y: 0, width: latestWidth)
             return [
-                box(0, x: 0, y: 0, width: latestWidth),
+                latest,
                 box(1, x: latestWidth + 24, y: 0, width: 300),
                 box(2, x: latestWidth + 348, y: 0, width: recentWidth),
+                box(3, x: 0, y: latest.maxY + 12, width: latestWidth),
             ]
         }
         if width >= 620 {
             let left = width - 324
             let latest = box(0, x: 0, y: 0, width: left)
+            let calendar = box(1, x: left + 24, y: 0, width: 300)
+            let account = box(3, x: 0, y: latest.maxY + 12, width: left)
             return [
-                latest, box(1, x: left + 24, y: 0, width: 300),
-                box(2, x: 0, y: latest.maxY + 18, width: left),
+                latest, calendar,
+                box(2, x: 0, y: max(account.maxY, calendar.maxY) + 20, width: width),
+                account,
             ]
         }
         let latest = box(0, x: 0, y: 0, width: width)
-        let calendar = box(1, x: 0, y: latest.maxY + 20, width: min(300, width))
-        return [latest, calendar, box(2, x: 0, y: calendar.maxY + 20, width: width)]
+        let account = box(3, x: 0, y: latest.maxY + 12, width: width)
+        let calendar = box(1, x: 0, y: account.maxY + 20, width: min(300, width))
+        return [latest, calendar, box(2, x: 0, y: calendar.maxY + 20, width: width), account]
     }
 }
