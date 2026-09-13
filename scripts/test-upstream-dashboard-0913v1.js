@@ -119,6 +119,22 @@ assert.equal(window.largeParses,2);assert.equal(window.largeEncodes,2);
 assert.throws(()=>window.__renderTrend(null,{snapshotID:'realm:1',language:'en'}),/snapshot unavailable/);
 assert.throws(()=>window.__renderTrend('{}',{snapshotID:'invalid',language:'en'}),/Invalid dashboard schema/);
 assert.throws(()=>window.__renderTrend(null,{snapshotID:'invalid',language:'en'}),/snapshot unavailable/);
+// Dense histories keep every data point, but only emit date ticks with room to read.
+const dense = JSON.parse(JSON.stringify(fixture));
+dense.payload.aggregate.history.daily = Array.from({length:120},(_,i)=>({date:new Date(Date.UTC(2026,4,1+i)).toISOString().slice(0,10),tokens:100000000+i*3137,perClient:{Codex:{tokens:100000000+i*3137}}}));
+ids.group.value='client';ids.from.value='';ids.to.value='';
+window.__renderTrend(dense,{language:'en',width:360});tabs[1].fire('click');
+const xTicks = () => [...ids.bars.innerHTML.matchAll(/<text class="axis-label" x="([^"]+)"[^>]*>([^<]+)<\/text>/g)];
+const narrowTicks=xTicks();assert(narrowTicks.length>=2 && narrowTicks.length<=5, JSON.stringify({ticks:narrowTicks.length,range:[ids.from.value,ids.to.value],bars:ids.bars.innerHTML.slice(0,240)}));
+assert.equal(ids.bars.querySelectorAll('[data-i]').length,120,'tick sampling must retain every bar and tooltip target');
+for(let i=1;i<narrowTicks.length;i++)assert(Number(narrowTicks[i][1])-Number(narrowTicks[i-1][1])>=60,'date labels must remain separated');
+assert.match(ids.bars.innerHTML,/>[0-9.]+M<\/text>/,'large Y ticks use compact values');
+ids.from.value='2026-06-01';ids.to.value='2026-07-31';ids.from.fire('change');
+window.__renderTrend(dense,{language:'en',width:960});
+assert.equal(ids.from.value,'2026-06-01');assert.equal(ids.to.value,'2026-07-31');
+assert(xTicks().length>narrowTicks.length,'wide charts use the available width');
+console.log('PASS dense trend ticks: all bars retained, readable compact axis labels, responsive width and date range persistence.');
+
 const nextWindow={}, nextContext=vm.createContext({window:nextWindow,document,Intl,Date,Map,Set,Number,Error,TextEncoder});
 vm.runInContext(resource('usageCharts.js'),nextContext);vm.runInContext(resource('standalone.js'),nextContext);
 assert.throws(()=>nextWindow.__renderTrend(null,{snapshotID:'realm:2',language:'en'}),/snapshot unavailable/);

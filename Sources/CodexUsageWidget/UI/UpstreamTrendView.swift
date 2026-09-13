@@ -327,9 +327,11 @@ struct UpstreamTrendView: View {
                 dashboardSnapshotRevision &+= 1
                 transferredDashboardID = nil
             }
+            // Match the validated public-announcement text bound; long lawful
+            // announcements must not invalidate the independent usage snapshot.
             let valid =
                 dashboardSnapshotIsValid
-                && resetAnnotations.count <= 500 && resetAnnotations.allSatisfy { $0.text.utf8.count <= 2_048 }
+                && resetAnnotations.count <= 500 && resetAnnotations.allSatisfy { $0.text.utf8.count <= 16_384 }
             let nextStatus: Lifecycle.InputStatus = valid ? .valid : .invalid
             self.language = language
             dashboardJSON = incoming

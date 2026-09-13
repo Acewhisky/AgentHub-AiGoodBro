@@ -435,7 +435,7 @@ enum WorkspacePreviewRenderer {
                 .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
                 .environment(\.colorScheme, scheme)
                 try renderView(statusExample, size: CGSize(width: 520, height: 56), scheme: scheme, to: directory.appendingPathComponent("warmup-status-\(theme).png"))
-                let toolbar = TitlebarToolbarView(settings: settings, onOpenSettings: {}, onSaveScreenshot: {})
+                let toolbar = TitlebarToolbarView(settings: settings, onOpenSettings: {}, onSaveScreenshot: {}, onOpenGuide: {})
                     .background(FixedVisualPalette.windowScrim(scheme))
                 try renderView(toolbar, size: CGSize(width: 320, height: 44), scheme: scheme, to: directory.appendingPathComponent("toolbar-\(theme).png"))
                 let editor = ExecutionPreferenceControl(

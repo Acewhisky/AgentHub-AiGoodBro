@@ -84,6 +84,7 @@ struct TitlebarToolbarView: View {
     @Environment(\.colorScheme) private var colorScheme
     let onOpenSettings: () -> Void
     let onSaveScreenshot: () -> Void
+    let onOpenGuide: () -> Void
 
     private var language: WidgetLanguage { settings.language }
     private var themeMode: WidgetThemeMode { settings.themeMode }
@@ -94,9 +95,13 @@ struct TitlebarToolbarView: View {
     var body: some View {
         HStack(spacing: 10) {
             Spacer(minLength: 0)
-            AHBrandSymbol(size: 24)
-                .frame(width: 34, height: titlebarControlHeight)
-                .help("AiGoodBro")
+            HeaderActionButton(
+                systemName: "questionmark.circle",
+                help: language.text("使用引导", "Getting started"),
+                accessibilityLabel: language.text("使用引导", "Getting started")
+            ) {
+                onOpenGuide()
+            }
 
             HStack(spacing: 2) {
                 HeaderActionButton(
@@ -142,6 +147,7 @@ struct TitlebarToolbarView: View {
 enum SettingsPage: String, CaseIterable, Identifiable {
     case appearance
     case menuBar
+    case floatingBubble
     case automation
     case workspace
     case about
@@ -152,6 +158,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .appearance: return language.text("显示与图标", "Display & Icons")
         case .menuBar: return language.text("菜单栏", "Menu Bar")
+        case .floatingBubble: return language.text("悬浮窗", "Floating window")
         case .automation: return language.text("自动化", "Automation")
         case .workspace: return language.text("工作区", "Workspace")
         case .about: return language.text("关于", "About")
@@ -161,8 +168,9 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     func detail(_ language: WidgetLanguage) -> String {
         switch self {
         case .appearance: return language.text("主题、语言、透明度与额度环动效；账号头像在账号详情中修改。", "Theme, language, opacity and ring motion. Change account avatars in account details.")
-        case .menuBar: return language.text("选择展示模式、额度口径与可见指标。", "Choose display mode, usage display and visible metrics.")
-        case .automation: return language.text("按窗口预约暖号，默认关闭。", "Schedule warm-up per window. Off by default.")
+        case .menuBar: return language.text("选择菜单栏显示的账号与指标。", "Choose the account and metrics shown in the menu bar.")
+        case .floatingBubble: return language.text("选择桌面上持续显示的账号、用量与外观。", "Choose the account, usage and appearance shown on the desktop.")
+        case .automation: return language.text("按各账号的额度窗口安排自动维护。", "Schedule automatic maintenance around each account’s quota windows.")
         case .workspace: return language.text("数据口径、窗口行为与快捷入口。", "Data, window behavior and shortcuts.")
         case .about: return language.text("版本、更新与开源来源。", "Version, updates and open-source attribution.")
         }
@@ -172,6 +180,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .appearance: return "paintpalette"
         case .menuBar: return "menubar.rectangle"
+        case .floatingBubble: return "macwindow.on.rectangle"
         case .automation: return "bolt.badge.clock"
         case .workspace: return "rectangle.3.group"
         case .about: return "info.circle"
@@ -221,6 +230,25 @@ struct NextSettingsHeader: View {
     }
 }
 
+struct SettingsWindowContent: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var store: UsageStore
+    @ObservedObject var updateStore: AppUpdateStore
+    @ObservedObject var localAccounts: LocalCLIAccountStore
+    let onOpenPaletteLibrary: () -> Void
+
+    var body: some View {
+        SettingsPanelView(
+            settings: settings, store: store, updateStore: updateStore,
+            onOpenPaletteLibrary: onOpenPaletteLibrary,
+            floatingBubbleSources: FloatingBubbleEvidence.make(store: store, localAccounts: localAccounts, language: settings.language)
+        )
+        .environment(\.widgetLanguage, settings.language)
+        .environment(\.locale, settings.language.locale)
+        .preferredColorScheme(settings.themeMode.preferredColorScheme)
+    }
+}
+
 struct SettingsPanelView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var store: UsageStore
@@ -232,6 +260,7 @@ struct SettingsPanelView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.visualTokens) private var visualTokens
     @State private var selectedPage: SettingsPage
+    @State private var showsAutomationCenter = false
 
     init(
         settings: AppSettings,
@@ -256,91 +285,99 @@ struct SettingsPanelView: View {
     private var language: WidgetLanguage { settings.language }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if showsHeader {
-                NextSettingsHeader(language: language, currentPage: selectedPage)
-            }
-            pageNavigation
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: compact ? 8 : 10) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(selectedPage.title(language))
-                            .font(.system(size: 15, weight: .semibold))
-                        Text(selectedPage.detail(language))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .accessibilityAddTraits(.isHeader)
-                    pageContent
+        Group {
+            if compact {
+                VStack(spacing: 0) {
+                    if showsHeader { NextSettingsHeader(language: language, currentPage: selectedPage) }
+                    pageNavigation
+                    pageScroll
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, compact ? 52 : 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityIdentifier("next.settings.page.\(selectedPage.rawValue)")
+                .frame(width: CodexAccountMenuView.preferredSize.width)
+            } else {
+                HStack(spacing: 0) {
+                    sidebar
+                    Divider()
+                    pageScroll
+                }
+                .frame(minWidth: 740, idealWidth: 780, minHeight: 520, idealHeight: 640)
             }
-            .id(selectedPage)
-            .frame(maxHeight: .infinity)
         }
-        .frame(width: compact ? CodexAccountMenuView.preferredSize.width : 480, alignment: .topLeading)
-        .frame(maxHeight: compact ? .infinity : nil)
-        .appVisualEnvironment(
-            catalog: settings.paletteCatalog,
-            paletteID: settings.paletteID,
-            appearance: PaletteAppearance(colorScheme)
-        )
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .appVisualEnvironment(catalog: settings.paletteCatalog, paletteID: settings.paletteID, appearance: PaletteAppearance(colorScheme))
         .readableForegroundHierarchy(colorScheme)
+        .sheet(isPresented: $showsAutomationCenter) { AccountAutomationCenterView(store: store) }
         .onAppear { AHSettingsHeaderContext.shared.currentPage = selectedPage }
-        .onChange(of: selectedPage) { page in
-            AHSettingsHeaderContext.shared.currentPage = page
-        }
+        .onChange(of: selectedPage) { AHSettingsHeaderContext.shared.currentPage = $0 }
         .onDisappear { AHSettingsHeaderContext.shared.currentPage = nil }
     }
 
-    private var pageNavigation: some View {
-        HStack(spacing: 2) {
+    private var pageScroll: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(selectedPage.title(language))
+                        .font(.system(size: compact ? 18 : 24, weight: .semibold))
+                    Text(selectedPage.detail(language))
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityAddTraits(.isHeader)
+                pageContent
+            }
+            .padding(compact ? 18 : 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("next.settings.page.\(selectedPage.rawValue)")
+        }
+        .id(selectedPage)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                AHBrandSymbol(size: 24)
+                Text("AiGoodBro").font(.headline)
+            }
+            .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 20)
             ForEach(SettingsPage.allCases) { page in
-                Button {
-                    selectedPage = page
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: page.symbol)
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(height: 16)
-                        Text(page.title(language))
-                            .font(.system(size: 9.5, weight: selectedPage == page ? .semibold : .medium))
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(selectedPage == page ? visualTokens.accent.primary.color : Color.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
-                            .fill(selectedPage == page ? visualTokens.accent.primary.color.opacity(0.10) : Color.clear)
-                    )
-                    .contentShape(Rectangle())
+                Button { selectedPage = page } label: {
+                    Label(page.title(language), systemImage: page.symbol)
+                        .font(.system(size: 13, weight: selectedPage == page ? .semibold : .regular))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10).padding(.vertical, 10)
+                        .background(selectedPage == page ? Color.accentColor.opacity(0.13) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(page.title(language))
                 .accessibilityAddTraits(selectedPage == page ? .isSelected : [])
                 .accessibilityIdentifier("next.settings.tab.\(page.rawValue)")
             }
+            Spacer()
         }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 8)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(FixedVisualPalette.surfaceHairline).frame(height: 1)
-                .padding(.horizontal, 20)
+        .padding(12)
+        .frame(width: 172)
+        .frame(maxHeight: .infinity)
+        .background(.bar)
+    }
+
+    private var pageNavigation: some View {
+        Picker(language.text("设置分类", "Settings category"), selection: $selectedPage) {
+            ForEach(SettingsPage.allCases) { page in
+                Label(page.title(language), systemImage: page.symbol).tag(page)
+            }
         }
+        .pickerStyle(.menu)
+        .padding(.horizontal, 18).padding(.vertical, 10)
     }
 
     @ViewBuilder private var pageContent: some View {
         switch selectedPage {
         case .appearance: appearancePage
         case .menuBar:
+            StatusItemSettingsView(settings: settings, store: store)
+        case .floatingBubble:
             VStack(spacing: 6) {
-                StatusItemSettingsView(settings: settings, store: store)
                 TokenMonitorFloatingBubbleEditor(
                     preferences: $settings.floatingBubble,
                     snapshot: TokenMonitorFloatingBubbleProjection.resolve(
@@ -414,6 +451,17 @@ struct SettingsPanelView: View {
 
     private var automationPage: some View {
         VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(language.text("自动切换与通知", "Auto-switch and notifications")).font(.headline)
+                    Text(language.text("额度提醒、消息渠道与活动记录", "Quota alerts, message channels and activity history"))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button(language.text("管理…", "Manage…")) { showsAutomationCenter = true }
+                    .buttonStyle(.bordered)
+            }
+            .padding(.bottom, 14)
             SettingsWarmUpCard(
                 interval: "5h",
                 title: language.text("5 小时暖号", "5-hour warm-up"),
@@ -591,6 +639,62 @@ struct SettingsPanelView: View {
                 value: store.snapshot.account?.planType?.uppercased() ?? "LOCAL"
             )
             AppUpdateSettingsRows(settings: settings, updateStore: updateStore, language: language)
+            Divider().padding(.vertical, 12)
+            acknowledgements
+        }
+    }
+
+    private var acknowledgements: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(language.text("鸣谢与开源项目", "Acknowledgements & open source"))
+                .font(.headline)
+            Text(language.text(
+                "感谢愿意分享代码、经验和时间的开发者。AiGoodBro 的许多能力建立在这些项目的成果之上。",
+                "Thank you to the developers who share their code, experience and time. Their work makes many of AiGoodBro’s capabilities possible."
+            ))
+            .font(.callout).foregroundStyle(.secondary)
+            acknowledgement("Token Monitor · Javis603 / Javis", url: "https://github.com/Javis603/token-monitor", detail: language.text(
+                "特别感谢 Token Monitor 开放多工具 Token 采集、年度热图、趋势图和用量看板。本 App 的统计引擎与图表由这些成果直接支持。",
+                "Special thanks for the multi-tool token collectors, annual heatmap, trend charts and usage dashboard that directly support this app’s statistics engine and charts."
+            ))
+            acknowledgement("Tokscale · junhoyeo & Javis603", url: "https://github.com/Javis603/tokscale", detail: language.text(
+                "感谢原项目作者 junhoyeo 与分支维护者 Javis603 提供本地用量扫描能力，为统计采集打下基础。",
+                "Thanks to original author junhoyeo and fork maintainer Javis603 for the local usage scanner at the foundation of token collection."
+            ))
+            acknowledgement("codexU · Guomeiqing / shanggqm", url: "https://github.com/shanggqm/codexU", detail: language.text(
+                "感谢分享早期 SwiftUI 工作台、额度展示和配色基础，让后续界面迭代有了可靠的起点。",
+                "Thank you for the early SwiftUI workspace, quota presentation and palette foundations that gave this interface a starting point."
+            ))
+            acknowledgement("Codex-Manager · hongshun.gao / qxcnm", url: "https://github.com/qxcnm/Codex-Manager", detail: language.text(
+                "感谢公开账号暖号协议的实现，为自动维护能力提供参考与基础。",
+                "Thank you for sharing the account warm-up protocol implementation that informs automatic maintenance."
+            ))
+            acknowledgement("Codex Resets", url: "https://codex-resets.com/", detail: language.text(
+                "感谢持续追踪和整理公开重置公告，为消息时间线与重置日历提供可核对的来源。",
+                "Thank you for tracking and preserving public reset announcements, providing verifiable sources for the update timeline and calendar."
+            ))
+            acknowledgement("Node.js contributors", url: "https://nodejs.org/", detail: language.text(
+                "感谢维护随 App 打包的 JavaScript 运行时，让统计引擎无需依赖用户另行安装 Node.js。",
+                "Thank you for the bundled JavaScript runtime that lets the statistics engine run without a separate Node.js installation."
+            ))
+            Text(language.text(
+                "也感谢持续反馈问题、测试新版本和提出改进建议的每一位使用者。各项目的版权和许可证随 App 保留。",
+                "Thanks as well to everyone who reports issues, tests new versions and suggests improvements. Project copyrights and licenses are retained in the app."
+            ))
+            .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func acknowledgement(_ title: String, url: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Link(destination: URL(string: url)!) {
+                Label(title, systemImage: "arrow.up.right.square")
+                    .font(.callout.weight(.semibold))
+            }
+            Text(detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -953,7 +1057,7 @@ struct SettingsBaseRow<Accessory: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .bottom) {
             Rectangle()

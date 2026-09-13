@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AgentNavigationBar: View {
     @Binding var navigation: AgentNavigationState
@@ -15,13 +16,10 @@ struct AgentNavigationBar: View {
 
     @State private var isAdding = false
     @State private var showsOverflow = false
-    @State private var insertionAfter = false
     @State private var isManaging = false
-    @State private var manageDraft: AgentNavigationState?
+    @State private var management: AgentNavigationManagementSession?
+    @State private var dropTargetID: String?
     @State private var undoIDs: [String]?
-    @State private var reorder: DirectReorderTransaction?
-    @State private var dragToken = UUID().uuidString
-    @State private var insertionID: String?
     @State private var undoResult: [String]?
     @State private var availableWidth: CGFloat = 980
 
@@ -30,10 +28,11 @@ struct AgentNavigationBar: View {
         let overflow = AgentNavigationOverflow.layout(
             orderedIDs: visible,
             availableWidth: Double(availableWidth),
+            trailingChromeWidth: showsGettingStarted ? 244 : 128,
             itemWidth: {
                 let font = NSFont.systemFont(ofSize: NSFont.preferredFont(forTextStyle: .callout).pointSize, weight: .medium)
                 let labelWidth = (AgentNavCatalog.displayName($0) as NSString).size(withAttributes: [.font: font]).width
-                return Double(labelWidth + ProviderIconSlot.navigation.container + 7 + 24 + 24)
+                return Double(labelWidth + ProviderIconSlot.navigation.container + 7 + 24)
             }
         )
         HStack(spacing: 6) {
@@ -45,7 +44,7 @@ struct AgentNavigationBar: View {
                 action: onSelectHome
             )
             ForEach(overflow.visibleIDs, id: \.self) { id in
-                agentButton(id: id, selected: !showingHome && selectedID == id, visibleIDs: overflow.visibleIDs)
+                agentButton(id: id, selected: !showingHome && selectedID == id)
             }
             if overflow.showsMore {
                 Button {
@@ -64,9 +63,7 @@ struct AgentNavigationBar: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(overflow.overflowIDs, id: \.self) { id in
-                                agentButton(
-                                    id: id, selected: !showingHome && selectedID == id,
-                                    visibleIDs: overflow.overflowIDs)
+                                agentButton(id: id, selected: !showingHome && selectedID == id)
                             }
                         }.padding(12)
                     }.frame(maxHeight: 360)
@@ -77,25 +74,21 @@ struct AgentNavigationBar: View {
             Button {
                 isAdding = true
             } label: {
-                Label(language.text("添加 Agent", "Add Agent"), systemImage: "plus")
-                    .padding(.horizontal, 10).padding(.vertical, 8)
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 32, height: 32)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(language.text("添加 Agent", "Add Agent"))
+            .help(language.text("添加 Agent", "Add Agent"))
             Button {
-                manageDraft = navigation
+                management = AgentNavigationManagementSession(navigation)
+                dropTargetID = nil
                 isManaging = true
             } label: {
                 Text(language.text("管理", "Manage")).padding(.horizontal, 10).padding(.vertical, 8)
             }
             .buttonStyle(.plain)
-            Button(action: onRefresh) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 16, height: 16)
-            }
-            .buttonStyle(.borderless).padding(.horizontal, 6).padding(.vertical, 8)
-            .help(language.text("重新检测本机 CLI", "Scan installed CLIs"))
             if showsGettingStarted {
                 Button(language.text("使用引导", "Getting started"), action: onGettingStarted)
                     .buttonStyle(.bordered)
@@ -103,19 +96,14 @@ struct AgentNavigationBar: View {
             }
         }
         .background(widthReader)
-        .frame(minHeight: 40)
+        .frame(minHeight: 38)
         .onAppear {
             navigation.bootstrapIfNeeded(existingUser: existingUser, currentVisible: defaultVisible)
         }
-        .onExitCommand { cancelReorder() }
-        .onChange(of: navigation.orderedVisibleProviderIDs) { _ in cancelReorder() }
         .sheet(isPresented: $isAdding) { addSheet }
-        .sheet(isPresented: $isManaging) { manageSheet }
+        .sheet(isPresented: $isManaging, onDismiss: cancelManagement) { manageSheet }
         .overlay(alignment: .topTrailing) {
-            if reorder != nil {
-                Button(language.text("取消排序", "Cancel reorder")) { cancelReorder() }
-                    .buttonStyle(.bordered).padding(.top, 36)
-            } else if undoIDs != nil {
+            if undoIDs != nil {
                 Button(language.text("撤销", "Undo")) {
                     if let undoIDs, navigation.orderedVisibleProviderIDs == undoResult { navigation.orderedVisibleProviderIDs = undoIDs }
                     self.undoIDs = nil
@@ -131,87 +119,14 @@ struct AgentNavigationBar: View {
         [AgentNavCatalog.codexID] + detectedIDs.filter { $0 != AgentNavCatalog.codexID }
     }
 
-    private func agentButton(id: String, selected: Bool, visibleIDs: [String]) -> some View {
-        HStack(spacing: 0) {
-            navButton(
-                id: id, title: AgentNavCatalog.displayName(id), selected: selected,
-                providerID: id, action: { onSelect(id) })
-            DirectReorderGrip(
-                label: language.text("拖动调整顺序", "Drag to reorder"),
-                position: "\((reorder?.order ?? visibleIDs).firstIndex(of: id).map { $0 + 1 } ?? 0) / \(visibleIDs.count)",
-                active: reorder?.source == id,
-                onActivate: {
-                    if reorder?.source == id { commitReorder() } else { beginReorder(id, visibleIDs: visibleIDs) }
-                },
-                onMove: { offset in
-                    guard reorder?.source == id else { return }
-                    reorder?.step(offset)
-                    if let draft = reorder, let index = draft.order.firstIndex(of: id) {
-                        insertionID = draft.visible[index]
-                        insertionAfter = offset > 0
-                    }
-                },
-                onCancel: cancelReorder,
-                onDragStart: {
-                    beginReorder(id, visibleIDs: visibleIDs)
-                    return NSItemProvider(object: dragToken as NSString)
-                }
-            )
-        }
-        .overlay(alignment: insertionAfter ? .trailing : .leading) {
-            if insertionID == id { Rectangle().fill(Color.accentColor).frame(width: 3) }
-        }
-        .dropDestination(for: String.self) { items, location in
-            guard items == [dragToken], var draft = reorder,
-                visibleIDs == draft.visible, visibleIDs.contains(id)
-            else { return false }
-            if insertionAfter, let index = draft.order.firstIndex(of: id) {
-                draft.move(before: draft.order.dropFirst(index + 1).first)
-            } else {
-                draft.move(before: id)
-            }
-            reorder = draft
-            return commitReorder()
-        } isTargeted: { targeted in
-            if targeted, let draft = reorder {
-                insertionID = id
-                insertionAfter = (draft.order.firstIndex(of: draft.source) ?? 0) < (draft.order.firstIndex(of: id) ?? 0)
-            } else if insertionID == id {
-                insertionID = nil
-            }
-        }
+    private func agentButton(id: String, selected: Bool) -> some View {
+        navButton(
+            id: id, title: AgentNavCatalog.displayName(id), selected: selected,
+            providerID: id, action: { onSelect(id) }
+        )
         .contextMenu {
             Button(language.text("从导航移除", "Remove from navigation")) { remove(id) }
         }
-    }
-
-    private func beginReorder(_ id: String, visibleIDs: [String]) {
-        dragToken = UUID().uuidString
-        reorder = DirectReorderTransaction(
-            original: navigation.orderedVisibleProviderIDs,
-            visible: visibleIDs, source: id,
-            knownIDs: Set(AgentNavCatalog.workspaceProviders.map(\.id)))
-    }
-
-    @discardableResult private func commitReorder() -> Bool {
-        guard let draft = reorder, let result = draft.committed(current: navigation.orderedVisibleProviderIDs) else {
-            cancelReorder()
-            return false
-        }
-        if result != draft.original {
-            undoIDs = draft.original
-            undoResult = result
-            navigation.orderedVisibleProviderIDs = result
-            navigation.customized = true
-        }
-        cancelReorder()
-        return true
-    }
-
-    private func cancelReorder() {
-        reorder = nil
-        insertionID = nil
-        dragToken = UUID().uuidString
     }
 
     private func navButton(
@@ -234,7 +149,10 @@ struct AgentNavigationBar: View {
                 Text(title).font(.callout.weight(.medium)).fixedSize()
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
+            .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .bottom) {
+                if selected { Capsule().fill(Color.accentColor).frame(height: 2).padding(.horizontal, 12) }
+            }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
@@ -323,39 +241,197 @@ struct AgentNavigationBar: View {
     private var manageSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(language.text("管理导航", "Manage navigation")).font(.headline)
-            Text(language.text("仅移除导航入口，账号与任务保留。", "Removing a tab only hides it. Accounts and tasks stay."))
-                .font(.caption).foregroundStyle(.secondary)
-            List {
-                ForEach((manageDraft ?? navigation).renderableIDs(), id: \.self) { id in
-                    HStack {
-                        ProviderMark(providerID: id, slot: .navigation)
-                        Text(AgentNavCatalog.displayName(id))
-                        Spacer()
-                        Button(language.text("移除", "Remove"), role: .destructive) { _ = manageDraft?.remove(id) }
+            Text(
+                language.text(
+                    "拖动 Agent 图标或名称调整顺序，完成后保存。移除仅隐藏入口，账号与任务保留。", "Drag an Agent icon or name to reorder, then choose Done to save. Removing a tab keeps its accounts and tasks.")
+            )
+            .font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(spacing: 4) {
+                    ForEach((management?.draft ?? navigation).renderableIDs(), id: \.self) { id in
+                        managementRow(id: id)
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if management?.committed(current: navigation) == nil {
+                Text(language.text("导航已在其他窗口更改，请取消后重新管理。", "Navigation changed in another window. Cancel and reopen Manage."))
+                    .font(.caption).foregroundStyle(.red)
+            }
             HStack {
+                Button(language.text("重新检测本机 Agent", "Scan local Agents"), action: onRefresh)
                 Button(language.text("恢复默认", "Restore default")) {
-                    manageDraft?.restoreDefault(currentVisible: defaultVisible)
+                    management?.restoreDefault(currentVisible: defaultVisible)
+                    dropTargetID = nil
                 }
                 Spacer()
-                Button(language.text("取消", "Cancel")) {
-                    manageDraft = nil
-                    isManaging = false
-                }.keyboardShortcut(.cancelAction)
-                Button(language.text("完成", "Done")) {
-                    if let manageDraft { navigation = manageDraft }
-                    isManaging = false
-                }.keyboardShortcut(.defaultAction)
+                Button(language.text("取消", "Cancel"), action: cancelManagement)
+                    .keyboardShortcut(.cancelAction)
+                Button(language.text("完成", "Done"), action: finishManagement)
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
         .frame(width: 520, height: 480)
-        .onExitCommand {
-            manageDraft = nil
-            isManaging = false
+        .onExitCommand(perform: cancelManagement)
+    }
+
+    private func managementRow(id: String) -> some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 10) {
+                ProviderMark(providerID: id, slot: .navigation)
+                Text(AgentNavCatalog.displayName(id)).font(.callout.weight(.medium))
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+            .onDrag {
+                guard let token = management?.beginDragging(id) else { return NSItemProvider() }
+                return NSItemProvider(object: token as NSString)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(AgentNavCatalog.displayName(id))
+            .accessibilityHint(language.text("拖动调整顺序", "Drag to reorder"))
+            .accessibilityAction(named: Text(language.text("向上移动", "Move up"))) { management?.move(id, by: -1) }
+            .accessibilityAction(named: Text(language.text("向下移动", "Move down"))) { management?.move(id, by: 1) }
+            Button(language.text("移除", "Remove"), role: .destructive) {
+                management?.remove(id)
+                dropTargetID = nil
+            }
+            .buttonStyle(.borderless)
         }
+        .padding(.horizontal, 10)
+        .frame(height: 44)
+        .background(dropTargetID == id ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .onDrop(
+            of: [UTType.utf8PlainText],
+            isTargeted: Binding(
+                get: { dropTargetID == id },
+                set: { targeted in
+                    if targeted { dropTargetID = id } else if dropTargetID == id { dropTargetID = nil }
+                })
+        ) { providers, location in
+            receiveManagementDrop(providers, targetID: id, after: location.y >= 22)
+        }
+    }
+
+    private func receiveManagementDrop(_ providers: [NSItemProvider], targetID: String, after: Bool) -> Bool {
+        guard providers.count == 1, let provider = providers.first,
+            provider.canLoadObject(ofClass: NSString.self),
+            management?.isDragging == true
+        else { return false }
+        provider.loadObject(ofClass: NSString.self) { object, error in
+            guard error == nil, let token = object as? String else { return }
+            DispatchQueue.main.async {
+                // Re-check the active draft: a delayed drop cannot change a reopened sheet.
+                _ = management?.drop(token: token, targetID: targetID, after: after)
+                dropTargetID = nil
+            }
+        }
+        return true
+    }
+
+    private func finishManagement() {
+        guard let management, let result = management.committed(current: navigation) else { return }
+        if result != navigation {
+            undoIDs = navigation.orderedVisibleProviderIDs
+            undoResult = result.orderedVisibleProviderIDs
+            navigation = result
+            if let selectedID, !result.renderableIDs().contains(selectedID) { onSelectHome() }
+        }
+        cancelManagement()
+    }
+
+    private func cancelManagement() {
+        management = nil
+        dropTargetID = nil
+        isManaging = false
+    }
+
+}
+
+/// All management changes stay in this value until Done. A local drag token is
+/// single-use; canceled, external and delayed drops cannot modify another draft.
+struct AgentNavigationManagementSession: Equatable {
+    let original: AgentNavigationState
+    private(set) var draft: AgentNavigationState
+    private var dragToken: String?
+    private var dragSource: String?
+    private var dragOrder: [String]?
+
+    init(_ state: AgentNavigationState) {
+        original = state
+        draft = state
+    }
+
+    var isDragging: Bool { dragToken != nil }
+
+    mutating func beginDragging(_ id: String) -> String? {
+        invalidateDrag()
+        guard draft.renderableIDs().contains(id) else { return nil }
+        let token = UUID().uuidString
+        dragToken = token
+        dragSource = id
+        dragOrder = draft.orderedVisibleProviderIDs
+        return token
+    }
+
+    @discardableResult
+    mutating func drop(token: String, targetID: String, after: Bool) -> Bool {
+        guard token == dragToken, let source = dragSource,
+            dragOrder == draft.orderedVisibleProviderIDs,
+            draft.renderableIDs().contains(targetID),
+            var transaction = transaction(for: source)
+        else { return false }
+        defer { invalidateDrag() }
+        if source == targetID { return true }
+        transaction.move(before: targetID)
+        if after { transaction.step(1) }
+        return apply(transaction)
+    }
+
+    mutating func move(_ id: String, by offset: Int) {
+        invalidateDrag()
+        guard var transaction = transaction(for: id) else { return }
+        transaction.step(offset)
+        _ = apply(transaction)
+    }
+
+    mutating func remove(_ id: String) {
+        invalidateDrag()
+        _ = draft.remove(id)
+    }
+
+    mutating func restoreDefault(currentVisible: [String]) {
+        invalidateDrag()
+        draft.restoreDefault(currentVisible: currentVisible)
+    }
+
+    func committed(current: AgentNavigationState) -> AgentNavigationState? {
+        guard current == original else { return nil }
+        return draft
+    }
+
+    private func transaction(for id: String) -> DirectReorderTransaction? {
+        DirectReorderTransaction(
+            original: draft.orderedVisibleProviderIDs,
+            visible: draft.renderableIDs(), source: id,
+            knownIDs: Set(AgentNavCatalog.workspaceProviders.map(\.id)))
+    }
+
+    private mutating func apply(_ transaction: DirectReorderTransaction) -> Bool {
+        guard let result = transaction.committed(current: draft.orderedVisibleProviderIDs) else { return false }
+        if result != draft.orderedVisibleProviderIDs {
+            draft.orderedVisibleProviderIDs = result
+            draft.customized = true
+        }
+        return true
+    }
+
+    private mutating func invalidateDrag() {
+        dragToken = nil
+        dragSource = nil
+        dragOrder = nil
     }
 }
 

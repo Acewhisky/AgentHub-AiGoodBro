@@ -173,8 +173,8 @@ private struct UpstreamHomeStatistics: View {
                 .disabled(state.phase == .loading)
             }
             Text(total.map(language.tokens) ?? language.text("暂不可确认", "Temporarily unavailable"))
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(.tint)
+                .font(.system(size: total == nil ? 20 : 34, weight: .semibold))
+                .foregroundStyle(total == nil ? Color.secondary : Color.primary)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
@@ -246,12 +246,14 @@ struct CodexAccountManagerView: View {
         StatisticsContext(preference: store.statisticsPreference, now: Date())
     }
     var screenshotRequests: AnyPublisher<NSWindow, Never> = Empty().eraseToAnyPublisher()
+    var guideRequests: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var moduleEditOriginal: WorkspaceModuleArrangement?
     @State private var isEditingModules = false
     @State private var isEditingProfiles = false
+    @State private var accountOrderRequest: AccountOrderSheet.Request?
     @StateObject private var directReorder = CodexDirectReorderState()
     @State private var isAddingCustomTokenSource = false
     @State private var customSourceNameDraft = ""
@@ -312,16 +314,17 @@ struct CodexAccountManagerView: View {
         }
     }
 
-    static let defaultWidth: CGFloat = 980
+    static let defaultWidth: CGFloat = 1100
     static let minWidth: CGFloat = 820
     static let maxWidth: CGFloat = 1440
-    static let defaultHeight: CGFloat = 700
+    static let defaultHeight: CGFloat = 760
     static let minHeight: CGFloat = 600
-    static let windowCornerRadius: CGFloat = 28
+    static let windowCornerRadius: CGFloat = 16
 
     init(
         store: UsageStore, settings: AppSettings, paletteCatalog: PaletteCatalog,
         screenshotRequests: AnyPublisher<NSWindow, Never> = Empty().eraseToAnyPublisher(),
+        guideRequests: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
         localCLIAccounts: LocalCLIAccountStore? = nil,
         previewOpenCodexWorkspace: Bool = false, previewEditingModules: Bool = false
     ) {
@@ -330,6 +333,7 @@ struct CodexAccountManagerView: View {
         self.settings = settings
         self.paletteCatalog = paletteCatalog
         self.screenshotRequests = screenshotRequests
+        self.guideRequests = guideRequests
         _localCLIAccounts = StateObject(wrappedValue: localCLIAccounts ?? LocalCLIAccountStore())
         _showingHome = State(initialValue: !previewOpenCodexWorkspace)
         _isEditingModules = State(initialValue: previewEditingModules)
@@ -341,8 +345,12 @@ struct CodexAccountManagerView: View {
     }
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            workspaceContent
+        VStack(spacing: 0) {
+            fixedWorkspaceHeader
+            Divider()
+            ScrollView(showsIndicators: true) {
+                workspaceContent
+            }
         }
         .background(
             FixedVisualPalette.windowScrim(
@@ -363,6 +371,7 @@ struct CodexAccountManagerView: View {
         )
         .preferredColorScheme(settings.themeMode.preferredColorScheme)
         .onReceive(screenshotRequests) { saveLongScreenshot(for: $0) }
+        .onReceive(guideRequests) { openPrimaryGuide() }
         .environment(\.accountAvatarEdit, { avatarEditor = $0 })
         .environment(\.accountAvatarSettings, settings)
         .onAppear {
@@ -386,6 +395,19 @@ struct CodexAccountManagerView: View {
             AccountAutomationCenterView(store: store)
                 .environment(\.widgetLanguage, language)
                 .environment(\.locale, language.locale)
+        }
+        .sheet(item: $accountOrderRequest) { request in
+            AccountOrderSheet(
+                items: request.items, originalAllIDs: request.originalAllIDs, language: language,
+                onSave: { ordered, expected in
+                    guard !store.isLaunchingCodex, !store.isLoggingIn,
+                        store.reorderProfiles(ordered, expectedCurrentOrder: expected)
+                    else { return false }
+                    accountOrderRequest = nil
+                    return true
+                },
+                onCancel: { accountOrderRequest = nil }
+            )
         }
         .sheet(
             isPresented: $isSetupGuidePresented,
@@ -422,8 +444,11 @@ struct CodexAccountManagerView: View {
                 language: language,
                 connectedExample: nil,
                 onEnterWorkspace: {
-                    settings.workspaceDisplayMode = settings.onboarding.selectedMode
                     isOnboardingPresented = false
+                    if let providerID = settings.onboarding.selectedProviderID {
+                        if providerID == AgentNavCatalog.codexID { openCodexTab() }
+                        else if let kind = AgentNavCatalog.localKind(providerID) { openLocalCLITab(kind) }
+                    }
                 },
                 onSkip: {
                     settings.onboarding.skip()
@@ -480,8 +505,6 @@ struct CodexAccountManagerView: View {
 
     private var workspaceContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            homeHeader
-            cliSelector
             if showingHome {
                 homeOverview
             } else if let selectedLocalCLI {
@@ -495,31 +518,31 @@ struct CodexAccountManagerView: View {
                 codexWorkspaceContent
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    private var fixedWorkspaceHeader: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            homeHeader
+            cliSelector
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(reduceTransparency ? 1 : 0.96))
     }
 
     private var homeOverview: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 20) {
             AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
             resetUpdatesBanner
-                .padding(14)
+                .padding(18)
                 .sectionBackground()
-            if isEditingModules || settings.homeModuleArrangement != WorkspaceModuleArrangement() {
-                arrangedHomeModules
-            } else {
-                homeTokenTotalsCard
-                homeUnifiedAccounts
-            }
-            DisclosureGroup(language.text("任务、用量明细与设置", "Tasks, usage details and settings")) {
-                professionalNavigation
-                homeSupplementaryContent
-            }
-            if settings.simpleWorkspacePreset == .custom {
-                DisclosureGroup(language.text("已保存的自定义模块", "Saved custom modules")) {
-                    homeCustomModules
-                }
-            }
+            homeTokenTotalsCard
+            homeUnifiedAccounts
         }
     }
 
@@ -543,31 +566,10 @@ struct CodexAccountManagerView: View {
     }
 
     private var homeHeader: some View {
-        HomeHeaderView(
-            language: language,
-            workspaceDisplayMode: $settings.workspaceDisplayMode,
-            simpleWorkspacePreset: $settings.simpleWorkspacePreset,
-            isEditingModules: isEditingModules,
-            setupShouldPresentAutomatically: settings.setupProgress.shouldPresentAutomatically,
-            onCancelEditing: {
-                if let moduleEditOriginal { settings.homeModuleArrangement = moduleEditOriginal }
-                isEditingModules = false
-            },
-            onResetLayout: { settings.homeModuleArrangement = .init() },
-            onFinishEditing: { isEditingModules = false },
-            onArrangeLayout: {
-                moduleEditOriginal = settings.homeModuleArrangement
-                isEditingModules = true
-                professionalSection = .overview
-            },
-            onOpenGuide: { isSetupGuidePresented = true },
-            onDismissSetup: { settings.setupProgress.dismissed = true },
-            onHome: {
-                showingHome = true
-                selectedLocalCLI = nil
-            }
-        )
-        .padding(.vertical, 6)
+        HomeHeaderView(language: language) {
+            showingHome = true
+            selectedLocalCLI = nil
+        }
     }
 
     private var homeDisplayModePicker: some View {
@@ -649,7 +651,10 @@ struct CodexAccountManagerView: View {
             onOpenAnnouncements: { isAutomationCenterPresented = true },
             onOpenAccounts: { openAccountsFromResetBanner() },
             onRefresh: { store.refreshResetAnnouncements() },
-            embedded: true
+            embedded: true,
+            announcements: resetAnnouncementMonitor.announcements,
+            announcementsHasMore: resetAnnouncementMonitor.announcementsHasMore,
+            showsHistory: true
         )
     }
 
@@ -1195,6 +1200,16 @@ struct CodexAccountManagerView: View {
 
     private func savedAccountsMenu(title: String) -> some View {
         Menu(title) {
+            Button(language.text("调整 Codex 账号顺序", "Reorder Codex accounts")) {
+                accountOrderRequest = AccountOrderSheet.Request(
+                    items: presentedProfiles.map {
+                        AccountOrderSheet.Item(id: $0.id, title: AccountDisplay.profileName($0, allProfiles: store.profiles))
+                    },
+                    originalAllIDs: store.profiles.map(\.id)
+                )
+            }
+            .disabled(presentedProfiles.count < 2 || store.isLoggingIn || store.isLaunchingCodex)
+            Divider()
             Button(language.text("Codex 账号", "Codex accounts")) { openAccountManagement() }
             ForEach(LocalCLIKind.allCases) { kind in
                 if !localCLIAccounts.profiles(for: kind).isEmpty {
@@ -1243,17 +1258,7 @@ struct CodexAccountManagerView: View {
                 Label(language.text("已登录账号", "Signed-in accounts"), systemImage: "person.2").font(.headline)
                 savedAccountsMenu(title: language.text("管理账号", "Manage accounts"))
                 Spacer()
-                Menu(language.text("固定第一位", "Pin first")) {
-                    Button(language.text("取消置顶", "Unpin")) { settings.pinnedAccountKey = nil }
-                    ForEach(homeAccounts(now: Date())) { entry in
-                        switch entry {
-                        case .codex(let profile):
-                            Button("Codex · " + AccountDisplay.profileName(profile, allProfiles: store.profiles)) { settings.pinnedAccountKey = entry.id }
-                        case .local(let profile):
-                            Button(profile.kind.displayName + " · " + profile.displayName) { settings.pinnedAccountKey = entry.id }
-                        }
-                    }
-                }
+                reloginAccountsMenu
                 if !usesHomeAccountCards {
                     Picker(language.text("账号显示方式", "Account layout"), selection: $settings.accountWorkspaceLayout) {
                         Text(language.text("列表", "List")).tag(AccountWorkspaceLayout.rows)
@@ -1266,16 +1271,6 @@ struct CodexAccountManagerView: View {
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
-            }
-            if reloginCount > 0 {
-                Menu(language.text("需要重新登录（\(reloginCount)）", "Sign-in required (\(reloginCount))")) {
-                    Button(language.text("Codex 账号", "Codex accounts")) { openAccountManagement(scope: .attention) }
-                    ForEach(LocalCLIKind.allCases) { kind in
-                        if localCLIAccounts.profiles(for: kind).contains(where: { homeEligibility($0) == .needsLogin }) {
-                            Button(kind.displayName) { openLocalCLITab(kind) }
-                        }
-                    }
-                }
             }
             if homeAccounts(now: Date()).isEmpty { emptyHomeAccounts }
             TimelineView(.periodic(from: .now, by: 60)) { timeline in
@@ -1299,6 +1294,20 @@ struct CodexAccountManagerView: View {
                         case .local(let profile):
                             homeLocalAccountCard(profile)
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var reloginAccountsMenu: some View {
+        if reloginCount > 0 {
+            Menu(language.text("需要重新登录（\(reloginCount)）", "Sign-in required (\(reloginCount))")) {
+                Button(language.text("Codex 账号", "Codex accounts")) { openAccountManagement(scope: .attention) }
+                ForEach(LocalCLIKind.allCases) { kind in
+                    if localCLIAccounts.profiles(for: kind).contains(where: { homeEligibility($0) == .needsLogin }) {
+                        Button(kind.displayName) { openLocalCLITab(kind) }
                     }
                 }
             }
@@ -1414,8 +1423,6 @@ struct CodexAccountManagerView: View {
 
     private var usesHomeAccountCards: Bool {
         showingHome
-            && settings.workspaceDisplayMode == .simple
-            && settings.simpleWorkspacePreset == .accountCards
     }
 
     private var displayedAccountLayout: AccountWorkspaceLayout {
@@ -1565,7 +1572,6 @@ struct CodexAccountManagerView: View {
 
     @ViewBuilder
     private var codexWorkspaceContent: some View {
-        if presentation.isSingleAccount { workspaceBranding }
         if !showingHome {
             AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
         }
@@ -1598,7 +1604,7 @@ struct CodexAccountManagerView: View {
                 if showingHome { refreshMissingLocalCLIQuotas() }
                 refreshQuotaProviderRows()
             },
-            showsGettingStarted: !showingHome,
+            showsGettingStarted: false,
             onGettingStarted: { openPrimaryGuide() }
         )
     }
@@ -1647,6 +1653,8 @@ struct CodexAccountManagerView: View {
     /// Share the exact content tree with the screen, without its viewport or polling hooks.
     var screenshotContent: some View {
         VStack(spacing: 0) {
+            fixedWorkspaceHeader
+            Divider()
             workspaceContent
             operationStatusBar
         }
@@ -1706,47 +1714,20 @@ struct CodexAccountManagerView: View {
     }
 
     private var workspace: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 20) {
             workspaceHeader
-            if presentation.isSingleAccount {
-                currentExecutableSection
-                DisclosureGroup(language.text("用量统计", "Usage"), isExpanded: $isUsageDetailsExpanded) {
-                    agentBreakdownPanel.padding(.top, 12)
+            profilesPanel
+            DisclosureGroup(language.text("自动切换与通知", "Automatic switching and notifications")) {
+                VStack(alignment: .leading, spacing: 16) {
+                    automationPanel
+                    safetyFooter
                 }
-                .font(.subheadline.weight(.medium))
-                .padding(16)
-                .sectionBackground()
-                DisclosureGroup(language.text("账号管理与自动化", "Account settings and automation"), isExpanded: $isAccountDetailsExpanded) {
-                    VStack(spacing: 16) {
-                        if !showingHome { profilesPanel }
-                        automationPanel
-                        safetyFooter
-                    }
-                    .padding(.top, 14)
-                }
-                .font(.subheadline.weight(.medium))
-                .padding(16)
-                .sectionBackground()
-            } else {
-                DisclosureGroup(isExpanded: $isUsageDetailsExpanded) {
-                    quotaOverview.padding(.top, 8)
-                } label: {
-                    HStack(spacing: 16) {
-                        Label(language.text("当前监控 · \(selectedAccountName)", "Monitoring · \(selectedAccountName)"), systemImage: "eye")
-                            .lineLimit(1)
-                    }
-                    .font(.caption.weight(.medium))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .sectionBackground()
-                agentBreakdownPanel
-                if !showingHome { profilesPanel }
-                automationPanel
-                safetyFooter
+                .padding(.top, 12)
             }
+            .font(.callout)
+            .padding(16)
+            .sectionBackground()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var presentation: WorkspacePresentation {
@@ -1887,36 +1868,21 @@ struct CodexAccountManagerView: View {
     }
 
     private var workspaceHeader: some View {
-        HStack(alignment: .center, spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                AHBrandSymbol(size: presentation.isSingleAccount ? 30 : 26)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("AiGoodBro")
-                        .font(.system(size: presentation.isSingleAccount ? 24 : 20, weight: .semibold))
-                    Text(
-                        language.text(
-                            "AgentHub · 额度、重置窗口、下一次任务",
-                            "AgentHub · limits, reset windows, next task"
-                        )
-                    )
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
+        HStack(spacing: 12) {
+            ProviderMark(providerID: AgentNavCatalog.codexID, slot: .navigation)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Codex").font(.system(size: 22, weight: .semibold))
+                Text(language.text("选择账号，在终端中使用或切换 Desktop", "Choose an account for the terminal or Desktop"))
+                    .font(.callout).foregroundStyle(.secondary)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("AiGoodBro AgentHub")
             Spacer(minLength: 16)
-            Button {
-                store.refreshQuotas()
-            } label: {
+            Button(action: { store.refreshQuotas() }) {
                 Label(store.isRefreshing ? language.text("读取中…", "Refreshing…") : language.text("刷新额度", "Refresh limits"), systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
-            .controlSize(.regular)
             .disabled(store.isRefreshing)
         }
+        .accessibilityAddTraits(.isHeader)
     }
 
     private var quotaOverview: some View {
@@ -2299,7 +2265,23 @@ struct CodexAccountManagerView: View {
                 )
             }
 
-            codexProfileRows
+            if filteredCodexProfiles.isEmpty {
+                VStack(spacing: 8) {
+                    Text(language.text("没有匹配的账号", "No matching accounts"))
+                        .font(.headline)
+                    Text(language.text("试试其他关键词，或查看全部已保存账号。", "Try another search or view all saved accounts."))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button(language.text("清除筛选", "Clear filters")) {
+                        accountSearch = ""
+                        accountScope = .all
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 28)
+            } else {
+                codexProfileRows
+            }
 
             HStack {
                 Text(language.text("账号凭据独立保存；切换 Codex 时沿用当前电脑的项目与对话。", "Account sign-ins stay isolated. Desktop switching retains this Mac's projects and conversations."))
@@ -2431,12 +2413,6 @@ struct CodexAccountManagerView: View {
             onSetChromeProfile: { store.setChromeProfile($0, for: profile.id) },
             onDelete: { store.deleteProfile(profile.id) },
             onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) }
-        )
-        .modifier(
-            CodexDirectReorderCard(
-                store: store, session: directReorder, profileID: profile.id,
-                visibleIDs: reorderVisibleIDs ?? filteredCodexProfiles.map(\.id), language: language,
-                extraBlocked: isSavingScreenshot)
         )
         .contextMenu {
             let key = ResetCardPresentation.codexKey(profile.id)
@@ -3232,90 +3208,26 @@ struct AccountAutomationCenterView: View {
 @MainActor
 private struct HomeHeaderView: View {
     let language: WidgetLanguage
-    @Binding var workspaceDisplayMode: WorkspaceDisplayMode
-    @Binding var simpleWorkspacePreset: SimpleWorkspacePreset
-    let isEditingModules: Bool
-    let setupShouldPresentAutomatically: Bool
-    let onCancelEditing: () -> Void
-    let onResetLayout: () -> Void
-    let onFinishEditing: () -> Void
-    let onArrangeLayout: () -> Void
-    let onOpenGuide: () -> Void
-    let onDismissSetup: () -> Void
     let onHome: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Button(action: onHome) {
-                    HStack(spacing: 12) {
-                        AHBrandSymbol(size: 40)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("AiGoodBro")
-                                .font(.system(size: 24, weight: .semibold))
-                            Text(AHBrandIdentity.displayName)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+        HStack(spacing: 10) {
+            Button(action: onHome) {
+                HStack(spacing: 10) {
+                    AHBrandSymbol(size: 30)
+                    Text(AHBrandIdentity.displayName)
+                        .font(.system(size: 18, weight: .semibold))
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(language.text("AiGoodBro 首页", "AiGoodBro home"))
-                .accessibilityAddTraits(.isHeader)
-
-                Spacer(minLength: 16)
-                if isEditingModules {
-                    Button(language.text("取消", "Cancel"), action: onCancelEditing)
-                        .keyboardShortcut(.cancelAction)
-                    Button(language.text("恢复推荐布局", "Restore recommended layout"), action: onResetLayout)
-                    Button(language.text("完成", "Done"), action: onFinishEditing)
-                        .buttonStyle(.borderedProminent)
-                }
-                Menu {
-                    Picker(language.text("工作台显示", "Workspace display"), selection: $workspaceDisplayMode) {
-                        ForEach(WorkspaceDisplayMode.allCases, id: \.self) { mode in
-                            Text(mode.title(language)).tag(mode)
-                        }
-                    }
-                    Picker(language.text("内容密度", "Density"), selection: $simpleWorkspacePreset) {
-                        ForEach(SimpleWorkspacePreset.allCases, id: \.self) { preset in
-                            Text(preset.title(language)).tag(preset)
-                        }
-                    }
-                    Divider()
-                    Button(language.text("整理布局", "Arrange layout"), action: onArrangeLayout)
-                    Button(language.text("使用引导", "Getting started"), action: onOpenGuide)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.title3)
-                        .padding(6)
-                }
-                .menuStyle(.borderlessButton)
-                .frame(width: 36)
-                .accessibilityLabel(language.text("工作台选项", "Workspace options"))
+                .contentShape(Rectangle())
             }
-
-            if setupShouldPresentAutomatically {
-                HStack {
-                    Label(language.text("完成调用准备", "Prepare your workspace"), systemImage: "checklist")
-                    Text(language.text("工具、登录与配套 Skill", "Tools, sign-in & companion Skill"))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    Button(language.text("使用引导", "Getting started"), action: onOpenGuide)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .accessibilityLabel(language.text("使用引导", "Getting started"))
-                    Button(action: onDismissSetup) {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(language.text("稍后准备", "Prepare later"))
-                }
-                .font(.caption)
-                .padding(10)
-                .sectionBackground()
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(language.text("AiGoodBro 首页", "AiGoodBro home"))
+            Text(language.text("账号、额度与使用记录", "Accounts, limits and usage"))
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
         }
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -3343,7 +3255,7 @@ struct CodexAccountMenuView: View {
             switch screen {
             case .overview: self = .home
             case .accounts: self = .accounts
-            case .runningTasks: self = .runningTasks
+            case .runningTasks: self = .home
             case .usageDetails: self = .usageDetails
             case .settings: self = .settings
             }
@@ -3458,7 +3370,7 @@ struct CodexAccountMenuView: View {
                         } else {
                             header
                         }
-                        compactUsageOverview
+                        if screen == .home || screen == .usageDetails { compactUsageOverview }
                         Group {
                             switch screen {
                             case .home:
@@ -3466,7 +3378,7 @@ struct CodexAccountMenuView: View {
                             case .accounts:
                                 accounts
                             case .runningTasks:
-                                runningTasks
+                                ScrollView(showsIndicators: true) { home }
                             case .usageDetails:
                                 usageDetails
                             case .settings:
@@ -3636,7 +3548,6 @@ struct CodexAccountMenuView: View {
         HStack(spacing: 2) {
             footerTab(.home, title: text("总览", "Overview"), icon: "rectangle.grid.2x2")
             footerTab(.accounts, title: text("账号", "Accounts"), icon: "person.2")
-            footerTab(.runningTasks, title: text("任务", "Tasks"), icon: "checklist", badge: pendingTaskCount)
             footerTab(.usageDetails, title: text("用量", "Usage"), icon: "chart.xyaxis.line")
             footerTab(.settings, title: text("设置", "Settings"), icon: "gearshape")
         }
@@ -3653,23 +3564,15 @@ struct CodexAccountMenuView: View {
         Button {
             changeScreen(target)
         } label: {
-            VStack(spacing: 2) {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: icon)
-                        .font(.system(size: 12, weight: screen == target ? .semibold : .medium))
-                    if badge > 0 {
-                        Text("\(badge)")
-                            .font(.system(size: 8, weight: .bold))
-                            .padding(.horizontal, 3)
-                            .background(Capsule().fill(Color.accentColor.opacity(0.18)))
-                            .offset(x: 8, y: -6)
-                    }
-                }
-                Text(title)
-                    .font(.system(size: 9, weight: screen == target ? .semibold : .medium))
-                    .lineLimit(1)
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                Text(title).lineLimit(1)
+                if badge > 0 { Text("\(badge)").font(.caption2.monospacedDigit()) }
             }
-            .frame(maxWidth: .infinity)
+            .font(.system(size: 11, weight: screen == target ? .semibold : .regular))
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .background(screen == target ? Color.accentColor.opacity(0.12) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -3682,7 +3585,7 @@ struct CodexAccountMenuView: View {
         switch screen {
         case .home: return text("总览", "Overview")
         case .accounts: return text("账号与额度", "Accounts & Quota")
-        case .runningTasks: return text("运行任务", "Running Tasks")
+        case .runningTasks: return text("总览", "Overview")
         case .usageDetails: return text("用量明细", "Usage Details")
         case .settings: return text("设置", "Settings")
         }
@@ -3725,8 +3628,6 @@ struct CodexAccountMenuView: View {
                 alignment: .leading
             )
             Spacer(minLength: 4)
-            Button(text("任务", "Tasks")) { changeScreen(.runningTasks) }
-                .buttonStyle(.plain)
             Button(text("管理账号", "Manage accounts")) { changeScreen(.accounts) }
         }
         .padding(.horizontal, 15)
@@ -5140,8 +5041,8 @@ private struct ProfileRow: View {
                 ScrollView(.horizontal, showsIndicators: true) { editControls }
             }
         }
-        .padding(.horizontal, layout == .cards ? 10 : 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .cardBackground(cornerRadius: layout == .cards ? 14 : 12, elevated: isMonitoring)
         .overlay(
             RoundedRectangle(cornerRadius: layout == .cards ? 14 : 12, style: .continuous)
@@ -5159,24 +5060,19 @@ private struct ProfileRow: View {
         }
     }
 
-    /// The card footer has the same rows as LocalCLIWorkspaceView's embedded
-    /// cards. Empty timestamp space is intentional: local CLI results expose a
-    /// fetched-at time while Codex exposes the official reset summary instead.
-    /// Both remain aligned when either optional value is absent.
+    /// Keep primary actions visible and less frequent model controls expandable.
     private var cardFooter: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Divider().opacity(0.4)
-            cardPreferenceRow
-                .frame(minHeight: AccountCardFooterSlots.preferenceRow, alignment: .leading)
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
             cardActionRow
-                .frame(minHeight: AccountCardFooterSlots.firstActionRow, alignment: .leading)
-            dispatchControls
-                .frame(minHeight: AccountCardFooterSlots.secondaryRow, alignment: .leading)
-            Color.clear
-                .frame(maxWidth: .infinity).frame(height: AccountCardFooterSlots.timestamp)
-                .accessibilityHidden(true)
-            officialResetSummary
-                .frame(minHeight: AccountCardFooterSlots.resetSummary, alignment: .topLeading)
+            DisclosureGroup(language.text("模型与调度", "Model and scheduling")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    cardPreferenceRow
+                    dispatchControls
+                }
+                .padding(.top, 8)
+            }
+            .font(.caption)
         }
         .controlSize(.small)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -5260,7 +5156,7 @@ private struct ProfileRow: View {
                     .foregroundStyle(membershipTint(activeUntil))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let warmUpStatus,
+            if let warmUpStatus, WarmUpStatusText.criticalPhrases.contains(where: { warmUpStatus.contains($0) }),
                 let summary = WarmUpStatusText.summary(warmUpStatus, fiveHourReset: fiveHourResetsAt, sevenDayReset: resetsAt, language: language)
             {
                 let compactSummary =
@@ -5285,7 +5181,6 @@ private struct ProfileRow: View {
             if linkedAccountName == nil, creditBalance.value != .unavailable {
                 CreditBalanceView(presentation: creditBalance)
             }
-            if layout != .cards { officialResetSummary }
             if let resetReminder = SevenDayResetReminder.message(resetsAt: resetsAt, now: currentDate, language: language) {
                 Label(resetReminder, systemImage: "exclamationmark.circle.fill")
                     .font(.caption2.weight(.bold))
@@ -5486,10 +5381,14 @@ private struct ProfileRow: View {
     }
 
     private var primaryControls: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            cardPreferenceRow
+        VStack(alignment: .leading, spacing: 10) {
             cardActionRow
-            dispatchControls
+            DisclosureGroup(language.text("模型与调度", "Model and scheduling")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    cardPreferenceRow
+                    dispatchControls
+                }.padding(.top, 8)
+            }.font(.caption)
         }
         .controlSize(.small)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -17,16 +17,24 @@ struct PublicResetTranslationModel {
 
     enum State: Equatable {
         case notRequested
+        case downloadRequired
         case preparing
         case translating
         case translated(String, vetted: Bool)
         case unavailable
     }
 
+    enum LanguageResources {
+        case installed
+        case requiresDownload
+        case unsupported
+    }
+
     struct Request: Equatable {
         let key: Key
         let original: String
         let generation: UUID
+        let allowsResourcePreparation: Bool
     }
 
     private var states: [Key: State] = [:]
@@ -34,8 +42,23 @@ struct PublicResetTranslationModel {
 
     static func vettedTranslation(_ original: String) -> String? {
         // Compare bytes: Swift String equality otherwise permits canonical equivalence.
-        original.utf8.elementsEqual("Reset all propagated. Sweet dreams.".utf8)
-            ? "额度重置已全部完成。晚安，好梦。" : nil
+        let known = "Reset all propagated. Sweet dreams."
+        let translation = "额度重置已全部完成。晚安，好梦。"
+        if original.utf8.elementsEqual(known.utf8) { return translation }
+        guard original.utf8.starts(with: known.utf8) else { return nil }
+        let suffix = String(decoding: original.utf8.dropFirst(known.utf8.count), as: UTF8.self)
+        guard suffix.first?.isWhitespace == true else { return nil }
+        let parts = suffix.split(whereSeparator: \.isWhitespace)
+        guard parts.count == 1, let link = parts.first,
+            let components = URLComponents(string: String(link)),
+            let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
+            let host = components.host, !host.isEmpty,
+            components.user == nil, components.password == nil,
+            components.url?.absoluteString == String(link)
+        else { return nil }
+        // Only an independent trailing URL may accompany the exact vetted sentence.
+        // The view retains the complete original, including that URL.
+        return translation
     }
 
     static func isForecast(_ original: String) -> Bool {
@@ -53,20 +76,30 @@ struct PublicResetTranslationModel {
         return states[key] ?? .notRequested
     }
 
-    mutating func begin(key: Key, original: String, supported: Bool) -> Request? {
+    mutating func begin(key: Key, original: String, resources: LanguageResources, userInitiated: Bool = false) -> Request? {
         guard key == Key(eventID: key.eventID, original: original), active[key] == nil else { return nil }
         if case .translated = state(for: key, original: original) { return nil }
-        guard supported else {
+        guard resources != .unsupported else {
             states[key] = .unavailable
             return nil
         }
-        let request = Request(key: key, original: original, generation: UUID())
+        guard resources == .installed || userInitiated else {
+            states[key] = .downloadRequired
+            return nil
+        }
+        let request = Request(key: key, original: original, generation: UUID(), allowsResourcePreparation: userInitiated)
         active[key] = request
         states[key] = .preparing
         return request
     }
 
     func owns(_ request: Request) -> Bool { active[request.key] == request }
+
+    mutating func requireDownload(_ request: Request) {
+        guard owns(request) else { return }
+        active[request.key] = nil
+        states[request.key] = .downloadRequired
+    }
 
     mutating func prepared(_ request: Request) {
         guard owns(request) else { return }

@@ -26,16 +26,14 @@ struct TokenMonitorFloatingBubbleView: View {
     }
 
     private var collapsedHandle: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(.ultraThinMaterial)
-            .overlay {
-                Capsule().fill(Color.accentColor.opacity(0.85)).frame(width: 4, height: 18)
-            }
-            .frame(
-                width: TokenMonitorFloatingBubbleGeometry.handleWidth,
-                height: TokenMonitorFloatingBubbleGeometry.handleHeight
-            )
-            .onTapGesture(perform: onToggle)
+        Button(action: onToggle) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.regularMaterial)
+                .overlay { Capsule().fill(Color.accentColor).frame(width: 4, height: 18) }
+                .frame(width: TokenMonitorFloatingBubbleGeometry.handleWidth, height: TokenMonitorFloatingBubbleGeometry.handleHeight)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(language.text("展开悬浮窗", "Expand floating bubble"))
             .help(language.text("展开悬浮窗", "Expand floating bubble"))
     }
 
@@ -51,7 +49,7 @@ struct TokenMonitorFloatingBubbleView: View {
                     Image(systemName: "slider.horizontal.3").font(.caption)
                 }.buttonStyle(.plain).help(language.text("自定义悬浮窗", "Customize bubble"))
                 Button(action: onToggle) {
-                    Image(systemName: "chevron.right").font(.caption)
+                    Image(systemName: side == "right" ? "chevron.right" : "chevron.left").font(.caption)
                 }.buttonStyle(.plain).help(language.text("收起", "Collapse"))
             }
             if !snapshot.accountName.isEmpty {
@@ -94,10 +92,10 @@ struct TokenMonitorFloatingBubbleView: View {
         }
         .padding(12)
         .frame(width: 280, alignment: side == "right" ? .trailing : .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
         }
     }
 
@@ -175,16 +173,27 @@ struct TokenMonitorFloatingBubbleEditor: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            VStack(spacing: 12) {
-                ScrollView(.vertical) {
-                    editorContent(width: geometry.size.width - 40)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if embeddedInSettings {
+                VStack(alignment: .leading, spacing: 20) {
+                    preview.frame(maxWidth: .infinity)
+                    controls
+                    Divider()
+                    editorActions
                 }
-                Divider()
-                editorActions
+            } else {
+                GeometryReader { geometry in
+                    VStack(spacing: 12) {
+                        ScrollView(.vertical) {
+                            editorContent(width: geometry.size.width - 40)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Divider()
+                        editorActions
+                    }
+                    .padding(20)
+                }
             }
-            .padding(20)
         }
     }
 
@@ -253,9 +262,15 @@ struct TokenMonitorFloatingBubbleEditor: View {
 
     private var editorActions: some View {
         HStack {
-            Button(language.text("在桌面显示", "Show on desktop")) {
-                preferences = session.saved(enabled: true)
-                onShowDesktop()
+            Button(preferences.enabled
+                   ? language.text("隐藏悬浮窗", "Hide floating bubble")
+                   : language.text("在桌面显示", "Show on desktop")) {
+                if preferences.enabled {
+                    preferences.enabled = false
+                } else {
+                    preferences = session.saved(enabled: true)
+                    onShowDesktop()
+                }
             }
             Spacer()
             Button(language.text("取消", "Cancel")) {

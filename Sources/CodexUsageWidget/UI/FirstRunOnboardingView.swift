@@ -19,7 +19,7 @@ struct FirstRunOnboardingView: View {
             Divider()
             footer
         }
-        .frame(width: 720, height: 560)
+        .frame(width: 680, height: 560)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { onboarding.begin() }
         .onExitCommand(perform: backOrSkip)
@@ -44,9 +44,9 @@ struct FirstRunOnboardingView: View {
 
     private var stepCaption: String {
         switch onboarding.step {
-        case .purpose: return language.text("选择工作台样子。可随时跳过。", "Choose a workspace. You can skip.")
+        case .purpose: return language.text("了解主页，然后选择要使用的平台。", "Explore the workspace, then choose your platform.")
         case .connect: return language.text("选一个服务，不会现在登录或安装。", "Pick one service. No sign-in or install yet.")
-        case .result: return language.text("先看一次额度。进入工作台才算完成。", "See a quota once. Entering the workspace finishes setup.")
+        case .result: return language.text("准备好后，进入平台连接账号。", "Open the provider when you are ready to connect an account.")
         }
     }
 
@@ -59,46 +59,25 @@ struct FirstRunOnboardingView: View {
     }
 
     private var purposePage: some View {
-        VStack(alignment: .leading, spacing: WorkspaceVisualMetrics.Space.md) {
-            Text(language.text("你主要想做什么？", "What do you want to do first?"))
-                .font(WorkspaceVisualMetrics.titleFont())
-            HStack(alignment: .top, spacing: WorkspaceVisualMetrics.Space.sm) {
-                modeCard(
-                    mode: .simple,
-                    title: language.text("极简", "Simple"),
-                    detail: language.text("看清额度，少打扰。新用户默认。", "See limits with less chrome. Default for new users.")
-                )
-                modeCard(
-                    mode: .professional,
-                    title: language.text("专业", "Professional"),
-                    detail: language.text("筛选、任务和历史都留在同一套卡片上。", "Filters, tasks and history on the same cards.")
-                )
-            }
-            OnboardingModePreview(mode: onboarding.selectedMode, language: language)
+        VStack(alignment: .leading, spacing: 24) {
+            AHBrandSymbol(size: 48)
+            Text(language.text("把账号和额度放在一起", "Your accounts and limits, together"))
+                .font(.system(size: 26, weight: .semibold))
+            guideRow("megaphone", language.text("及时看到重置消息", "Catch reset updates"), language.text("首页保留中文、原文与来源，时间统一为北京时间。", "Home shows the original, translation and source, with Beijing time."))
+            guideRow("chart.bar.xaxis", language.text("看清使用记录", "Understand your usage"), language.text("在日历、趋势和模型明细中查看已采集的 Token。", "Explore collected tokens by calendar, trend and model."))
+            guideRow("terminal", language.text("从账号开始使用", "Start from an account"), language.text("查看可用额度，选择模型，再进入终端或切换 Desktop。", "Check availability, choose a model, then open a terminal or switch Desktop."))
         }
     }
 
-    private func modeCard(mode: WorkspaceDisplayMode, title: String, detail: String) -> some View {
-        let selected = onboarding.selectedMode == mode
-        return Button {
-            onboarding.selectedMode = mode
-        } label: {
-            VStack(alignment: .leading, spacing: WorkspaceVisualMetrics.Space.xs) {
-                Text(title).font(WorkspaceVisualMetrics.titleFont())
-                Text(detail)
-                    .font(WorkspaceVisualMetrics.bodyFont())
-                    .foregroundStyle(.secondary)
+    private func guideRow(_ symbol: String, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: symbol).font(.system(size: 18)).foregroundStyle(.tint).frame(width: 24)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.headline)
+                Text(detail).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(WorkspaceVisualMetrics.cardPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: WorkspaceVisualMetrics.cardCorner, style: .continuous)
-                    .strokeBorder(selected ? Color.accentColor : FixedVisualPalette.surfaceStrokeSubtle, lineWidth: selected ? 2 : 0.8)
-            )
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var connectPage: some View {
@@ -128,23 +107,18 @@ struct FirstRunOnboardingView: View {
     }
 
     private var resultPage: some View {
-        VStack(alignment: .leading, spacing: WorkspaceVisualMetrics.Space.md) {
-            Text(language.text("第一次结果", "First result"))
-                .font(WorkspaceVisualMetrics.titleFont())
-            if let connectedExample {
-                AccountQuotaCard(model: connectedExample, size: onboarding.selectedMode == .simple ? .compactTile : .standard)
-            } else {
-                AccountQuotaCard(
-                    model: AccountQuotaCardModel.example(
-                        providerID: onboarding.selectedProviderID ?? AgentNavCatalog.codexID,
-                        language: language
-                    ),
-                    size: onboarding.selectedMode == .simple ? .compactTile : .standard
-                )
+        VStack(alignment: .leading, spacing: 20) {
+            let providerID = onboarding.selectedProviderID ?? AgentNavCatalog.codexID
+            HStack(spacing: 12) {
+                ProviderMark(providerID: providerID, slot: .navigation)
+                Text(AgentNavCatalog.displayName(providerID)).font(.title2.weight(.semibold))
             }
-            Text(language.text("失败时显示原因和重试；未知显示待获取，不会用演示数字冒充真实额度。", "Failures show a reason and retry. Unknown stays unknown. Demo numbers are labeled Example."))
-                .font(WorkspaceVisualMetrics.metaFont())
-                .foregroundStyle(.secondary)
+            if let connectedExample {
+                AccountQuotaCard(model: connectedExample, size: .standard)
+            } else {
+                guideRow("person.badge.plus", language.text("连接你的账号", "Connect your account"), language.text("进入平台后添加账号，或关联本机已有配置。登录在官方页面完成。", "Add an account or link an existing local configuration. Sign-in takes place on the official page."))
+                guideRow("arrow.clockwise", language.text("读取后再使用", "Read limits before starting"), language.text("账号连接后刷新额度。没有读到的数据会保留为未知。", "Refresh limits after connecting. Missing data stays unknown."))
+            }
         }
     }
 

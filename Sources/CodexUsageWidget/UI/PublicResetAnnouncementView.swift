@@ -174,19 +174,24 @@ private struct PublicResetTranslationContent: View {
             AnnouncementOriginalText(text: original, language: language, compact: compact)
             switch store.model.state(for: key, original: original) {
             case .notRequested:
-                Button(language.text("翻译为简体中文", "Translate to Simplified Chinese")) { start() }
+                Button(language.text("翻译为简体中文", "Translate to Simplified Chinese")) { start(resources: .requiresDownload, userInitiated: true) }
+            case .downloadRequired:
+                Text(language.text("需下载中英文语言包；原文可直接阅读。", "English and Simplified Chinese language downloads are required; the original is available."))
+                Button(language.text("下载语言包并翻译", "Download languages and translate")) { start(resources: .requiresDownload, userInitiated: true) }
             case .preparing:
-                Text(language.text("正在准备系统翻译；系统可能请求下载语言包…", "Preparing system translation; macOS may request a language download…"))
+                Text(language.text("正在准备系统翻译…", "Preparing system translation…"))
             case .translating:
                 Text(language.text("系统翻译中…", "Translating with macOS…"))
             case .translated(let text, let vetted):
-                Text(vetted ? language.text("已核对译文", "Vetted translation") : language.text("系统翻译 · 简体中文", "System translation · Simplified Chinese"))
-                    .foregroundStyle(.secondary)
+                if !compact {
+                    Text(vetted ? language.text("已核对译文", "Vetted translation") : language.text("系统翻译 · 简体中文", "System translation · Simplified Chinese"))
+                        .foregroundStyle(.secondary)
+                }
                 Text(verbatim: text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             case .unavailable:
                 Text(language.text("系统翻译暂不可用；请阅读原文。", "System translation unavailable; read the original."))
                 if supported {
-                    Button(language.text("重试翻译", "Retry translation")) { start() }
+                    Button(language.text("重试翻译", "Retry translation")) { start(resources: .requiresDownload, userInitiated: true) }
                 } else {
                     Text(language.text("需要 macOS 15 或更新版本及支持翻译的构建。", "Requires macOS 15 or later and a translation-enabled build."))
                 }
@@ -199,8 +204,8 @@ private struct PublicResetTranslationContent: View {
             #endif
         }
         .font(.caption)
-        .onAppear {
-            if case .notRequested = store.model.state(for: key, original: original) { start() }
+        .task {
+            await startAutomatically()
         }
         .onDisappear {
             if let request { store.model.cancel(request) }
@@ -208,8 +213,37 @@ private struct PublicResetTranslationContent: View {
         }
     }
 
-    private func start() {
-        request = store.model.begin(key: key, original: original, supported: supported)
+    private var mayStartAutomatically: Bool {
+        switch store.model.state(for: key, original: original) {
+        case .notRequested, .downloadRequired: return true
+        default: return false
+        }
+    }
+
+    private func startAutomatically() async {
+        guard mayStartAutomatically else { return }
+        var resources: PublicResetTranslationModel.LanguageResources = .unsupported
+        #if canImport(Translation) && compiler(>=6.0)
+            if #available(macOS 15.0, *) {
+                let status = await LanguageAvailability().status(
+                    from: Locale.Language(identifier: "en"), to: Locale.Language(identifier: "zh-Hans")
+                )
+                switch status {
+                case .installed: resources = .installed
+                case .supported: resources = .requiresDownload
+                case .unsupported: resources = .unsupported
+                @unknown default: resources = .unsupported
+                }
+            }
+        #endif
+        guard !Task.isCancelled, mayStartAutomatically else { return }
+        start(resources: resources)
+    }
+
+    private func start(resources: PublicResetTranslationModel.LanguageResources, userInitiated: Bool = false) {
+        if let next = store.model.begin(key: key, original: original, resources: supported ? resources : .unsupported, userInitiated: userInitiated) {
+            request = next
+        }
     }
 }
 
@@ -241,7 +275,13 @@ private struct PublicResetTranslationContent: View {
                 )
                 try Task.checkCancellation()
                 guard status != .unsupported, store.model.owns(request) else { return }
-                try await session.prepareTranslation()
+                guard status == .installed || request.allowsResourcePreparation else {
+                    store.model.requireDownload(request)
+                    return
+                }
+                if request.allowsResourcePreparation {
+                    try await session.prepareTranslation()
+                }
                 try Task.checkCancellation()
                 guard store.model.owns(request) else { return }
                 store.model.prepared(request)

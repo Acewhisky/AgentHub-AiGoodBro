@@ -156,9 +156,15 @@
     const available = [...state.byDate.values()].filter(r => r.date >= start && r.date <= end).sort((a,b) => a.date.localeCompare(b.date));
     const rows = available.filter(r => dimension(r, field)?.some(([,v]) => amount(v?.tokens) !== null)).map(r => ({date:r.date, [field]:Object.fromEntries(dimension(r, field).filter(([,v]) => amount(v?.tokens) !== null).map(([k,v]) => [k,{tokens:v.tokens}]))}));
     if (!rows.length) { $('bars').textContent = t('此范围未提供该维度','Dimension unavailable in this range'); $('legend').textContent = t('无法从每日总量推断模型或工具分组。','No model/tool grouping inferred from daily totals.'); return; }
-    const model = api.dailyBarsChart(rows,{width:650,height:150,stackBy:$('group').value,metric:'tokens'});
+    const model = api.dailyBarsChart(rows,{width:state.width,height:150,padLeft:56,stackBy:$('group').value,metric:'tokens'});
     const colorFor = k => `hsl(${(model.keys.indexOf(k)*67+205)%360},65%,52%)`;
-    $('bars').innerHTML = api.barsChartSvg(model,{colorFor,titleOf:b => describe(b.label),axisLabel:b => b.label.slice(5),yTicks:3});
+    const labelStride = Math.max(1, Math.ceil(rows.length / Math.max(2, Math.floor(model.plot.w / 72))));
+    const tickFormat = new Intl.NumberFormat(language === 'en' ? 'en-US' : 'zh-CN', {notation:'compact',maximumFractionDigits:1});
+    $('bars').innerHTML = api.barsChartSvg(model,{
+      colorFor,titleOf:b => describe(b.label),
+      axisLabel:(b,i) => i % labelStride === 0 ? b.label.slice(5) : '',
+      yTicks:3,formatTick:value => tickFormat.format(value)
+    });
     $('legend').textContent = `${start} – ${end} · ${t('已观察 Token；未提供的维度已略过，完整性未确认','observed tokens; unavailable dimensions omitted, completeness unconfirmed')}\n`;
     for (const k of model.keys) { const item = document.createElement('span'); item.textContent = `● ${publicText(k)}  `; item.style.color = colorFor(k); $('legend').appendChild(item); }
     $('bars').querySelectorAll('[data-i]').forEach(el => bindDate(el,rows[Number(el.getAttribute('data-i'))].date));
@@ -196,7 +202,9 @@
     document.querySelectorAll('[data-mode]').forEach(el => { el.hidden = false; });
     for (const id of ['context','month','selection']) $(id).hidden = false;
     const previous = state;
+    const previousFrom = $('from').value, previousTo = $('to').value;
     state = normalize(input,options.resetAnnotations);
+    state.width = Number.isFinite(options.width) ? Math.max(320,Math.min(2000,options.width)) : 650;
     $('context').textContent = `${t('年度活动','Annual activity')} · ${publicText(input.timezone)} · ${t('总量由原生统计提供','Total supplied by native statistics')} · ${t('公开重置公告不代表个人窗口重置','Public reset announcements do not establish personal resets')}`;
     const rows = [...state.byDate.values()].filter(r => amount(r.tokens) !== null);
     const intensities = api.computeHeatmapIntensities(rows).map(r => ({...r,intensity:r.tokenIntensity}));
@@ -211,7 +219,9 @@
       if (status(key) === 'unknown') { el.removeAttribute('data-t'); el.removeAttribute('data-cost'); }
       bindDate(el,key);
     });
-    $('from').value = state.calendar.cells[0].date; $('to').value = state.end;
+    const retainRange = previous && day(previousFrom) && day(previousTo) && previousFrom <= previousTo && previousTo <= state.end;
+    $('from').value = retainRange ? previousFrom : state.calendar.cells[0].date;
+    $('to').value = retainRange ? previousTo : state.end;
     select(previous?.selected && day(previous.selected) && previous.selected <= state.end ? previous.selected : state.end);
     mode(previous?.mode || 'overview');
     installedSnapshot = snapshotID != null ? {id:snapshotID,input} : undefined;

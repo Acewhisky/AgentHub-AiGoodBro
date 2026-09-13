@@ -64,7 +64,7 @@ struct NextSetupGuideView: View {
         VStack(alignment: .leading, spacing: 28) {
             VStack(alignment: .leading, spacing: 5) {
                 Label {
-                    Text("AgentHub")
+                    Text("AiGoodBro")
                 } icon: {
                     AHBrandSymbol(size: 24)
                 }.font(.headline)
@@ -279,31 +279,9 @@ struct NextSetupGuideView: View {
     private var featuresPage: some View {
         VStack(alignment: .leading, spacing: 18) {
             heading(
-                language.text("功能默认全开，按需调整", "On by default, yours to adjust"),
+                language.text("按需设置自动维护", "Set up automatic maintenance"),
                 language.text("已保存的选择会保留。暖号会发送最小请求，消耗少量额度。", "Saved choices are kept. Warm-up sends a minimal request and uses a small amount of quota.")
             )
-            VStack(alignment: .leading, spacing: 8) {
-                Text(language.text("工作台显示", "Workspace display"))
-                    .font(.subheadline.weight(.semibold))
-                Picker(language.text("工作台显示", "Workspace display"), selection: $settings.workspaceDisplayMode) {
-                    ForEach(WorkspaceDisplayMode.allCases, id: \.self) { mode in
-                        Text(mode.title(language)).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 280)
-                .accessibilityLabel(language.text("工作台显示", "Workspace display"))
-                Text(
-                    language.text(
-                        "专业版保留当前完整主页并默认展开；极简版减少信息，可在总览、账号卡片或自定义模块中选择。",
-                        "Professional keeps the current Home, expanded. Simple reduces information and lets you choose Overview, Account cards, or custom modules."
-                    )
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
             HStack {
                 Text(language.text("\(store.enabledSetupFeatureCount) / 7 项已开启", "\(store.enabledSetupFeatureCount) of 7 enabled"))
                     .font(.caption.weight(.medium)).foregroundStyle(.secondary)

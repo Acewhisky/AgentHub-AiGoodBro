@@ -15,7 +15,7 @@ enum SettingsPresentationSelfTest {
             if !condition { failures.append(message) }
         }
 
-        expect(SettingsPage.allCases == [.appearance, .menuBar, .automation, .workspace, .about], "all five direct settings pages remain reachable")
+        expect(SettingsPage.allCases == [.appearance, .menuBar, .floatingBubble, .automation, .workspace, .about], "all six settings categories remain reachable")
         expect(AHBrandIdentity.displayName == "AiGoodBro", "settings chrome uses the AiGoodBro display name")
         expect(AHBrandIdentity.shortName == "AH", "settings chrome uses the AH short name")
         expect(AHBrandIdentity.workspaceName == "AgentHub", "the in-app workspace name remains AgentHub")
@@ -132,6 +132,20 @@ enum SettingsPresentationSelfTest {
                 scheme: .dark,
                 to: outputRoot.appendingPathComponent("synthetic-settings-menubar-zh-dark@2x.png")
             )
+            // Render the complete native settings surface, including the wide
+            // floating preview and source picker that used to share a popover.
+            for page in SettingsPage.allCases {
+                for scheme in [ColorScheme.light, .dark] {
+                    let standalone = SettingsPanelView(
+                        settings: settings, store: store, updateStore: updateStore,
+                        onOpenPaletteLibrary: {}, initialPage: page
+                    )
+                    try WorkspacePreviewRenderer.renderView(
+                        standalone, size: NSSize(width: 780, height: 640), scheme: scheme,
+                        to: outputRoot.appendingPathComponent("synthetic-settings-0913v3-\(page.rawValue)-\(scheme)@2x.png")
+                    )
+                }
+            }
             AHSettingsHeaderContext.shared.currentPage = nil
         } catch {
             failures.append("could not write synthetic settings captures")

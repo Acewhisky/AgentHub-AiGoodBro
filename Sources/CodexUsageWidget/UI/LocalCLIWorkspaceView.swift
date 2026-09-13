@@ -244,7 +244,6 @@ struct LocalCLIWorkspaceView: View {
                     Text(fresh ? result.sourceLabel : language.text("上次快照 · 请刷新", "Previous snapshot · Refresh needed"))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
-                DisclosureGroup(language.text("模型与来源", "Models & source")) { modelAvailabilitySummary(for: profile) }.font(.caption2)
             }.frame(minWidth: layout == .rows ? 170 : nil, maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 6) {
                 Label(state.title(language), systemImage: state.symbol)
@@ -270,27 +269,9 @@ struct LocalCLIWorkspaceView: View {
                 }
             }
             .frame(width: layout == .rows ? 168 : nil)
-            // Mirrors ProfileRow's Spacer: the quota block absorbs the row height
-            // AccountCardGridLayout proposes so every card in a row shares one height
-            // and footer controls share one baseline.
-            // maxWidth 弹性仅限 cards；rows 必须保持 168 固定列，
-            // 否则会与头部列分摊剩余宽度，额度列起点左移、与 ProfileRow 列不对齐。
             .frame(maxWidth: layout == .cards ? .infinity : nil, maxHeight: layout == .cards ? .infinity : nil, alignment: .topLeading)
-            VStack(alignment: .leading, spacing: layout == .cards ? 5 : 6) {
-                if layout == .cards { Divider().opacity(0.4) }
-                if layout == .cards {
-                    // Codex's compact execution-preference row occupies the
-                    // first footer slot even when a local provider has no
-                    // equivalent control. Keeping it empty preserves the
-                    // first action baseline without changing functionality.
-                    Button {
-                        preparationProfile = profile
-                    } label: {
-                        Label(language.text("调用准备", "Call preparation"), systemImage: "checklist")
-                            .font(.caption2).frame(maxWidth: .infinity, alignment: .leading)
-                    }.buttonStyle(.plain).foregroundStyle(.secondary)
-                        .frame(minHeight: AccountCardFooterSlots.preferenceRow)
-                }
+            VStack(alignment: .leading, spacing: 10) {
+                if layout == .cards { Divider() }
                 HStack(spacing: 6) {
                     primaryAction(profile)
                     Button(language.text("详情", "Details")) {
@@ -306,59 +287,46 @@ struct LocalCLIWorkspaceView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .frame(minHeight: layout == .cards ? AccountCardFooterSlots.firstActionRow : nil, alignment: .leading)
-                if layout == .cards {
-                    // Codex keeps dispatch participation in a secondary row;
-                    // local cards do not have that control, but the slot stays
-                    // present so provider cards share the same footer geometry.
-                    Color.clear
-                        .frame(maxWidth: .infinity).frame(height: AccountCardFooterSlots.secondaryRow)
-                        .accessibilityHidden(true)
-                }
-                if layout == .cards {
-                    // Keep refresh progress beside the timestamp slot. This
-                    // avoids moving the action baseline while the read runs,
-                    // and the minimum still expands for real content.
-                    HStack(spacing: 6) {
-                        if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
+                DisclosureGroup(language.text("模型与来源", "Models & source")) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        modelAvailabilitySummary(for: profile)
+                        Button {
+                            preparationProfile = profile
+                        } label: {
+                            Label(language.text("调用准备", "Call preparation"), systemImage: "checklist")
+                        }.buttonStyle(.bordered).controlSize(.small)
                         if let date = result?.fetchedAt {
-                            Text(date, style: .time).font(.caption2).foregroundStyle(.secondary)
+                            Text(language.text("更新于 ", "Updated ") + language.dateTime(date))
+                                .font(.caption2).foregroundStyle(.secondary)
                         }
+                    }.padding(.top, 8)
+                }.font(.caption)
+                if model.refreshing.contains(profile.id) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(language.text("正在刷新…", "Refreshing…")).font(.caption).foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity, minHeight: AccountCardFooterSlots.timestamp, alignment: .leading)
-                } else {
-                    if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
-                    if let date = result?.fetchedAt { Text(date, style: .time).font(.caption2).foregroundStyle(.secondary) }
                 }
-                if layout == .cards {
-                    // 共同页脚槽位：镜像 ProfileRow 的 officialResetSummary 沉底区，
-                    // 重置卡/到期警示信息保留但不占头部槽位. The minimum
-                    // allows the parent's official-link/reset additions to grow.
-                    VStack(alignment: .leading, spacing: 0) {
-                        if kind == .grok, result?.resetCards == nil, let officialUsageURL {
-                            grokResetLookupLink(destination: officialUsageURL)
-                                .font(.caption2)
-                        } else if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
-                            Label(summary, systemImage: "creditcard")
-                                .font(.caption2)
-                                .foregroundStyle(expiring ? FixedVisualPalette.statusDanger : Color.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        if expiring {
-                            Text(ResetCardPresentation.expiringLabelText(language: language))
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                if layout == .cards, kind == .grok {
+                    if result?.resetCards == nil, let officialUsageURL {
+                        grokResetLookupLink(destination: officialUsageURL).font(.caption2)
+                    } else if let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
+                        Label(summary, systemImage: "creditcard")
+                            .font(.caption2).foregroundStyle(expiring ? FixedVisualPalette.statusDanger : Color.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .frame(maxWidth: .infinity, minHeight: AccountCardFooterSlots.resetSummary, alignment: .topLeading)
+                    if expiring {
+                        Text(ResetCardPresentation.expiringLabelText(language: language))
+                            .font(.caption2.weight(.semibold)).foregroundStyle(FixedVisualPalette.statusDanger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .frame(width: layout == .rows ? 290 : nil)
             .frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .leading)
         }
-        .padding(.horizontal, layout == .cards ? 10 : 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .cardBackground(cornerRadius: layout == .cards ? 14 : 12)
         .overlay {
             if expiring {

@@ -122,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private lazy var updateStore = AppUpdateStore(settings: settings)
     private var window: MainAppWindow?
     private var paletteLibraryWindow: NSWindow?
+    private var settingsWindow: NSWindow?
     private var taskOverviewController: TaskOverviewPanelController?
     private var accountFloatingPanelController: AccountFloatingPanelController?
     /// token-monitor 风格悬浮窗。此前视图已编译进 App 但无人创建，这里负责真正挂到桌面浮层。
@@ -132,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private weak var taskOverviewMenuItem: NSMenuItem?
     private var titlebarToolbarController: NSTitlebarAccessoryViewController?
     private let screenshotRequests = PassthroughSubject<NSWindow, Never>()
+    private let guideRequests = PassthroughSubject<Void, Never>()
     private var statusItem: NSStatusItem?
     private var statusPopover: NSPopover?
     private var statusPopoverEventMonitors: [Any] = []
@@ -221,6 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 settings: settings,
                 paletteCatalog: paletteCatalog,
                 screenshotRequests: screenshotRequests.eraseToAnyPublisher(),
+                guideRequests: guideRequests.eraseToAnyPublisher(),
                 localCLIAccounts: localCLIAccounts
             ),
             cornerRadius: CodexAccountManagerView.windowCornerRadius
@@ -378,6 +381,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 onSaveScreenshot: { [weak self] in
                     guard let self, let window = self.window else { return }
                     self.screenshotRequests.send(window)
+                },
+                onOpenGuide: { [weak self] in
+                    self?.guideRequests.send(())
                 }
             )
         )
@@ -637,6 +643,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 keyEquivalent: "q"
             ))
 
+        let editMenuItem = NSMenuItem()
+        mainMenu.addItem(editMenuItem)
+        let editMenu = NSMenu(title: language.text("编辑", "Edit"))
+        editMenuItem.submenu = editMenu
+        editMenu.addItem(NSMenuItem(title: language.text("撤销", "Undo"), action: Selector(("undo:")), keyEquivalent: "z"))
+        let redoItem = NSMenuItem(title: language.text("重做", "Redo"), action: Selector(("redo:")), keyEquivalent: "z")
+        redoItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redoItem)
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: language.text("剪切", "Cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: language.text("复制", "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: language.text("粘贴", "Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: language.text("全选", "Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: language.text("显示", "View"))
@@ -653,15 +673,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         mainMenu.addItem(windowMenuItem)
         let windowMenu = NSMenu(title: language.text("窗口", "Window"))
         windowMenuItem.submenu = windowMenu
-        let taskOverviewItem = NSMenuItem(
-            title: language.text("任务概览", "Task Overview"),
-            action: #selector(toggleTaskOverviewFromMenu),
-            keyEquivalent: ""
-        )
-        taskOverviewItem.target = self
-        taskOverviewItem.state = taskOverviewController?.isVisible == true ? .on : .off
-        windowMenu.addItem(taskOverviewItem)
-        taskOverviewMenuItem = taskOverviewItem
+        windowMenu.addItem(NSMenuItem(
+            title: language.text("关闭窗口", "Close Window"),
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"
+        ))
         windowMenu.addItem(.separator())
         let minimizeItem = NSMenuItem(
             title: language.text("最小化", "Minimize"),
@@ -682,9 +698,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func openSettingsWindow() {
-        accountFloatingPanelController?.close()
         closeStatusPopover()
-        showStatusPopover(initialScreen: .settings)
+        if settingsWindow == nil {
+            let panel = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 780, height: 640),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered, defer: false
+            )
+            panel.isReleasedWhenClosed = false
+            panel.contentMinSize = NSSize(width: 740, height: 520)
+            panel.contentViewController = NSHostingController(rootView: SettingsWindowContent(
+                settings: settings, store: store, updateStore: updateStore, localAccounts: localCLIAccounts,
+                onOpenPaletteLibrary: { [weak self] in self?.openPaletteLibraryWindow() }
+            ))
+            panel.center()
+            settingsWindow = panel
+        }
+        guard let panel = settingsWindow else { return }
+        panel.title = settings.language.text("AiGoodBro 设置", "AiGoodBro Settings")
+        NSApp.setActivationPolicy(.regular)
+        if panel.isMiniaturized { panel.deminiaturize(nil) }
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func openPaletteLibraryWindow() {
@@ -738,6 +773,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             .receive(on: RunLoop.main)
             .sink { [weak self] language in
                 self?.paletteLibraryWindow?.title = language.text("配色库", "Palette Library")
+                self?.settingsWindow?.title = language.text("AiGoodBro 设置", "AiGoodBro Settings")
                 self?.setupMainMenu()
                 self?.updateStatusItem()
             }
