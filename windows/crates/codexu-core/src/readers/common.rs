@@ -155,7 +155,8 @@ fn make_local_usage_in_timezone<Tz: TimeZone>(
     let local_date = local_now.date_naive();
     let day_start = local_date_start(local_date, timezone)?;
     let seven_day_start = local_date_start(local_date - chrono::Duration::days(6), timezone)?;
-    let previous_seven_day_start = local_date_start(local_date - chrono::Duration::days(13), timezone)?;
+    let previous_seven_day_start =
+        local_date_start(local_date - chrono::Duration::days(13), timezone)?;
     let month_start = local_date_start(
         NaiveDate::from_ymd_opt(local_now.year(), local_now.month(), 1)
             .expect("a local calendar month always has a first day"),
@@ -209,8 +210,14 @@ fn make_local_usage_in_timezone<Tz: TimeZone>(
     }
 
     let daily_buckets = make_seven_day_buckets(&daily_usage, now, timezone);
-    let usage_trend =
-        make_usage_trend(&daily_usage, &seven_day, &previous_seven_day, &month, now, timezone)?;
+    let usage_trend = make_usage_trend(
+        &daily_usage,
+        &seven_day,
+        &previous_seven_day,
+        &month,
+        now,
+        timezone,
+    )?;
 
     let detailed = DetailedUsage {
         today: today.clone(),
@@ -648,7 +655,9 @@ mod tests {
     }
 
     fn instant(value: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(value).unwrap().with_timezone(&Utc)
+        DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&Utc)
     }
 
     fn assert_boundary(timezone: chrono_tz::Tz, date: &str, boundary: &str, month_tokens: i64) {
@@ -761,7 +770,8 @@ mod tests {
             ("2026-03-01T00:30:00Z", 28.0 / 28.0),
         ] {
             let value =
-                projected_month_cost(1.0, instant(timestamp), &chrono_tz::America::New_York).unwrap();
+                projected_month_cost(1.0, instant(timestamp), &chrono_tz::America::New_York)
+                    .unwrap();
             assert!((value - expected).abs() < f64::EPSILON);
         }
     }
