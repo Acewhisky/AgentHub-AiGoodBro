@@ -9,6 +9,7 @@ final class LocalCLIAccountStore: ObservableObject {
     typealias QuotaLoader = @Sendable (LocalCLIProfile) async -> LocalCLIQuotaResult
     @Published private(set) var profiles: [LocalCLIProfile] = []
     @Published private(set) var installed: [LocalCLIKind: String] = [:]
+    @Published private(set) var workBuddyInstalled: [WorkBuddyEdition: String] = [:]
     @Published private(set) var quotas: [String: LocalCLIQuotaResult] = [:]
     @Published private(set) var stale: Set<String> = []
     @Published private(set) var refreshing: Set<String> = []
@@ -58,7 +59,11 @@ final class LocalCLIAccountStore: ObservableObject {
         let model = LocalCLIAccountStore(home: root, support: root, applicationsDirectory: root)
         model.profiles = profiles
         model.quotas = quotas
-        for profile in profiles { model.installed[profile.kind] = root.appendingPathComponent(profile.kind.commandName).path }
+        for profile in profiles {
+            let executable = root.appendingPathComponent(profile.kind.commandName).path
+            model.installed[profile.kind] = executable
+            if profile.kind == .workBuddy { model.workBuddyInstalled[WorkBuddyEdition.forProfile(profile)] = executable }
+        }
         return model
     }
 
@@ -70,23 +75,27 @@ final class LocalCLIAccountStore: ObservableObject {
     func discover() {
         let fm = FileManager.default
         var found: [LocalCLIKind: String] = [:]
+        var workBuddyFound: [WorkBuddyEdition: String] = [:]
         let applicationRoots = [applicationsDirectory, home.appendingPathComponent("Applications", isDirectory: true)]
         for kind in LocalCLIKind.allCases {
             if kind == .workBuddy {
                 // WorkBuddy ships a product-specific CLI. Never substitute an external
                 // codebuddy/cbc executable, which may belong to another product/account.
-                for applicationRoot in applicationRoots {
-                    let app = applicationRoot.appendingPathComponent("WorkBuddy.app", isDirectory: true)
-                    let cli = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
-                    let electron = app.appendingPathComponent("Contents/MacOS/Electron")
-                    let product = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/product.json")
-                    if regularFile(cli, executable: true), regularFile(electron, executable: true),
-                        regularFile(product, executable: false)
-                    {
-                        found[kind] = cli.path
-                        break
+                for edition in WorkBuddyEdition.allCases {
+                    for applicationRoot in applicationRoots {
+                        let app = applicationRoot.appendingPathComponent(edition.applicationName, isDirectory: true)
+                        let cli = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
+                        let electron = app.appendingPathComponent("Contents/MacOS/Electron")
+                        let product = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/product.json")
+                        if regularFile(cli, executable: true), regularFile(electron, executable: true),
+                            regularFile(product, executable: false)
+                        {
+                            workBuddyFound[edition] = cli.path
+                            break
+                        }
                     }
                 }
+                found[kind] = workBuddyFound[.domestic] ?? workBuddyFound[.international]
                 continue
             }
             if kind == .trae {
@@ -121,6 +130,7 @@ final class LocalCLIAccountStore: ObservableObject {
             }
         }
         installed = found
+        workBuddyInstalled = workBuddyFound
         do {
             let data = try DispatchParticipationSync.readBoundedRegularFile(storageURL, maximumBytes: 256 * 1024, allowMissing: true)
             let decoded = try data.map { try JSONDecoder().decode([LocalCLIProfile].self, from: $0) } ?? []
@@ -172,7 +182,7 @@ final class LocalCLIAccountStore: ObservableObject {
 
     func signIn(_ profile: LocalCLIProfile) {
         guard canSignIn(profile), signingIn.isEmpty,
-            let executable = installed[profile.kind]
+            let executable = executable(for: profile)
         else { return }
         let directory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
         do {
@@ -208,7 +218,15 @@ final class LocalCLIAccountStore: ObservableObject {
                 language.text(
                     "请完成 Z.AI OAuth。登录退出码不代表指定模型已可用，请在 ZCode CLI 中另行确认。",
                     "Complete Z.AI OAuth. A successful sign-in exit does not prove a requested model is available; confirm it separately in ZCode CLI.")
-            case .claudeCode, .trae, .kimi, .mimo, .gemini:
+            case .gemini:
+                language.text(
+                    "在 Gemini CLI 中选择“Login with Google”；已进入对话时输入 /auth。完成浏览器授权后回到这里刷新额度。",
+                    "Choose Login with Google in Gemini CLI, or enter /auth in an existing session. After browser authorization, return here and refresh limits.")
+            case .claudeCode:
+                language.text(
+                    "已打开 Claude Code 官方登录。完成浏览器授权后自动刷新；API 配置与订阅额度分别核验。",
+                    "Official Claude Code sign-in is open. Limits refresh after browser authorization; API configuration and subscription limits are verified separately.")
+            case .trae, .kimi, .mimo:
                 language.text(
                     "请在官方 CLI 中完成登录；凭据只填写在官方终端。",
                     "Complete sign-in in the official CLI and enter credentials only there.")
@@ -241,7 +259,7 @@ final class LocalCLIAccountStore: ObservableObject {
 
     func openCLI(_ profile: LocalCLIProfile, workingDirectory: URL) {
         guard canOpen(profile), !signingIn.contains(profile.id),
-            let executable = installed[profile.kind]
+            let executable = executable(for: profile)
         else { return }
         if profile.kind == .trae {
             let app = URL(fileURLWithPath: executable, isDirectory: true)
@@ -282,15 +300,18 @@ final class LocalCLIAccountStore: ObservableObject {
 
     func canSignIn(_ profile: LocalCLIProfile) -> Bool {
         profile.kind.supportsTerminalSignIn && profiles.contains(profile)
-            && installed[profile.kind] != nil
-            && (profile.kind != .zcode || profile.isDefault)
+            && executable(for: profile) != nil
+            && (!profile.kind.requiresDefaultEnvironmentForLaunch || profile.isDefault)
     }
 
     func canOpen(_ profile: LocalCLIProfile) -> Bool {
         profile.kind.supportsNativeOpen && profiles.contains(profile)
-            && installed[profile.kind] != nil
-            && (profile.kind != .zcode || profile.isDefault)
-            && (profile.kind != .trae || profile.isDefault)
+            && executable(for: profile) != nil
+            && (!profile.kind.requiresDefaultEnvironmentForLaunch || profile.isDefault)
+    }
+
+    func executable(for profile: LocalCLIProfile) -> String? {
+        profile.kind == .workBuddy ? workBuddyInstalled[WorkBuddyEdition.forProfile(profile)] : installed[profile.kind]
     }
 
     func link(kind: LocalCLIKind, directory: URL, name: String) {
@@ -418,6 +439,19 @@ final class LocalCLIAccountStore: ObservableObject {
     private func rebuildProfiles() {
         var result: [LocalCLIProfile] = []
         for kind in LocalCLIKind.allCases where installed[kind] != nil {
+            if kind == .workBuddy {
+                for edition in WorkBuddyEdition.allCases where workBuddyInstalled[edition] != nil {
+                    let directory = home.appendingPathComponent(edition.directoryName).standardizedFileURL.path
+                    result.append(
+                        saved.first { $0.id == edition.defaultProfileID && $0.kind == kind && $0.isDefault && $0.configDirectory == directory }
+                            ?? LocalCLIProfile(
+                                id: edition.defaultProfileID, kind: kind,
+                                displayName: edition == .domestic ? language.text("WorkBuddy 国内版", "WorkBuddy China") : language.text("WorkBuddy 国际版", "WorkBuddy International"),
+                                configDirectory: directory, isDefault: true))
+                }
+                result += saved.filter { $0.kind == kind && !$0.isDefault }
+                continue
+            }
             let id = "local-" + kind.rawValue
             let directory = kind.defaultConfigDirectory(home: home).standardizedFileURL.path
             if let override = saved.first(where: { $0.id == id && $0.kind == kind && $0.isDefault && $0.configDirectory == directory }) {
@@ -485,8 +519,18 @@ final class LocalCLIAccountStore: ObservableObject {
     private func validProfile(_ profile: LocalCLIProfile) -> Bool {
         guard validName(profile.displayName), validDirectory(profile.configDirectory) else { return false }
         if profile.isDefault {
+            if profile.kind == .workBuddy {
+                return WorkBuddyEdition.allCases.contains {
+                    profile.id == $0.defaultProfileID && profile.configDirectory == home.appendingPathComponent($0.directoryName).standardizedFileURL.path
+                }
+            }
             return profile.id == "local-" + profile.kind.rawValue
                 && profile.configDirectory == profile.kind.defaultConfigDirectory(home: home).standardizedFileURL.path
+        }
+        if profile.kind == .workBuddy,
+            WorkBuddyEdition.allCases.contains(where: { profile.configDirectory == home.appendingPathComponent($0.directoryName).standardizedFileURL.path })
+        {
+            return false
         }
         return UUID(uuidString: profile.id) != nil
             && profile.configDirectory != profile.kind.defaultConfigDirectory(home: home).standardizedFileURL.path

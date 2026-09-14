@@ -498,6 +498,34 @@ struct SettingsPanelView: View {
     private var workspacePage: some View {
         VStack(alignment: .leading, spacing: 6) {
             SettingsPickerRow(
+                title: language.text("账号自动刷新", "Automatic account refresh"),
+                detail: language.text(
+                    "调整额度与用量的定时读取；手动刷新随时可用，切号不等待刷新", "Controls scheduled quota and usage reads. Manual refresh stays available; switching does not wait for refresh.")
+            ) {
+                Picker(
+                    language.text("刷新间隔", "Refresh interval"),
+                    selection: Binding(
+                        get: { store.accountRefreshFrequency }, set: { store.setAccountRefreshFrequency($0) })
+                ) {
+                    ForEach(AccountRefreshFrequency.allCases) { frequency in
+                        Text(frequency.label(language)).tag(frequency)
+                    }
+                }
+                .labelsHidden().pickerStyle(.menu).controlSize(.small)
+                .frame(width: settingsAccessoryColumnWidth)
+                .accessibilityIdentifier("next.accounts.refreshFrequency")
+            }
+            SettingsToggleRow(
+                title: language.text("额度不足自动换号", "Switch when quota is low"),
+                detail: language.text("低于阈值时核对备用账号；任务空闲且身份、额度通过检查才切换", "Checks an eligible backup below the threshold, then switches after idle, identity and quota checks pass.")
+            ) {
+                SettingsSwitchToggle(
+                    isOn: Binding(
+                        get: { store.automaticAccountSwitchEnabled }, set: { store.setAutomaticAccountSwitchEnabled($0) })
+                )
+                .disabled(store.pausedAutomationFeatures.contains(.lowQuota))
+            }
+            SettingsPickerRow(
                 title: language.text("统计方式", "Statistics mode"),
                 detail: language.text("主页按所选方式汇总；切换后分别计算，不混加", "The home page uses the selected engine. Each mode keeps its own totals.")
             ) {

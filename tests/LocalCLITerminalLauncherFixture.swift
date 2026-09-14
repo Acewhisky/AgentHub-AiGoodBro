@@ -22,6 +22,7 @@ struct TerminalLaunchSession {
 
     static func create(command: String) throws -> Self { Self() }
     func readState() throws -> State { .pending }
+    func verifiedExitCode() -> Int32? { nil }
     func removeAfterExit() {}
 }
 
@@ -158,6 +159,33 @@ private func testWorkBuddyBundleAndProductIsolation() throws {
     try expect(command.contains("DISABLE_AUTOUPDATER='1'"), "WorkBuddy updater disabled")
     try expect(!command.contains("'login'"), "WorkBuddy sign-in does not become a model prompt")
 
+    let international = root.appendingPathComponent("WorkBuddy AI.app", isDirectory: true)
+    try FileManager.default.copyItem(at: application, to: international)
+    let internationalCLI = international.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
+    var internationalProfile = profile
+    internationalProfile.configDirectory = root.appendingPathComponent("account two/.workbuddy-ai").path
+    try FileManager.default.createDirectory(atPath: internationalProfile.configDirectory, withIntermediateDirectories: true)
+    let internationalCommand = try LocalCLITerminalLauncher.command(
+        profile: internationalProfile, executable: internationalCLI.path, action: .signIn, workingDirectory: workingDirectory)
+    try expect(
+        internationalCommand.contains("WORKBUDDY_DATA_FOLDER_NAME='.workbuddy-ai'"),
+        "international edition keeps its own data folder")
+    try expect(
+        internationalCommand.contains(
+            "ACC_PRODUCT_CONFIG_PATH="
+                + TerminalAppLauncher.shellQuote(
+                    international.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/product.json").path)),
+        "international edition uses its own product metadata")
+    for (candidate, bundleCLI) in [(profile, internationalCLI), (internationalProfile, cli)] {
+        do {
+            _ = try LocalCLITerminalLauncher.command(
+                profile: candidate, executable: bundleCLI.path, action: .open, workingDirectory: workingDirectory)
+            throw FixtureFailure.failed("cross-edition credentials accepted")
+        } catch LocalCLITerminalLauncher.Failure.unsupported {
+            // The UI must not silently change products for an existing account.
+        }
+    }
+
     let external = root.appendingPathComponent("codebuddy", isDirectory: false)
     try makeExecutable(at: external)
     do {
@@ -248,6 +276,84 @@ private func testRejectsSymlinkAndLinkedZCode() throws {
     }
 }
 
+private func testAdditionalProviderLaunches() throws {
+    let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent(
+        "local-cli-launcher-providers-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let working = root.appendingPathComponent("work ' $(touch INJECTED)", isDirectory: true)
+    try FileManager.default.createDirectory(at: working, withIntermediateDirectories: true)
+    let executable = root.appendingPathComponent("official ' fixture")
+    try makeExecutable(
+        at: executable,
+        contents: """
+            #!/bin/sh
+            printf 'argc=%s\n' "$#"
+            for arg do printf 'arg=%s\n' "$arg"; done
+            printf 'claude_dir=%s\n' "${CLAUDE_CONFIG_DIR-unset}"
+            printf 'kimi_code=%s\n' "${KIMI_CODE_HOME-unset}"
+            printf 'kimi_share=%s\n' "${KIMI_SHARE_DIR-unset}"
+            printf 'gemini_home=%s\n' "${GEMINI_CLI_HOME-unset}"
+            printf 'anthropic_key=%s\n' "${ANTHROPIC_API_KEY-unset}"
+            printf 'gemini_key=%s\n' "${GEMINI_API_KEY-unset}"
+            """)
+
+    for kind in [LocalCLIKind.claudeCode, .kimi, .gemini] {
+        let directory = kind.defaultConfigDirectory(home: root)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let profile = LocalCLIProfile(
+            id: "local-" + kind.rawValue, kind: kind, displayName: "Synthetic",
+            configDirectory: directory.path, isDefault: true)
+        let command = try LocalCLITerminalLauncher.command(
+            profile: profile, executable: executable.path, action: .signIn, workingDirectory: working)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = [
+            "PATH": "/usr/bin:/bin", "CLAUDE_CONFIG_DIR": "synthetic-unrelated",
+            "KIMI_CODE_HOME": "synthetic-unrelated", "KIMI_SHARE_DIR": "synthetic-unrelated",
+            "GEMINI_CLI_HOME": "synthetic-unrelated", "ANTHROPIC_API_KEY": "synthetic-unrelated",
+            "GEMINI_API_KEY": "synthetic-unrelated",
+        ]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        process.waitUntilExit()
+        let result = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        try expect(process.terminationStatus == 0, "synthetic CLI executes")
+        switch kind {
+        case .claudeCode:
+            try expect(result.hasPrefix("argc=2\narg=auth\narg=login\n"), "Claude opens subscription login")
+            try expect(result.contains("claude_dir=\(directory.path)\n"), "Claude uses selected default config")
+            try expect(result.contains("anthropic_key=unset\n"), "Claude removes inherited API key")
+        case .kimi:
+            try expect(result.hasPrefix("argc=1\narg=login\n"), "Kimi opens login")
+            try expect(result.contains("kimi_code=\(directory.path)\n"), "new Kimi uses selected config")
+            try expect(result.contains("kimi_share=\(directory.path)\n"), "older Kimi uses selected config")
+            try expect(result.contains("anthropic_key=unset\n"), "Kimi removes unrelated provider override")
+        case .gemini:
+            try expect(result.hasPrefix("argc=0\n"), "Gemini opens auth selector without sending a prompt")
+            try expect(result.contains("gemini_home=unset\n"), "Gemini uses its default environment")
+            try expect(result.contains("gemini_key=unset\n"), "Gemini removes inherited API key")
+        default: throw FixtureFailure.failed("unexpected provider")
+        }
+        if kind.requiresDefaultEnvironmentForLaunch {
+            var linked = profile
+            linked.isDefault = false
+            linked.id = "linked-" + kind.rawValue
+            for action in [LocalCLITerminalLauncher.Action.signIn, .open] {
+                do {
+                    _ = try LocalCLITerminalLauncher.command(
+                        profile: linked, executable: executable.path, action: action, workingDirectory: working)
+                    throw FixtureFailure.failed("linked environment accepted")
+                } catch LocalCLITerminalLauncher.Failure.unsupported {
+                    // Incomplete credential isolation must not launch another identity.
+                }
+            }
+        }
+    }
+    try expect(!FileManager.default.fileExists(atPath: working.appendingPathComponent("INJECTED").path), "path is not shell code")
+}
+
 @main enum Main {
     static func main() throws {
         try testGrokQuotingAndEnvironmentIsolation()
@@ -255,6 +361,7 @@ private func testRejectsSymlinkAndLinkedZCode() throws {
         try testWorkBuddyBundleAndProductIsolation()
         try testZCodeDefaultBundleCommands()
         try testRejectsSymlinkAndLinkedZCode()
+        try testAdditionalProviderLaunches()
         print("local-cli-terminal-launcher-fixture: ok")
     }
 }

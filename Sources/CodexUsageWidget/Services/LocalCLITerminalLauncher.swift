@@ -23,6 +23,7 @@ enum LocalCLITerminalLauncher {
         let electron: URL
         let productConfig: URL
         let configDirectory: URL
+        let edition: WorkBuddyEdition
     }
 
     private struct ZCodeBundle {
@@ -47,6 +48,54 @@ enum LocalCLITerminalLauncher {
         }
 
         switch profile.kind {
+        case .claudeCode, .gemini:
+            guard profile.isDefault,
+                profile.id == "local-" + profile.kind.rawValue,
+                profileDirectory.lastPathComponent == (profile.kind == .claudeCode ? ".claude" : ".gemini")
+            else { throw Failure.unsupported }
+            guard lexicallyValidInput(executable), validExecutable(URL(fileURLWithPath: executable)) else {
+                throw executableFailure(for: executable)
+            }
+            if profile.kind == .claudeCode {
+                return shellCommand(
+                    workingDirectory: workingDirectory,
+                    executableParts: [executable] + (action == .signIn ? ["auth", "login"] : []),
+                    unsetEnvironment: [
+                        "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+                        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                        "CLAUDE_CODE_USE_MANTLE", "DISABLE_LOGIN_COMMAND",
+                    ],
+                    environment: ["CLAUDE_CONFIG_DIR": profileDirectory.path, "DISABLE_AUTOUPDATER": "1"])
+            }
+            // Gemini uses its interactive authentication selector. A positional
+            // "login" would instead become a model prompt.
+            return shellCommand(
+                workingDirectory: workingDirectory, executableParts: [executable],
+                unsetEnvironment: [
+                    "GEMINI_CLI_HOME", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+                    "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
+                    "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY_AUTH_HEADER",
+                ], environment: [:])
+
+        case .kimi:
+            guard lexicallyValidInput(executable), validExecutable(URL(fileURLWithPath: executable)) else {
+                throw executableFailure(for: executable)
+            }
+            return shellCommand(
+                workingDirectory: workingDirectory,
+                executableParts: [executable] + (action == .signIn ? ["login"] : []),
+                unsetEnvironment: [
+                    "KIMI_CODE_HOME", "KIMI_SHARE_DIR", "KIMI_API_KEY", "KIMI_CODE_API_KEY", "KIMI_BASE_URL",
+                    "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+                ],
+                // New Kimi Code and the older Python CLI use different names.
+                // Both are explicitly bound to the directory the card reads.
+                environment: [
+                    "KIMI_CODE_HOME": profileDirectory.path, "KIMI_SHARE_DIR": profileDirectory.path,
+                    "KIMI_CLI_NO_AUTO_UPDATE": "1",
+                ])
+
         case .grok:
             guard lexicallyValidInput(executable), validExecutable(URL(fileURLWithPath: executable)) else {
                 throw executableFailure(for: executable)
@@ -110,7 +159,7 @@ enum LocalCLITerminalLauncher {
                     "ACC_PRODUCT_CONFIG_PATH": bundle.productConfig.path,
                     "CODEBUDDY_CONFIG_DIR": bundle.configDirectory.path,
                     "WORKBUDDY_CONFIG_DIR": bundle.configDirectory.path,
-                    "WORKBUDDY_DATA_FOLDER_NAME": ".workbuddy",
+                    "WORKBUDDY_DATA_FOLDER_NAME": bundle.edition.directoryName,
                     "DISABLE_AUTOUPDATER": "1",
                 ])
 
@@ -138,7 +187,7 @@ enum LocalCLITerminalLauncher {
                 ],
                 environment: ["ELECTRON_RUN_AS_NODE": "1"])
 
-        case .trae, .claudeCode, .kimi, .mimo, .gemini:
+        case .trae, .mimo:
             throw Failure.unsupported
         }
     }
@@ -229,9 +278,13 @@ enum LocalCLITerminalLauncher {
     private static func workBuddyBundle(for executable: String, profileDirectory: URL) throws -> WorkBuddyBundle {
         guard lexicallyValidInput(executable) else { throw Failure.invalidDirectory }
         let cli = URL(fileURLWithPath: executable)
-        let marker = "/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"
-        guard cli.path.hasSuffix(marker) else { throw Failure.unsupported }
-        let applicationPath = String(cli.path.dropLast(marker.count)) + "/WorkBuddy.app"
+        guard
+            let edition = WorkBuddyEdition.allCases.first(where: {
+                cli.path.hasSuffix("/\($0.applicationName)/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
+            })
+        else { throw Failure.unsupported }
+        let marker = "/\(edition.applicationName)/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"
+        let applicationPath = String(cli.path.dropLast(marker.count)) + "/" + edition.applicationName
         let application = URL(fileURLWithPath: applicationPath, isDirectory: true)
         let expectedCLI = application.appendingPathComponent(
             "Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
@@ -248,12 +301,17 @@ enum LocalCLITerminalLauncher {
         // The default profile is already ~/.workbuddy. A linked profile may
         // represent a parent folder; in that case the product-specific config
         // directory is its child named .workbuddy.
+        if WorkBuddyEdition.allCases.contains(where: { $0.directoryName == profileDirectory.lastPathComponent }),
+            profileDirectory.lastPathComponent != edition.directoryName
+        {
+            throw Failure.unsupported
+        }
         let configDirectory =
-            profileDirectory.lastPathComponent == ".workbuddy"
+            profileDirectory.lastPathComponent == edition.directoryName
             ? profileDirectory
-            : profileDirectory.appendingPathComponent(".workbuddy", isDirectory: true)
+            : profileDirectory.appendingPathComponent(edition.directoryName, isDirectory: true)
         guard validPath(configDirectory, mustExist: false) else { throw Failure.invalidDirectory }
-        return WorkBuddyBundle(cli: cli, electron: electron, productConfig: product, configDirectory: configDirectory)
+        return WorkBuddyBundle(cli: cli, electron: electron, productConfig: product, configDirectory: configDirectory, edition: edition)
     }
 
     private static func zcodeBundle(for executable: String) throws -> ZCodeBundle {

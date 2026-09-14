@@ -108,6 +108,12 @@ struct PublicResetCalendarView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(language.text("重置公告日历", "Reset announcement calendar"))
+        .onAppear {
+            if let selectedDay { month = PublicResetCalendarModel.monthStart(selectedDay) }
+        }
+        .onChange(of: selectedDay) { day in
+            if let day { month = PublicResetCalendarModel.monthStart(day) }
+        }
     }
 
     private var monthTitle: String {
@@ -124,7 +130,7 @@ struct PublicResetCalendarView: View {
             target >= earliestMonth, target <= PublicResetCalendarModel.monthStart(Date())
         else { return }
         month = target
-        selectedDay = nil
+        selectedDay = target
     }
 
     private func dayButton(_ day: Date) -> some View {
@@ -166,29 +172,36 @@ struct PublicResetRecentView: View {
     let announcements: [PublicResetAnnouncement]
     let language: WidgetLanguage
     var featuredID: String? = nil
+    var integratedInCalendar = false
     @Binding var selectedDay: Date?
     @State private var selectedAnnouncement: PublicResetAnnouncement?
 
     private var visibleEvents: [PublicResetAnnouncement] {
-        selectedDay.map { PublicResetCalendarModel.events(on: $0, from: announcements) }
+        let day = selectedDay ?? (integratedInCalendar ? Date() : nil)
+        return day.map { PublicResetCalendarModel.events(on: $0, from: announcements) }
             ?? Array(announcements.filter { $0.id != featuredID }.prefix(4))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(selectedDay == nil ? language.text("更多动态", "More updates") : language.text("所选日期的公告", "Announcements on this date"))
+                Text(selectedDay == nil && !integratedInCalendar ? language.text("更多动态", "More updates") : language.text("所选日期的公告", "Announcements on this date"))
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 4)
                 if selectedDay != nil {
-                    Button(language.text("最近", "Recent")) { selectedDay = nil }
-                        .font(.caption).buttonStyle(.borderless)
+                    Button(integratedInCalendar ? language.text("今天", "Today") : language.text("最近", "Recent")) {
+                        selectedDay = integratedInCalendar ? PublicResetCalendarModel.calendar.startOfDay(for: Date()) : nil
+                    }
+                    .font(.caption).buttonStyle(.borderless)
                 }
             }
             if visibleEvents.isEmpty {
-                Text(selectedDay == nil ? language.text("暂无已载入的公告。", "No announcements loaded yet.") : language.text("这一天没有已记录的公告。", "No recorded announcements on this date."))
-                    .font(.callout).foregroundStyle(.secondary)
-                    .padding(.vertical, 16)
+                Text(
+                    selectedDay == nil && !integratedInCalendar
+                        ? language.text("暂无已载入的公告。", "No announcements loaded yet.") : language.text("这一天没有已记录的公告。", "No recorded announcements on this date.")
+                )
+                .font(.callout).foregroundStyle(.secondary)
+                .padding(.vertical, 16)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), alignment: .topLeading)], alignment: .leading, spacing: 10) {
                     ForEach(visibleEvents.prefix(5)) { event in

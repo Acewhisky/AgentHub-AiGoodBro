@@ -9,8 +9,12 @@ struct RuntimeLogoView: View {
         Group {
             if let image = RuntimeLogo.image(for: scope) {
                 Image(nsImage: image)
+                    .renderingMode(scope == .claudeCode ? .template : .original)
                     .resizable()
                     .scaledToFit()
+                    .padding(scope == .claudeCode ? size * 0.10 : 0)
+                    .foregroundStyle(Color.primary)
+                    .background(scope == .claudeCode ? FixedVisualPalette.controlFill(colorScheme) : Color.clear)
             } else {
                 Image(systemName: fallbackSystemName)
                     .resizable()
@@ -46,7 +50,7 @@ private enum RuntimeLogo {
         case .codex:
             name = "codex-color"
         case .claudeCode:
-            name = "claudecode-color"
+            name = "claudecode-template"
         }
         guard let url = Bundle.main.url(forResource: name, withExtension: "png") else {
             return nil

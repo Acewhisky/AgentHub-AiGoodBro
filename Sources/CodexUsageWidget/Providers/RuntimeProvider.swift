@@ -6,11 +6,13 @@ struct RuntimeLoadContext {
     let codexHomeDirectory: URL
     let cacheDirectory: URL
     let statistics: StatisticsContext
+    var quotaCancellation: TokenMonitorCancellation? = nil
 
     static func live(
         now: Date = Date(),
         statisticsPreference: StatisticsTimeZonePreference = .default,
-        codexHomeDirectory: URL? = nil
+        codexHomeDirectory: URL? = nil,
+        quotaCancellation: TokenMonitorCancellation? = nil
     ) -> RuntimeLoadContext {
         let environment = ProcessInfo.processInfo.environment
         let home =
@@ -27,7 +29,8 @@ struct RuntimeLoadContext {
             codexHomeDirectory: codexHomeDirectory
                 ?? home.appendingPathComponent(".codex", isDirectory: true),
             cacheDirectory: cache,
-            statistics: StatisticsContext(preference: statisticsPreference, now: now)
+            statistics: StatisticsContext(preference: statisticsPreference, now: now),
+            quotaCancellation: quotaCancellation
         )
     }
 }

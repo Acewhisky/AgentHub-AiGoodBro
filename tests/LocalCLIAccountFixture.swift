@@ -84,6 +84,8 @@ private func makeRoot(_ label: String) throws -> (root: URL, home: URL, support:
         throw FixtureFailure.failed("chmod WorkBuddy bundle")
     }
 
+    try FileManager.default.copyItem(at: workBuddy, to: applications.appendingPathComponent("WorkBuddy AI.app"))
+
     let externalCodeBuddy = home.appendingPathComponent(".local/bin/codebuddy")
     try Data("synthetic external product".utf8).write(to: externalCodeBuddy)
     guard chmod(externalCodeBuddy.path, 0o700) == 0 else { throw FixtureFailure.failed("chmod external codebuddy") }
@@ -124,6 +126,24 @@ private func testDiscoveryLinkRenameUnlinkAndPermissions() async throws {
         store.installed[.workBuddy] == applications.appendingPathComponent(
             "WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy").path,
         "bundled WorkBuddy discovery does not substitute external codebuddy")
+    let workBuddyProfiles = store.profiles(for: .workBuddy)
+    try expect(
+        workBuddyProfiles.count == 2 && Set(workBuddyProfiles.map(\.id)).count == 2,
+        "domestic and international defaults remain distinct")
+    for edition in WorkBuddyEdition.allCases {
+        guard let profile = workBuddyProfiles.first(where: { $0.id == edition.defaultProfileID }) else {
+            throw FixtureFailure.failed("WorkBuddy edition profile missing")
+        }
+        try expect(
+            profile.configDirectory == paths.home.appendingPathComponent(edition.directoryName).path,
+            "each edition owns its config directory")
+        try expect(
+            store.executable(for: profile)
+                == applications.appendingPathComponent(
+                    edition.applicationName + "/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"
+                ).path,
+            "each edition launches its own bundle")
+    }
     let defaults = store.profiles(for: .zcode)
     try expect(defaults.count == 1 && defaults[0].isDefault, "default profile discovery")
 
@@ -171,6 +191,25 @@ private func testDiscoveryLinkRenameUnlinkAndPermissions() async throws {
     let afterUnlink = try JSONDecoder().decode([LocalCLIProfile].self,
                                                 from: Data(contentsOf: storage(paths.support)))
     try expect(afterUnlink.isEmpty, "unlink persistence")
+}
+
+@MainActor
+private func testWorkBuddyInternationalOnlyDiscovery() throws {
+    let paths = try makeRoot("international-only")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    try FileManager.default.removeItem(at: paths.home.appendingPathComponent("Applications/WorkBuddy.app"))
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    let profiles = store.profiles(for: .workBuddy)
+    try expect(
+        profiles.count == 1 && profiles[0].id == "local-workBuddy-ai",
+        "international-only installation has no false domestic profile")
+    try expect(
+        store.installed[.workBuddy] == store.executable(for: profiles[0]),
+        "international bundle remains accessible from workspace navigation")
+    try expect(
+        store.canOpen(profiles[0]) && store.canSignIn(profiles[0]),
+        "international login and TUI are exposed")
 }
 
 @MainActor
@@ -348,6 +387,7 @@ private func testTransientFailureAndConfirmedSignOut() async throws {
 @main enum Main {
     @MainActor static func main() async throws {
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
+        try testWorkBuddyInternationalOnlyDiscovery()
         try await testStaleWriterConflictPreservesWinner()
         try await testInvalidStoredProfilesRemainUntouched()
         try await testUnlinkRejectsLateRefresh()

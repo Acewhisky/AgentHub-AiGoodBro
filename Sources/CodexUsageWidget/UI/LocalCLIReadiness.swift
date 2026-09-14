@@ -29,7 +29,7 @@ enum LocalCLIReadiness: Equatable {
         case .notInstalled: language.text("未安装官方工具", "Official tool not installed")
         case .needsLogin: language.text("等待登录", "Sign-in needed")
         case .unknown: language.text("额度未接通 · 登录待确认", "Limits disconnected · Check sign-in")
-        case .quotaDisconnected: language.text("已登录 · 额度未接通", "Signed in · Limits disconnected")
+        case .quotaDisconnected: language.text("额度未接通", "Limits disconnected")
         case .stale: language.text("上次快照 · 请刷新", "Previous snapshot · Refresh")
         case .readFailed: language.text("额度读取失败", "Quota read failed")
         case .rateLimited: language.text("服务商暂时限流", "Provider rate limited")

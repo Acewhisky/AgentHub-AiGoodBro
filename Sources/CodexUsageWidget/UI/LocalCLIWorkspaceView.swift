@@ -419,11 +419,11 @@ struct LocalCLIWorkspaceView: View {
                 if let message = model.loginMessages[profile.id] {
                     Text(message).font(.caption).foregroundStyle(.secondary)
                 }
-            } else if profile.kind == .zcode, !profile.isDefault {
+            } else if profile.kind.requiresDefaultEnvironmentForLaunch, !profile.isDefault {
                 Label(
                     language.text(
-                        "此链接环境仅用于额度读取；隔离启动尚未验证，不会借用默认 ZCode 身份。",
-                        "This linked environment is quota-only. Isolated launch is not verified and will not borrow the default ZCode identity."),
+                        "此关联环境用于读取额度；请在对应的官方 CLI 中登录。",
+                        "This linked environment is for quota reads. Sign in through its matching official CLI."),
                     systemImage: "lock.shield"
                 )
                 .font(.caption).foregroundStyle(.secondary)
@@ -533,7 +533,7 @@ struct LocalCLIWorkspaceView: View {
 
     private func readiness(_ profile: LocalCLIProfile) -> LocalCLIReadiness {
         .resolve(
-            installed: model.installed[profile.kind] != nil, result: model.quotas[profile.id],
+            installed: model.executable(for: profile) != nil, result: model.quotas[profile.id],
             stale: model.stale.contains(profile.id) || (model.quotas[profile.id].map { !ResetCardPresentation.isFresh($0.fetchedAt, now: Date()) } ?? false))
     }
 
@@ -673,7 +673,19 @@ struct LocalCLIWorkspaceView: View {
                 "仅打开已安装的 TRAE SOLO 个人版桌面。独立 traecli 属于企业产品，本页不把它显示为个人版登录、执行或额度能力。",
                 "Only the installed TRAE SOLO personal desktop is opened. Standalone traecli is an enterprise product and is not presented here as personal sign-in, execution, or quota support."
             )
-        case .claudeCode, .kimi, .mimo, .gemini:
+        case .claudeCode:
+            language.text(
+                "默认环境使用 Claude Code 官方浏览器登录。订阅额度和本机 Token 记录分别显示；关联目录只读取额度。",
+                "The default environment uses official Claude Code browser sign-in. Subscription limits and local Token records are separate; linked folders are read-only.")
+        case .kimi:
+            language.text(
+                "登录和启动使用同一配置目录，完成 Kimi Code 浏览器授权后刷新对应额度。",
+                "Sign-in and launch use the same configuration directory. Refresh matching limits after Kimi Code browser authorization.")
+        case .gemini:
+            language.text(
+                "打开 Gemini CLI，选择 Google 登录；已进入对话时输入 /auth。完成后返回刷新，关联目录只读取额度。",
+                "Open Gemini CLI and choose Google sign-in, or enter /auth. Return here to refresh; linked folders are read-only.")
+        case .mimo:
             language.text(
                 "本机登录会自动显示；已有其他独立环境时，可关联该 CLI 的配置目录。",
                 "The local sign-in appears automatically. Link a CLI configuration directory for another existing environment.")
@@ -710,10 +722,7 @@ struct LocalCLIIcon: View {
             ZStack {
                 switch kind {
                 case .claudeCode:
-                    ForEach(0..<12) { index in
-                        Capsule().frame(width: size * 0.088, height: box)
-                            .rotationEffect(.degrees(Double(index) * 15))
-                    }
+                    RuntimeLogoView(scope: .claudeCode, size: size)
                 case .grok:
                     Circle().trim(from: 0.08, to: 0.86).stroke(lineWidth: size * 0.10)
                         .padding(size * 0.11).rotationEffect(.degrees(-30))

@@ -67,13 +67,7 @@
     }
     if (!day(end)) end = [...byDate.keys()].sort().at(-1);
     if (!day(end)) throw Error(t('统计日期未提供','Statistics day unavailable'));
-    const resets = new Map();
-    for (const r of (annotations || []).slice(0, 500)) {
-      if (r && day(r.date) && ['regular', 'banked'].includes(r.kind)) {
-        resets.set(r.date, [...(resets.get(r.date) || []), `${r.kind === 'regular' ? t('公开公告 · 常规重置','Public regular reset') : t('公开公告 · 储备重置','Public banked reset')}: ${publicText(r.text)}`]);
-      }
-    }
-    return {input, canonical, history, byDate, coverage, resets, end, legacy};
+    return {input, canonical, history, byDate, coverage, end, legacy};
   }
   function status(key) {
     const row = state.byDate.get(key), tokens = amount(row?.tokens);
@@ -88,7 +82,37 @@
       const entries = dimension(row, field);
       lines.push(`${label}: ` + (entries ? entries.slice(0,30).map(([k,v]) => `${publicText(k)}: ${number(v?.tokens)}`).join(', ') + omitted(entries.length,30) : missing()));
     }
-    return [...lines, ...(state.resets.get(key) || [])].join('\n');
+    return lines.join('\n');
+  }
+  function shortDescription(key) {
+    const value = amount(state.byDate.get(key)?.tokens);
+    return `${key} · ${value === null ? t('未采集','Not recorded') : number(value) + ' Token'}`;
+  }
+  function daySummary(key) {
+    $('day-total').textContent = shortDescription(key);
+    const box = $('day-tools'); box.textContent = '';
+    const row = state.byDate.get(key), total = amount(row?.tokens);
+    const entries = (dimension(row, 'perClient') || []).map(([key,value]) => [key,amount(value?.tokens)]).filter(([,value]) => value !== null).sort((a,b) => b[1]-a[1]);
+    const sum = entries.reduce((sum,[,value]) => sum+value,0);
+    const heading = document.createElement('p');
+    heading.textContent = entries.length ? t('当天工具用量','Daily usage by tool') : total === 0 ? t('当天记录为 0','Recorded zero for this day') : t('未提供工具明细','Tool breakdown unavailable');
+    box.appendChild(heading);
+    // A partial tool dimension cannot be presented as a share of all tokens.
+    const complete = total !== null && total > 0 && sum === total;
+    for (const [key,value] of entries.slice(0,5)) {
+      const item = document.createElement('div'); item.className = 'tool-row';
+      const label = document.createElement('span'); label.textContent = publicText(key);
+      const count = document.createElement('span'); count.textContent = complete ? `${(100*value/total).toFixed(1)}%` : number(value);
+      const bar = document.createElement('progress'); bar.max = complete ? total : Math.max(1,...entries.map(([,value]) => value)); bar.value = value;
+      bar.setAttribute('aria-label', `${publicText(key)}: ${number(value)} Token`);
+      item.append(label,count,bar); box.appendChild(item);
+    }
+    if (entries.length && !complete) {
+      const note = document.createElement('p'); note.className = 'muted'; note.textContent = t('工具明细覆盖不完整，显示已记录值','Tool coverage is incomplete; showing recorded values'); box.appendChild(note);
+    }
+    if (entries.length > 5) {
+      const note = document.createElement('p'); note.className = 'muted'; note.textContent = t('其余工具见明细页','See Details for other tools'); box.appendChild(note);
+    }
   }
   function omitted(count, limit) { return count > limit ? t(`；另有 ${count-limit} 项未显示`, `; ${count-limit} more entries omitted`) : ''; }
   const fields = [['inputTokens','输入 Token','Input tokens'],['outputTokens','输出 Token','Output tokens'],['cacheReadTokens','缓存读取 Token','Cache read tokens'],['cacheWriteTokens','缓存写入 Token','Cache write tokens'],['reasoningTokens','推理 Token','Reasoning tokens'],['unclassifiedTokens','未分类 Token','Unclassified tokens'],['messageCount','消息数','Message count']];
@@ -133,21 +157,50 @@
   function select(key) {
     if (!day(key) || key > state.end) { $('selection').textContent = t('日期无效或晚于统计日期','Invalid date or after statistics date'); return; }
     state.selected = key; $('date').value = key;
-    $('selection').textContent = describe(key); details();
+    $('selection').textContent = shortDescription(key); details(); daySummary(key);
+    $('calendar').querySelectorAll('[data-d]').forEach(el => el.setAttribute('aria-pressed',String(el.getAttribute('data-d') === key)));
     const month = key.slice(0,7);
     const cells = state.calendar.cells.filter(c => c.date.startsWith(month));
-    const known = cells.filter(c => status(c.date) === 'known');
     const values = cells.map(c => amount(state.byDate.get(c.date)?.tokens)).filter(v => v !== null);
     const sum = values.reduce((a,b) => a+b, 0);
-    $('month').textContent = `${month}: ${values.length ? number(sum) : missing()} ${t('已观察 Token','observed tokens')} · ${known.length}/${cells.length} ${t('天已确认','days known')}${known.length !== cells.length ? t(' · 部分或未知覆盖，完整性未确认',' · partial/unknown coverage, completeness unconfirmed') : ''}`;
+    $('month').textContent = `${month} · ${values.length ? number(sum) : missing()} Token · ${values.length}/${cells.length} ${t('天有记录','days recorded')}`;
   }
   function bindDate(element, key) {
     element.setAttribute('tabindex','0'); element.setAttribute('role','button');
-    element.setAttribute('aria-label',describe(key));
+    element.setAttribute('aria-label',shortDescription(key));
     element.addEventListener('click', () => select(key));
-    element.addEventListener('focus', () => { $('selection').textContent = describe(key); });
-    element.addEventListener('mouseenter', () => { $('selection').textContent = describe(key); });
+    const show = event => {
+      const tooltip = $('hover-tooltip'); tooltip.textContent = shortDescription(key); tooltip.hidden = false;
+      const rect = element.getBoundingClientRect();
+      const x = event.clientX ?? rect.left, y = event.clientY ?? rect.top;
+      tooltip.style.left = Math.max(4, Math.min(x + 10, document.documentElement.clientWidth - tooltip.offsetWidth - 4)) + 'px';
+      tooltip.style.top = Math.max(4, Math.min(y + 16, document.documentElement.clientHeight - tooltip.offsetHeight - 4)) + 'px';
+    };
+    element.addEventListener('focus', show); element.addEventListener('mouseenter', show); element.addEventListener('mousemove', show);
+    for (const name of ['blur','mouseleave']) element.addEventListener(name, () => { $('hover-tooltip').hidden = true; });
     element.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(key); } });
+  }
+  function calendarLabels() {
+    const svg = $('calendar').querySelector('svg');
+    if (!svg) return;
+    const width = svg.viewBox.baseVal.width || Number(svg.getAttribute('width'));
+    let previous = null;
+    const labels = [...svg.querySelectorAll('.heat-month')];
+    labels.forEach((el, index) => {
+      const full = el.textContent, match = /^(\d{4})-(\d{2})$/.exec(full);
+      if (match) {
+        el.setAttribute('aria-label', full);
+        el.textContent = index === 0 || match[2] === '01' ? `${match[1]}/${match[2]}` : language === 'zh' ? `${Number(match[2])}月` : ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(match[2])-1];
+      }
+      const length = el.getComputedTextLength() || el.textContent.length * 6;
+      let left = Number(el.getAttribute('x')) || 0;
+      if (left + length > width - 2) { left = width - length - 2; el.setAttribute('x',left); }
+      if (previous && left < previous.right + 6) {
+        if (index === labels.length - 1) previous.element.style.display = 'none';
+        else { el.style.display = 'none'; return; }
+      }
+      previous = {right:left + length,element:el};
+    });
   }
   function bars() {
     const field = $('group').value === 'model' ? 'perModel' : 'perClient';
@@ -171,6 +224,8 @@
   }
   function mode(name) {
     state.mode = name;
+    $('hover-tooltip').hidden = true;
+    $('selection').hidden = name !== 'trends';
     for (const key of ['overview','trends','details']) $(key).hidden = key !== name;
     document.querySelectorAll('[data-mode]').forEach(el => el.setAttribute('aria-pressed',String(el.getAttribute('data-mode') === name)));
     if (name === 'trends') bars();
@@ -192,7 +247,7 @@
       const rows = input.filter(r => r && day(r.date) && amount(r.tokens) !== null);
       if (!rows.length) throw Error(t('旧版数据未提供','Legacy data unavailable'));
       document.querySelectorAll('[data-mode]').forEach(el => { el.hidden = true; });
-      for (const id of ['context','month','trends','details','selection']) $(id).hidden = true;
+      for (const id of ['context','month','trends','details','selection','day-summary']) $(id).hidden = true;
       $('overview').hidden = false;
       const svg = api.areaLineSvg(api.areaLineChart(rows,{width:options.width || 650,height:options.height || 40,metric:'tokens',curve:true}));
       $('calendar').innerHTML = svg;
@@ -200,22 +255,21 @@
       return svg;
     }
     document.querySelectorAll('[data-mode]').forEach(el => { el.hidden = false; });
-    for (const id of ['context','month','selection']) $(id).hidden = false;
+    for (const id of ['context','month','selection','day-summary']) $(id).hidden = false;
     const previous = state;
     const previousFrom = $('from').value, previousTo = $('to').value;
     state = normalize(input,options.resetAnnotations);
     state.width = Number.isFinite(options.width) ? Math.max(320,Math.min(2000,options.width)) : 650;
-    $('context').textContent = `${t('年度活动','Annual activity')} · ${publicText(input.timezone)} · ${t('总量由原生统计提供','Total supplied by native statistics')} · ${t('公开重置公告不代表个人窗口重置','Public reset announcements do not establish personal resets')}`;
+    $('context').textContent = `${t('每日 Token','Daily tokens')} · ${publicText(input.timezone)} · ${t('仅汇总已记录用量','Recorded usage only')}`;
     const rows = [...state.byDate.values()].filter(r => amount(r.tokens) !== null);
     const intensities = api.computeHeatmapIntensities(rows).map(r => ({...r,intensity:r.tokenIntensity}));
     state.calendar = api.rollingYearHeatmap(intensities,{endDate:state.end,cell:8,gap:3});
-    const svg = api.heatmapSvg(state.calendar,{titleOf:c => describe(c.date)});
+    const svg = api.heatmapSvg(state.calendar,{titleOf:c => shortDescription(c.date)});
     $('calendar').innerHTML = svg;
-    if (language === 'zh') $('calendar').querySelectorAll('.heat-month').forEach(el => { const i = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].indexOf(el.textContent); if (i >= 0) el.textContent = `${i+1}月`; });
+    calendarLabels();
     $('calendar').querySelectorAll('[data-d]').forEach(el => {
       const key = el.getAttribute('data-d');
-      el.classList.add(status(key));
-      if (state.resets.has(key)) el.classList.add('reset');
+      if (amount(state.byDate.get(key)?.tokens) === null) el.classList.add('unknown');
       if (status(key) === 'unknown') { el.removeAttribute('data-t'); el.removeAttribute('data-cost'); }
       bindDate(el,key);
     });

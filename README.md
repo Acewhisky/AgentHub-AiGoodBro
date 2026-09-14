@@ -22,9 +22,9 @@ AiGoodBro 把额度提醒与消息放在前面，让你及时知道什么时候�
 
 单账号也能只读使用。公开重置公告、某个账号的额度恢复、账号持有的重置卡是三种不同信息：收到公告不会自动使用重置卡，也不能替代账号额度刷新。软件内的微信接入指**企业微信群机器人**；个人微信未接入。
 
-**当前源码预览：0913v8 · 9.6.0 (43)。** 重置面板采用紧凑分栏，点击主界面 Logo 可访问官网，关于页提供官网、GitHub 和鸣谢。可按下方口令从源码构建和安装；本版尚无 Release 安装包，多 CLI 的支持范围见下方说明。[候选改动与验证边界](docs/release-notes-v9.6.0.md)
+**当前源码预览：0915v2 · 9.6.1 (47)。** 手动切换桌面不再等待额度刷新，增加刷新频率设置和额度不足自动换号；首页补充用量摘要、热力图明细、重置日历与 AI 热点，保留竖向堆叠趋势图。补充 CLI 登录入口和 Claude Code 图标主题适配。本版尚无 Release 安装包。[候选改动与验证边界](docs/release-notes-v9.6.1.md)
 
-一句话安装口令和 4 个调用模板都在下面。9.6.0 尚未发布到 GitHub Releases；当前请从源码构建。
+一句话安装口令和 4 个调用模板都在下面。9.6.1 尚未发布到 GitHub Releases；当前请从源码构建。
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -48,9 +48,9 @@ cd AgentHub-AiGoodBro
 make build
 ```
 
-构建结果应为 `build/AiGoodBro.app`。构建不会自动安装或启动；升级时先备份旧版，再迁移为唯一的 `AiGoodBro.app`，不要留下两个可启动副本。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；9.6.0 没有已发布的 Apple 公证下载包。
+构建结果应为 `build/AiGoodBro.app`。构建不会自动安装或启动；升级时先备份旧版，再迁移为唯一的 `AiGoodBro.app`，不要留下两个可启动副本。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；9.6.1 没有已发布的 Apple 公证下载包。
 
-后续若发布，安装包名称应为 `AiGoodBro-<version>-mac-<arch>.dmg`；当前没有可下载的 9.6.0 安装包。
+后续若发布，安装包名称应为 `AiGoodBro-<version>-mac-<arch>.dmg`；当前没有可下载的 9.6.1 安装包。
 
 ## 打开后，先看这张工作台
 
@@ -178,11 +178,11 @@ AiGoodBro 的终端按钮会登记占用并等待启动回执；退出码 0 只�
 
 0910v1 的既有改动：重置消息默认通过本机提醒，飞书成为可选转发；Desktop 切换改为后台执行和阶段反馈。修复终端启动路径、工作目录与启动状态误报，增加私有回执、参与时段和登录维护占用，保留暖号成功与失败历史。登录子进程未确认退出时继续保留占用。
 
-9.6.0 为源码预览；本轮实际完成的离线验证与未验证边界以[候选记录](docs/release-notes-v9.6.0.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据。
+9.6.1 为源码预览；本轮实际完成的离线验证与未验证边界以[候选记录](docs/release-notes-v9.6.1.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据。
 
-既有打包流程会在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；9.6.0 尚未生成 Release 安装包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
+既有打包流程会在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；9.6.1 尚未生成 Release 安装包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
 
-[9.6.0 候选记录](docs/release-notes-v9.6.0.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
+[9.6.1 候选记录](docs/release-notes-v9.6.1.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
 
 ## 还有哪些功能
 

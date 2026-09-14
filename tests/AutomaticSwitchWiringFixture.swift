@@ -92,9 +92,49 @@ final class FakeTaskClient: @unchecked Sendable {
     func stop() {}
     func refreshThreads() {}
 }
-enum CodexSessionOpener { static func visibleThreadID(in board: Int?) -> String? { nil } }
+enum CodexSessionOpener {
+    static var visible: String?
+    static func visibleThreadID(in board: Int?) -> String? { visible }
+}
+final class TokenMonitorCancellation {
+    var isCancelled = false
+    func cancel() { isCancelled = true }
+}
+struct HubAccountTaskStatus {
+    var isBusy = false
+    func blockingReason(_ language: WidgetLanguage) -> String? { isBusy ? "occupied" : nil }
+}
+enum CodexSwitchSnapshotProjection {
+    static func snapshot(saved: CodexAccountSnapshot?, identity: CodexCredentialIdentity?) -> UsageSnapshot {
+        UsageSnapshot(account: identity.map { AccountInfo(email: $0.email) },
+            refreshedAt: saved?.fetchedAt ?? .distantPast,
+            quotaReadSucceeded: saved?.quotaReadSucceeded == true,
+            fiveHourQuota: saved?.fiveHour, sevenDayQuota: saved?.sevenDay)
+    }
+}
 final class UsageStore {
     // PRODUCTION_METHODS
+    var refreshGeneration: UInt64 = 0
+    var fullRefreshCancellation: TokenMonitorCancellation?
+    var identityRefreshCancellation: TokenMonitorCancellation?
+    var engineQuotaCancellation: TokenMonitorCancellation?
+    var refreshingProfileIDs: Set<String> = []
+    var warmUpRefreshStartedAt: Date?
+    var hasPendingRefresh = false
+    var authRefreshWorkItem: DispatchWorkItem?
+    var automaticCandidateRefreshAttemptAt: Date?
+    var refreshedCandidates: Set<String> = []
+    var restorableThreadID: String?
+    var codexHistoryConfirmationSuccess: (() -> Void)?
+    var codexHistoryConfirmationFailure: ((String) -> Void)?
+    var isAwaitingCodexHistoryConfirmation = false
+    var codexHistoryConfirmationTimeout: DispatchWorkItem?
+    func dismissAccountSwitchAlert() {}
+    func presentAccountSwitchBlock(_ message: String, isAutomatic: Bool) { accountManagerMessage = message }
+    func refreshWarmUpProfilesThenSchedule(performWarmUpAfterRefresh: Bool, profileIDs: Set<String>, quotaOnly: Bool, refreshMembershipDates: Bool, completion: @escaping (Bool) -> Void) {
+        precondition(!performWarmUpAfterRefresh && quotaOnly && !refreshMembershipDates)
+        refreshedCandidates = profileIDs
+    }
     var hasStarted = true
     var automaticAccountSwitchEnabled = true
     var automaticSwitchContext: AutomaticSwitchContext?
@@ -142,6 +182,7 @@ final class UsageStore {
         let systemProfile = profiles[1]
         let profileID = profile.id
         let currentSystemSnapshot = snapshot
+        let threadIDToRestore = restorableThreadID
         var verifiedSnapshot = UsageSnapshot()
         verifiedSnapshot.fiveHourQuota = profile.lastSnapshot?.fiveHour
         verifiedSnapshot.sevenDayQuota = profile.lastSnapshot?.sevenDay
@@ -218,8 +259,11 @@ final class AtomicProbeFixture {
         func store() -> UsageStore {
             fixtureDefaults.removePersistentDomain(forName: fixtureSuite)
             NSRunningApplication.desktopRunning = false
+            CodexSessionOpener.visible = nil
             let s = UsageStore()
             s.profiles = [.init(id: "source", codexHomeURL: root), .init(id: "system", isSystemProfile: true, codexHomeURL: root), .init(id: "target", codexHomeURL: root)]
+            s.profiles[0].lastSnapshot?.fiveHour = .init(usedPercent: 82)
+            s.profiles[1].lastSnapshot?.fiveHour = .init(usedPercent: 82)
             s.profiles[2].lastSnapshot?.accountID = "target-id"
             return s
         }
@@ -241,7 +285,7 @@ final class AtomicProbeFixture {
             case "future": s.profiles[2].lastSnapshot?.fetchedAt = Date().addingTimeInterval(6)
             case "read-failed": s.profiles[2].lastSnapshot?.quotaReadSucceeded = false
             case "failed-after": s.profiles[2].lastQuotaReadFailureAt = Date().addingTimeInterval(1)
-            case "partial-source": s.snapshot.sevenDayQuota = nil
+            case "partial-source": s.snapshot.sevenDayQuota = nil; s.profiles[1].lastSnapshot?.sevenDay = nil
             case "exhausted-target": s.profiles[2].lastSnapshot?.sevenDay = .init(usedPercent: 100)
             case "partial-target": s.profiles[2].lastSnapshot?.sevenDay = nil
             case "tasks-nil": s.taskClient.result = nil
@@ -293,6 +337,43 @@ final class AtomicProbeFixture {
             do { try writer.write() } catch {}
             check("actual prewrite probe \(mode)", writer.writes == (mode == "safe" ? 1 : 0))
         }
+        let refreshingManual = store()
+        refreshingManual.isRefreshing = true
+        refreshingManual.isRefreshingWarmUpProfiles = true
+        let full = TokenMonitorCancellation(), pool = TokenMonitorCancellation(), identity = TokenMonitorCancellation()
+        refreshingManual.fullRefreshCancellation = full
+        refreshingManual.engineQuotaCancellation = pool
+        refreshingManual.identityRefreshCancellation = identity
+        let started = Date()
+        refreshingManual.launchCodex(with: "target")
+        await settle(refreshingManual)
+        check("manual switch skips quota waiting", refreshingManual.manualEntries == 1 && Date().timeIntervalSince(started) < 1)
+        check("manual switch cancels owned quota readers", full.isCancelled && pool.isCancelled && identity.isCancelled && refreshingManual.refreshGeneration == 1)
+        let busyClick = store()
+        busyClick.requestDesktopSwitch(with: "target", status: .init(isBusy: true))
+        await settle(busyClick)
+        check("busy account click explains block", busyClick.manualEntries == 0 && busyClick.accountManagerMessage == "occupied")
+        let differentMonitor = store(); differentMonitor.selectedMonitorProfileID = "target"
+        differentMonitor.evaluateAutomaticAccountSwitch(); await settle(differentMonitor)
+        check("automatic source is desktop, independent of monitoring selection", differentMonitor.transactions == 1)
+        let openIdle = store(); NSRunningApplication.desktopRunning = true
+        CodexSessionOpener.visible = "synthetic"
+        openIdle.restorableThreadID = "synthetic"
+        openIdle.evaluateAutomaticAccountSwitch(); await settle(openIdle)
+        check("open idle desktop with restorable conversation can switch", openIdle.transactions == 1)
+        let staleCandidate = store()
+        staleCandidate.profiles[2].lastSnapshot?.fetchedAt = Date().addingTimeInterval(-90)
+        staleCandidate.evaluateAutomaticAccountSwitch(); await settle(staleCandidate)
+        check("stale candidates trigger quota-only refresh before choosing", staleCandidate.transactions == 0 && staleCandidate.refreshedCandidates == ["source", "system", "target"])
+        check("candidate refresh does not consume attempt cooldown", fixtureDefaults.object(forKey: CodexAutomaticSwitchPolicy.lastAttemptDefaultsKey) == nil)
+        let completion = store()
+        var committed = 0
+        completion.beginCodexHistoryConfirmation(isAutomaticSwitch: true, onSuccess: { committed += 1 }, onFailure: { _ in })
+        check("automatic verified restore commits without human timeout", committed == 1 && !completion.isAwaitingCodexHistoryConfirmation && completion.codexHistoryConfirmationTimeout == nil)
+        completion.beginCodexHistoryConfirmation(isAutomaticSwitch: false, onSuccess: { committed += 1 }, onFailure: { _ in })
+        check("manual history confirmation remains required", committed == 1 && completion.isAwaitingCodexHistoryConfirmation)
+        completion.confirmRestoredCodexHistory()
+        check("manual confirmation completes exactly once", committed == 2 && !completion.isAwaitingCodexHistoryConfirmation)
         let firstManual = store(); firstManual.taskClient.result = nil
         firstManual.launchCodex(with: "target")
         await settle(firstManual)
