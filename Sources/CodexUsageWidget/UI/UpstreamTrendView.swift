@@ -724,8 +724,10 @@ private struct TrendWebView: NSViewRepresentable {
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard let web = message.webView else { return }
-            renderer.receiveContentSize(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+            Task { @MainActor in
+                guard let web = message.webView else { return }
+                renderer.receiveContentSize(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+            }
         }
 
         func webView(

@@ -11,12 +11,18 @@ private enum FixtureFailure: Error { case failed(String) }
 
 // These persistence tests never open Terminal or perform authentication.
 enum LocalCLITerminalLauncher {
+    @MainActor static var permitsSyntheticSession = false
     enum Action { case signIn, open }
     struct Session {}
-    static func launch(profile: LocalCLIProfile, executable: String, action: Action, workingDirectory: URL) async throws -> Session {
+    @MainActor static func launch(profile: LocalCLIProfile, executable: String, action: Action, workingDirectory: URL) async throws -> Session {
+        if permitsSyntheticSession { return Session() }
         throw FixtureFailure.failed("interactive launcher must not run in the persistence fixture")
     }
-    static func waitForExit(_ session: Session) async throws -> Int32 {
+    @MainActor static func waitForExit(_ session: Session) async throws -> Int32 {
+        if permitsSyntheticSession {
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+            return 0
+        }
         throw FixtureFailure.failed("interactive launcher must not run in the persistence fixture")
     }
 }
@@ -382,6 +388,48 @@ private func testTransientFailureAndConfirmedSignOut() async throws {
     }
 }
 
+@MainActor
+private func testAuthenticationWithoutQuotaOrTerminalExit() async throws {
+    let paths = try makeRoot("authentication")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let directory = paths.home.appendingPathComponent(".gemini", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let executable = paths.home.appendingPathComponent(".local/bin/gemini")
+    try Data("synthetic executable".utf8).write(to: executable)
+    _ = chmod(executable.path, 0o700)
+    try Data(#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#.utf8).write(to: directory.appendingPathComponent("settings.json"))
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    guard let profile = store.profiles(for: .gemini).first else { throw FixtureFailure.failed("Gemini profile") }
+    try expect(!store.hasConfiguredAuthentication(profile), "selected API mode alone cannot prove a saved key")
+    LocalCLITerminalLauncher.permitsSyntheticSession = true
+    defer { LocalCLITerminalLauncher.permitsSyntheticSession = false }
+    store.signIn(profile)
+    for _ in 0..<8 { await Task.yield() }
+    try expect(store.signingIn.contains(profile.id), "interactive terminal remains open before credentials exist")
+    let credentials = Data("GEMINI_API_KEY=synthetic-local-key\n".utf8)
+    let env = directory.appendingPathComponent(".env")
+    try credentials.write(to: env)
+    for _ in 0..<60 where store.signingIn.contains(profile.id) { try await Task.sleep(nanoseconds: 50_000_000) }
+    try expect(!store.signingIn.contains(profile.id), "saved Gemini API key ends authorization waiting without terminal exit")
+    try expect(store.authentication[profile.id] == .apiKey, "API auth is recognized independently of Google quota")
+    try expect(store.canOpen(profile), "configured CLI can open without quota")
+    let after = try Data(contentsOf: env)
+    try expect(after == credentials, "credential checks never change the user's key")
+    var reader = LocalCLIAuthenticationReader()
+    reader.keychainReader = { _, _ in nil }
+    reader.fileReader = { url in
+        if url.lastPathComponent == "settings.json" { return Data(#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#.utf8) }
+        if url.lastPathComponent == "oauth_creds.json" { return Data(#"{"refresh_token":"old-oauth"}"#.utf8) }
+        return nil
+    }
+    try expect(reader.read(profile) == .unknown, "API selection cannot borrow an old Google OAuth credential")
+    let opencode = LocalCLIProfile(id: "synthetic", kind: .openCode, displayName: "Synthetic", configDirectory: directory.path, isDefault: false)
+    reader.fileReader = { _ in Data(#"{"anthropic":{"type":"oauth","refresh":"synthetic"},"provider":{"type":"api","key":"synthetic"},"invalid":{"type":"api","key":""}}"#.utf8) }
+    try expect(reader.read(opencode) == .providers(2), "OpenCode provider credentials do not require OpenCode Go")
+    try expect(!LocalCLIAuthenticationReader.hasEnvironmentValue("GEMINI_API_KEY=''\n# GEMINI_API_KEY=x", names: ["GEMINI_API_KEY"]), "empty or commented API keys stay unknown")
+}
+
 @main enum Main {
     @MainActor static func main() async throws {
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
@@ -392,6 +440,7 @@ private func testTransientFailureAndConfirmedSignOut() async throws {
         try await testRediscoveryRemovesOtherWritersAccountState()
         try testManagedGrokIsolationAndStaleWriter()
         try await testTransientFailureAndConfirmedSignOut()
+        try await testAuthenticationWithoutQuotaOrTerminalExit()
         print("local-cli-account-fixture: ok")
     }
 }

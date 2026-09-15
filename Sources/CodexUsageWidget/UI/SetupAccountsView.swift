@@ -29,10 +29,7 @@ struct SetupAccountsView: View {
         if id == "codex" { return signedInCodex }
         // Coding Plan evidence cannot confirm the ZCode desktop session.
         if id == "zcode" || id == "trae" { return false }
-        return profiles(id).contains { profile in
-            let result = localAccounts.quotas[profile.id]
-            return !localAccounts.stale.contains(profile.id) && result?.state == .available && result?.identityFingerprint?.isEmpty == false
-        }
+        return profiles(id).contains { localAccounts.hasConfiguredAuthentication($0) }
     }
     private var remaining: [String] { tools.filter { selected.contains($0) && !verified($0) && !reviewed.contains($0) } }
 
@@ -78,6 +75,19 @@ struct SetupAccountsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if !store.isPreview { scan() }
         }
+        .onChange(of: localAccounts.authentication) { _ in
+            if let launchedTool, launchedTool != "codex", verified(launchedTool) {
+                self.launchedTool = nil
+                feedback = language.text("已检测到登录配置，可以继续下一项；终端保持打开。", "Sign-in configuration detected. Continue to the next tool; the terminal stays open.")
+            }
+        }
+        .onChange(of: localAccounts.signingIn) { _ in
+            if let launchedTool, launchedTool != "codex", verified(launchedTool),
+                !profiles(launchedTool).contains(where: { localAccounts.signingIn.contains($0.id) })
+            {
+                self.launchedTool = nil
+            }
+        }
     }
 
     private func toolRow(_ id: String) -> some View {
@@ -108,7 +118,10 @@ struct SetupAccountsView: View {
 
     private func status(_ id: String) -> String {
         if !installed(id) { return language.text("未检测到安装", "Not installed") }
-        if verified(id) { return language.text("已读到账号", "Account detected") }
+        if verified(id) {
+            if id == "codex" { return language.text("已读到账号", "Account detected") }
+            if let profile = profiles(id).first(where: { localAccounts.hasConfiguredAuthentication($0) }) { return localAccounts.authenticationTitle(profile) }
+        }
         if profiles(id).contains(where: { localAccounts.signingIn.contains($0.id) }) || (id == "codex" && store.isLoggingIn) {
             return language.text("等待官方授权", "Awaiting authorization")
         }
@@ -145,6 +158,9 @@ struct SetupAccountsView: View {
                 }.disabled(store.isLoggingIn || !localAccounts.signingIn.isEmpty)
             }
             if installed(pendingTool) {
+                if pendingTool != "codex", verified(pendingTool) {
+                    Text(language.text("已检测到登录配置，可继续下一项。", "Sign-in configuration detected. Continue to the next tool.")).foregroundStyle(.green)
+                }
                 Button(language.text("我已在官方工具完成，检查并继续", "I finished in the official tool — check and continue")) {
                     let current = pendingTool
                     for profile in profiles(current) { localAccounts.checkInteractiveSignIn(profile) }
@@ -203,8 +219,9 @@ struct SetupAccountsView: View {
                 "Choose and authorize providers in opencode auth login. Add further providers in the same terminal, then return.")
         case "gemini":
             return language.text(
-                "选择 Login with Google；已在交互界面时输入 /auth。浏览器完成后返回，无需关闭整个终端。",
-                "Choose Login with Google, or use /auth in the interactive session. Return after browser authorization; the terminal may stay open.")
+                "可使用 Google 登录或 API Key，已配置时直接复用；需要更换时在终端输入 /auth。应用自动检测配置，额度读取与登录分开，不需要关闭整个终端。",
+                "Use Google sign-in or an API key. Existing configuration is reused; enter /auth to change it. Configuration is detected automatically, separately from quota. Keep the terminal open."
+            )
         case "workBuddy":
             return language.text(
                 "选择实际使用的国内版或国际版，在官方内置终端输入 /login。已有另一个地区的登录不能代替本次授权。",

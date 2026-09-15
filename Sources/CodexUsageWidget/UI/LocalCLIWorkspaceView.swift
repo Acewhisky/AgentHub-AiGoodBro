@@ -60,6 +60,10 @@ struct LocalCLIWorkspaceView: View {
             }
         }
         .padding(.vertical, onlyProfileID == nil ? 8 : 0)
+        .onAppear { model.checkLocalSignIns() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.checkLocalSignIns()
+        }
         .sheet(item: $preparationProfile) { profile in
             let state = readiness(profile)
             VStack(alignment: .leading, spacing: 16) {
@@ -248,6 +252,10 @@ struct LocalCLIWorkspaceView: View {
                 }
             }.frame(minWidth: layout == .rows ? 170 : nil, maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 6) {
+                if model.hasConfiguredAuthentication(profile) {
+                    Label(model.authenticationTitle(profile), systemImage: "checkmark.circle")
+                        .font(.caption.weight(.medium)).foregroundStyle(.green)
+                }
                 Label(state.title(language), systemImage: state.symbol)
                     .font(.caption.weight(.medium)).foregroundStyle(state.color)
                     .fixedSize(horizontal: false, vertical: true)
@@ -267,7 +275,7 @@ struct LocalCLIWorkspaceView: View {
                 } else if let balance = result?.balance {
                     Text(language.text("余额 ", "Balance ") + balance.formatted()).font(.callout.monospacedDigit())
                 } else {
-                    Text(language.text("未接通", "Not connected")).font(.title3.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(language.text("暂无额度数据", "No quota data")).font(.caption).foregroundStyle(.secondary)
                 }
             }
             .frame(width: layout == .rows ? 168 : nil)
@@ -542,34 +550,33 @@ struct LocalCLIWorkspaceView: View {
     @ViewBuilder private func primaryAction(_ profile: LocalCLIProfile) -> some View {
         let state = readiness(profile)
         Button {
-            if profile.kind.isDesktopApplication, model.canOpen(profile) {
+            if model.canOpen(profile) {
                 openNative(profile)
             } else if state.isFailure || state == .notInstalled {
                 preparationProfile = profile
             } else if state == .needsLogin {
                 if model.canSignIn(profile) { model.signIn(profile) } else { preparationProfile = profile }
-            } else if state == .available, model.canOpen(profile) {
-                openNative(profile)
             } else {
                 model.refresh(profile)
             }
         } label: {
             Label(
-                profile.kind.isDesktopApplication && model.canOpen(profile)
-                    ? language.text("打开桌面版", "Open desktop app")
+                model.canOpen(profile)
+                    ? profile.kind.isDesktopApplication ? language.text("打开桌面版", "Open desktop app") : language.text("打开终端", "Open terminal")
                     : state.isFailure
                         ? language.text("查看原因", "Review cause")
                         : state == .needsLogin
                             ? language.text("登录", "Sign in")
                             : state == .notInstalled
                                 ? language.text("准备", "Prepare")
-                                : state == .available && model.canOpen(profile) ? language.text("打开终端", "Terminal") : language.text("刷新", "Refresh"),
-                systemImage: profile.kind.isDesktopApplication && model.canOpen(profile)
-                    ? "macwindow" : state.isFailure ? "exclamationmark.circle" : state == .needsLogin ? "person.crop.circle" : state == .available ? "terminal" : "arrow.clockwise"
+                                : language.text("刷新", "Refresh"),
+                systemImage: model.canOpen(profile)
+                    ? profile.kind.isDesktopApplication ? "macwindow" : "terminal"
+                    : state.isFailure ? "exclamationmark.circle" : state == .needsLogin ? "person.crop.circle" : "arrow.clockwise"
             ).frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
-        .disabled(model.refreshing.contains(profile.id) || model.signingIn.contains(profile.id))
+        .disabled(model.signingIn.contains(profile.id))
     }
 
     private func statusText(_ result: LocalCLIQuotaResult?) -> String {
@@ -691,8 +698,9 @@ struct LocalCLIWorkspaceView: View {
                 "Sign-in and launch use the same configuration directory. Refresh matching limits after Kimi Code browser authorization.")
         case .gemini:
             language.text(
-                "打开 Gemini CLI，选择 Google 登录；已进入对话时输入 /auth。完成后返回刷新，关联目录只读取额度。",
-                "Open Gemini CLI and choose Google sign-in, or enter /auth. Return here to refresh; linked folders are read-only.")
+                "支持已配置的 Google 登录或 API Key。打开终端即可使用，/auth 可更换方式；API Key 不使用 Code Assist 订阅额度接口。",
+                "Use the configured Google sign-in or API key. Open Terminal to continue, or /auth to change methods. API keys do not use the Code Assist subscription quota endpoint."
+            )
         case .mimo:
             language.text(
                 "本机登录会自动显示；已有其他独立环境时，可关联该 CLI 的配置目录。",

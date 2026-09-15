@@ -15,10 +15,12 @@ final class LocalCLIAccountStore: ObservableObject {
     @Published private(set) var refreshing: Set<String> = []
     @Published private(set) var signingIn: Set<String> = []
     @Published private(set) var loginMessages: [String: String] = [:]
+    @Published private(set) var authentication: [String: LocalCLIAuthentication] = [:]
     @Published var message: String?
     private var requests: [String: UUID] = [:]
     private var tasks: [String: Task<Void, Never>] = [:]
     private var loginTasks: [String: Task<Void, Never>] = [:]
+    private var authenticationTasks: [String: Task<Void, Never>] = [:]
     private var loginVerification: Set<String> = []
     private var saved: [LocalCLIProfile] = []
     private var savedDigest: Data?
@@ -70,6 +72,7 @@ final class LocalCLIAccountStore: ObservableObject {
     deinit {
         tasks.values.forEach { $0.cancel() }
         loginTasks.values.forEach { $0.cancel() }
+        authenticationTasks.values.forEach { $0.cancel() }
     }
 
     func discover() {
@@ -144,6 +147,7 @@ final class LocalCLIAccountStore: ObservableObject {
         }
         rebuildProfiles()
         mergeImportedGrokObservation()
+        checkLocalSignIns()
     }
 
     func profiles(for kind: LocalCLIKind) -> [LocalCLIProfile] { profiles.filter { $0.kind == kind } }
@@ -218,8 +222,9 @@ final class LocalCLIAccountStore: ObservableObject {
                     "Complete sign-in in the ZCode desktop app.")
             case .gemini:
                 language.text(
-                    "在 Gemini CLI 中选择“Login with Google”；已进入对话时输入 /auth。完成浏览器授权后回到这里刷新额度。",
-                    "Choose Login with Google in Gemini CLI, or enter /auth in an existing session. After browser authorization, return here and refresh limits.")
+                    "在 Gemini CLI 中使用 Google 登录或 API Key；已有配置会复用。需要更换方式时输入 /auth。完成后自动检测，不必退出终端；额度单独读取。",
+                    "Use Google sign-in or an API key in Gemini CLI. Existing configuration is reused; enter /auth to change it. Detection does not require closing Terminal; quota is read separately."
+                )
             case .claudeCode:
                 language.text(
                     "已打开 Claude Code 官方登录。完成浏览器授权后自动刷新；API 配置与订阅额度分别核验。",
@@ -238,6 +243,7 @@ final class LocalCLIAccountStore: ObservableObject {
                 else { return }
                 self.signingIn.remove(profile.id)
                 self.loginTasks.removeValue(forKey: profile.id)
+                self.authenticationTasks.removeValue(forKey: profile.id)?.cancel()
                 if code == 0 {
                     self.loginVerification.insert(profile.id)
                     self.loginMessages[profile.id] = self.language.text("官方登录流程已结束，正在核验账号。", "The official sign-in flow ended. Verifying the account.")
@@ -249,8 +255,19 @@ final class LocalCLIAccountStore: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 self.signingIn.remove(profile.id)
                 self.loginTasks.removeValue(forKey: profile.id)
+                self.authenticationTasks.removeValue(forKey: profile.id)?.cancel()
                 self.loginMessages[profile.id] = self.language.text(
                     "暂未确认登录结果。若浏览器已授权，点击刷新核验；终端窗口已保留。", "Sign-in has not been confirmed. If browser authorization finished, refresh to verify. The terminal was left open.")
+            }
+        }
+        authenticationTasks[profile.id]?.cancel()
+        authenticationTasks[profile.id] = Task { [weak self] in
+            // Interactive CLIs remain open after authentication. Watch their
+            // local credential evidence instead of requiring process exit.
+            for _ in 0..<300 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, let self, self.signingIn.contains(profile.id) else { return }
+                self.checkLocalSignIn(profile)
             }
         }
     }
@@ -301,9 +318,33 @@ final class LocalCLIAccountStore: ObservableObject {
     func checkInteractiveSignIn(_ profile: LocalCLIProfile) {
         guard profiles.contains(profile) else { return }
         loginTasks.removeValue(forKey: profile.id)?.cancel()
+        authenticationTasks.removeValue(forKey: profile.id)?.cancel()
         signingIn.remove(profile.id)
+        authentication[profile.id] = LocalCLIAuthenticationReader().read(profile)
         loginVerification.insert(profile.id)
         refresh(profile)
+    }
+
+    func checkLocalSignIns() {
+        for profile in profiles { checkLocalSignIn(profile) }
+    }
+
+    private func checkLocalSignIn(_ profile: LocalCLIProfile) {
+        let evidence = LocalCLIAuthenticationReader().read(profile)
+        authentication[profile.id] = evidence
+        if evidence.isConfigured, signingIn.contains(profile.id) {
+            checkInteractiveSignIn(profile)
+        }
+    }
+
+    func hasConfiguredAuthentication(_ profile: LocalCLIProfile) -> Bool {
+        authentication[profile.id]?.isConfigured == true
+            || (!stale.contains(profile.id) && quotas[profile.id]?.state == .available && quotas[profile.id]?.identityFingerprint?.isEmpty == false)
+    }
+
+    func authenticationTitle(_ profile: LocalCLIProfile) -> String {
+        if let evidence = authentication[profile.id], evidence.isConfigured { return evidence.title(language) }
+        return language.text("已读到账号", "Account detected")
     }
 
     func canSignIn(_ profile: LocalCLIProfile) -> Bool {
@@ -374,10 +415,13 @@ final class LocalCLIAccountStore: ObservableObject {
             refreshing.remove(profile.id)
             loginMessages.removeValue(forKey: profile.id)
             loginVerification.remove(profile.id)
+            authentication.removeValue(forKey: profile.id)
+            authenticationTasks.removeValue(forKey: profile.id)?.cancel()
         }
     }
 
     func refresh(_ profile: LocalCLIProfile) {
+        authentication[profile.id] = LocalCLIAuthenticationReader().read(profile)
         guard !refreshing.contains(profile.id), profiles.contains(profile) else { return }
         let request = UUID()
         requests[profile.id] = request
@@ -409,8 +453,8 @@ final class LocalCLIAccountStore: ObservableObject {
                         "对应额度接口已验证当前配置；模型执行状态仍以 CLI 为准。",
                         "The matching quota endpoint verified this configuration; model execution status still comes from the CLI.")
                     : self.language.text(
-                        "官方登录窗口已结束；账号与实际调用仍需在 CLI 核验，不能仅凭退出码确认。",
-                        "The official sign-in window closed. Verify the account and an actual response in the CLI; exit status alone is not proof.")
+                        "已检查登录配置；额度暂未提供，可打开官方工具继续使用。",
+                        "Sign-in configuration checked. Quota is unavailable; open the official tool to continue.")
             }
             if result.state != .available, result.state != .needsLogin, previous?.state == .available {
                 self.stale.insert(profile.id)
@@ -484,6 +528,10 @@ final class LocalCLIAccountStore: ObservableObject {
         for id in Array(loginTasks.keys) where !activeIDs.contains(id) {
             loginTasks.removeValue(forKey: id)?.cancel()
         }
+        for id in Array(authenticationTasks.keys) where !activeIDs.contains(id) {
+            authenticationTasks.removeValue(forKey: id)?.cancel()
+        }
+        authentication = authentication.filter { activeIDs.contains($0.key) }
         signingIn.formIntersection(activeIDs)
         loginVerification.formIntersection(activeIDs)
         loginMessages = loginMessages.filter { activeIDs.contains($0.key) }
