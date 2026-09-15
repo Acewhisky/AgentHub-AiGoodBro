@@ -21,9 +21,9 @@ AiGoodBro puts quota alerts and reset news first, so you can see when work can c
 
 A single account can use read-only monitoring. A public announcement, an account's recovered quota and its available reset credits are separate facts: an announcement neither spends a credit nor replaces an account refresh. The WeChat integration is a **WeCom group bot**; personal WeChat is not connected.
 
-**Current source preview: 0913v1 · 9.6.0 (37).** Build and install using the prompt below. This version has no binary Release yet; provider coverage is described below. [Candidate changes and validation boundaries](docs/release-notes-v9.6.0.md)
+**Current macOS source baseline: V1.0 · 0915v5 · 9.6.1 (50).** This is the rebuilt application baseline, with saved OpenCode provider reuse, CLI configuration detection, shared onboarding, compact cards, daily token summaries, the existing stacked-column trend, reset calendar and AI hotspots. Earlier Desktop-switch and refresh-frequency fixes are retained. The final CLI repair did not change the previously completed Codex switching implementation. There is no binary Release for this version. [Version notes and validation boundaries](docs/release-notes-v9.6.1.md)
 
-An installation prompt and four practical task prompts are below. Version 9.6.0 has not been published to GitHub Releases; build it from source for now.
+An installation prompt and four practical task prompts are below. Version 9.6.1 has not been published to GitHub Releases; build it from source for now.
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -180,7 +180,7 @@ Saved choices take precedence, including disabled features. New users still rece
 
 0910v1 enables local reset updates by default, with optional Feishu forwarding, and moves Desktop switching into the background with visible stage progress. It fixes Terminal executable and directory selection, adds private launch receipts and dispatch schedules, and preserves warm-up history. Sign-in reservations remain occupied until the login child process has actually stopped.
 
-Version 9.6.0 is a source preview. The [candidate notes](docs/release-notes-v9.6.0.md) list the offline checks actually run in this round and the remaining runtime boundaries. A full official reset cycle, multi-CLI sign-in and real calls, Desktop switching, and notification delivery require separate evidence.
+V1.0 identifies the source for macOS 9.6.1 (50), not a GitHub binary Release. The [version notes](docs/release-notes-v9.6.1.md) distinguish configuration detection, native launch and model-call evidence. Some provider setup and real calls remain unverified; source integration does not complete those checks. Windows acceptance is tracked separately.
 
 The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.6.0 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
 
