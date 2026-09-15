@@ -61,7 +61,8 @@ enum WKContentWorld { case page }
 extension UpstreamTrendView.Renderer {
     func fixtureNavigate(_ web: WKWebView) {
         attach(web)
-        startLoad(in: web, resourceURL: URL(fileURLWithPath: "/synthetic/standalone.html"))
+        resourceURL = URL(fileURLWithPath: "/synthetic/standalone.html")
+        startLoad(in: web, resourceURL: resourceURL!)
     }
 }
 func require(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -104,6 +105,32 @@ func require(_ condition: @autoclosure () -> Bool, _ message: String) {
         web.calls[1].completion(.success("<svg></svg>"))
         await drain()
         require(r.state == .ready, "latest option render succeeds")
+        let chartURL = URL(fileURLWithPath: "/synthetic/standalone.html")
+        var size: [String: Any] = ["snapshotID": options["snapshotID"]!, "width": 840.0, "height": 310.25]
+        let initialHeight = r.contentHeight
+        r.receiveContentSize(body: size, from: WKWebView(), isMainFrame: true, url: chartURL)
+        r.receiveContentSize(body: size, from: web, isMainFrame: false, url: chartURL)
+        r.receiveContentSize(body: size, from: web, isMainFrame: true, url: URL(string: "https://example.invalid"))
+        size["snapshotID"] = "stale"
+        r.receiveContentSize(body: size, from: web, isMainFrame: true, url: chartURL)
+        size["snapshotID"] = options["snapshotID"]
+        size["width"] = 600.0
+        r.receiveContentSize(body: size, from: web, isMainFrame: true, url: chartURL)
+        size["width"] = 840.0
+        for invalid in [Double.nan, Double.infinity, -1, 0] {
+            size["height"] = invalid
+            r.receiveContentSize(body: size, from: web, isMainFrame: true, url: chartURL)
+        }
+        require(r.contentHeight == initialHeight, "foreign, stale, resized or invalid size reports must be ignored")
+        size["height"] = 310.25
+        r.receiveContentSize(body: size, from: web, isMainFrame: true, url: chartURL)
+        require(r.contentHeight == 311, "current chart height must fit the rendered content")
+        size["height"] = 1.0
+        r.receiveContentSize(body: size, from: web, isMainFrame: true, url: chartURL)
+        require(r.contentHeight == 96, "content height keeps a usable minimum")
+        size["height"] = 9000.0
+        r.receiveContentSize(body: size, from: web, isMainFrame: true, url: chartURL)
+        require(r.contentHeight == 2400, "expanded details stay within the native layout bound")
         let next = large + "\n"
         r.update(dashboardJSON: next, resetAnnotations: [], height: 337, language: .en)
         require(JSONSerialization.largeParses == 2 && web.calls.count == 3, "new snapshot must validate and send exactly once")

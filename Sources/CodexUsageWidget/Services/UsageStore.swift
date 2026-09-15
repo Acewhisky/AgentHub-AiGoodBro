@@ -223,6 +223,7 @@ final class UsageStore: ObservableObject {
     @Published private(set) var refreshingProfileIDs: Set<String> = []
     @Published private(set) var warmUpSelection: CodexWarmUpSelection
     @Published private(set) var automaticAccountSwitchEnabled: Bool
+    @Published private(set) var accountRefreshFrequency: AccountRefreshFrequency = .automatic
     @Published private(set) var lowQuotaAlertThresholds: LowQuotaAlertThresholds = .standard
     private(set) var pausedAutomationFeatures: [PausedAutomationFeature] = []
     @Published private(set) var feishuNotificationsEnabled: Bool
@@ -280,6 +281,7 @@ final class UsageStore: ObservableObject {
     private var accountSwitchGeneration = TaskTransactionGeneration()
     private var pendingRestoreHandle: CodexSessionRestoreHandle?
     private var automaticSwitchTargetID: String?
+    private var automaticCandidateRefreshAttemptAt: Date?
     private var automaticSwitchContext: AutomaticSwitchContext?
     private var codexHistoryConfirmationSuccess: (() -> Void)?
     private var codexHistoryConfirmationFailure: ((String) -> Void)?
@@ -288,10 +290,12 @@ final class UsageStore: ObservableObject {
     private var pendingLaunchProfileID: String?
     private var isMainWindowActive = false
     private var lastFullRefreshCompletedAt: Date?
+    private var fullRefreshCancellation: TokenMonitorCancellation?
+    private var identityRefreshCancellation: TokenMonitorCancellation?
     private let statisticsSnapshotCacheLimit = 4
     private let statisticsSnapshotCacheTTL: TimeInterval = 3 * 60
-    private let foregroundFullRefreshInterval: TimeInterval = 3 * 60
-    private let backgroundFullRefreshInterval: TimeInterval = 5 * 60
+    private var foregroundFullRefreshInterval: TimeInterval { accountRefreshFrequency.interval(default: 3 * 60) }
+    private var backgroundFullRefreshInterval: TimeInterval { accountRefreshFrequency.interval(default: 5 * 60) }
     private let hubWarmUpRetryDelay: TimeInterval = 5 * 60
     private let profileStore: CodexProfileStore
     private let accountActions = CodexAccountActions()
@@ -337,8 +341,9 @@ final class UsageStore: ObservableObject {
         isPreview = false
         publicResetAnnouncements = PublicResetAnnouncementMonitor()
         statisticsPreference = StatisticsTimeZonePreferenceStore.load()
-        automaticAccountSwitchEnabled = NextFeatureDefaults.isEnabled(CodexAutomaticSwitchPolicy.enabledDefaultsKey)
+        automaticAccountSwitchEnabled = UserDefaults.standard.bool(forKey: CodexAutomaticSwitchPolicy.enabledDefaultsKey)
         lowQuotaAlertThresholds = .load()
+        accountRefreshFrequency = .load()
         pausedAutomationFeatures = PausedAutomationFeature.read(from: UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain))
         feishuNotificationsEnabled = NextFeatureDefaults.isEnabled(Self.feishuNotificationsEnabledKey)
         feishuQuotaResetEnabled = NextFeatureDefaults.isEnabled(Self.feishuQuotaResetEnabledKey)
@@ -1170,7 +1175,12 @@ final class UsageStore: ObservableObject {
     }
 
     func launchCodex(with profileID: String, forceWithoutSessionRestore: Bool = false) {
-        guard !isLaunchingCodex, !isLoggingIn, !isAccountSwitchTransactionActive else { return }
+        guard !isLaunchingCodex, !isLoggingIn, !isAccountSwitchTransactionActive else {
+            presentAccountSwitchBlock(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "已有登录或切换正在处理，请等待完成；当前账号未改变", "A sign-in or switch is already in progress. Wait for it to finish."), isAutomatic: automaticSwitchTargetID == profileID)
+            return
+        }
         // Publish before any disk, process or network work. This also reserves
         // the interaction against double-clicks and scheduled warm-up.
         desktopSwitchSucceeded = false
@@ -1178,6 +1188,8 @@ final class UsageStore: ObservableObject {
         isLaunchingCodex = true
         canCancelDesktopSwitch = true
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在准备切换…", "Preparing to switch…")
+        let isAutomatic = automaticSwitchTargetID == profileID
+        if !isAutomatic { cancelQuotaRefreshesForDesktopSwitch() }
         let preparationID = UUID()
         switchPreparationEvidenceID = preparationID
         desktopSwitchPreparationTask = Task { @MainActor [weak self] in
@@ -1195,7 +1207,7 @@ final class UsageStore: ObservableObject {
                 }
             }
             let deadline = Date().addingTimeInterval(45)
-            while isRefreshing || isRefreshingWarmUpProfiles || warmingProfileID != nil {
+            while isAutomatic && (isRefreshing || isRefreshingWarmUpProfiles || warmingProfileID != nil) {
                 accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                     "切换已排队，正在等待本次账号读取结束…", "Switch queued. Waiting for the current account check to finish…")
                 do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
@@ -1211,8 +1223,6 @@ final class UsageStore: ObservableObject {
             guard !Task.isCancelled else { return }
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在检查桌面任务…", "Checking Desktop tasks…")
             let client = taskClient
-            let isAutomatic = automaticSwitchTargetID == profileID
-            let isForcedManual = !isAutomatic && forceWithoutSessionRestore
             if isAutomatic { automaticSwitchContext?.completeTasks = nil }
             let refreshed = await Task.detached(priority: .userInitiated) {
                 client.awaitSnapshot(timeout: 5)
@@ -1223,7 +1233,9 @@ final class UsageStore: ObservableObject {
                 if isAutomatic { automaticSwitchContext?.completeTasks = refreshed }
             } else {
                 codexLiveTasks = .disconnected
-                guard isForcedManual else {
+                // Manual requests still need to reach beginCodexSwitch's explicit
+                // confirmation. Missing task evidence never grants force itself.
+                guard !isAutomatic else {
                     accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                         "完整任务读取失败，切换已取消", "Complete task read failed; switching cancelled.")
                     return
@@ -1251,11 +1263,46 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    private func cancelQuotaRefreshesForDesktopSwitch() {
+        refreshGeneration &+= 1
+        fullRefreshCancellation?.cancel()
+        fullRefreshCancellation = nil
+        identityRefreshCancellation?.cancel()
+        identityRefreshCancellation = nil
+        engineQuotaCancellation?.cancel()
+        engineQuotaCancellation = nil
+        isRefreshing = false
+        isRefreshingWarmUpProfiles = false
+        refreshingProfileIDs.removeAll()
+        warmUpRefreshStartedAt = nil
+        hasPendingRefresh = false
+        authRefreshWorkItem?.cancel()
+        authRefreshWorkItem = nil
+    }
+
+    func requestDesktopSwitch(with profileID: String, status: HubAccountTaskStatus) {
+        if status.isBusy {
+            dismissAccountSwitchAlert()
+            presentAccountSwitchBlock(
+                status.blockingReason(WidgetLanguage.storedOrAutomatic())
+                    ?? WidgetLanguage.storedOrAutomatic().text("账号占用尚未确认，请刷新任务状态后再试", "Account availability is unverified. Refresh task status and try again."),
+                isAutomatic: false)
+            return
+        }
+        launchCodex(with: profileID)
+    }
+
     private func reserveDesktopSwitchMaintenance(for profileID: String) async -> Bool {
         guard desktopSwitchMaintenanceLeases.isEmpty,
             let target = profiles.first(where: { $0.id == profileID }),
             let source = profiles.first(where: \.isSystemProfile)
-        else { return false }
+        else {
+            presentAccountSwitchBlock(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "切换准备未完成：账号记录缺失或上次维护尚未结束", "Switch preparation is unavailable: account records or unfinished maintenance need attention."),
+                isAutomatic: automaticSwitchTargetID == profileID)
+            return false
+        }
         let accounts = target.recordedAccountKey == source.recordedAccountKey ? [target] : [source, target]
         let mappings = accounts.map { profile -> (account: String, alias: String, hubAlias: String?) in
             let managed = profiles.first { !$0.isSystemProfile && $0.recordedAccountKey == profile.recordedAccountKey }
@@ -1266,8 +1313,10 @@ final class UsageStore: ObservableObject {
         do {
             desktopSwitchMaintenanceLeases = try DispatchActivityStore.live.reserveMaintenance(accounts: mappings.map { ($0.account, $0.alias) })
         } catch {
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "源账号或目标账号仍有任务占用；任务结束后可切换", "The source or target account has an active reservation. Switch after its task finishes.")
+            presentAccountSwitchBlock(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "源账号或目标账号仍有任务占用，或占用记录无法读取；当前账号未改变", "The source or target account is occupied, or its reservation cannot be read. The account is unchanged."),
+                isAutomatic: automaticSwitchTargetID == profileID)
             return false
         }
         // Standalone installations need no Hub. Configured accounts use the
@@ -1278,8 +1327,10 @@ final class UsageStore: ObservableObject {
                 let lease = desktopSwitchMaintenanceLeases[index]
                 guard await HubConsoleModel.warmUpAvailability(for: alias, excludingLocalLease: lease) == .idle else {
                     if !Task.isCancelled {
-                        accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                            "账号有任务或占用状态尚未确认，当前账号未改变", "Account availability is busy or unverified. The current account is unchanged.")
+                        presentAccountSwitchBlock(
+                            WidgetLanguage.storedOrAutomatic().text(
+                                "账号有任务或任务服务未连接，暂不能确认占用；当前账号未改变", "The account is busy or the task service is disconnected. Availability is unverified; the account is unchanged."),
+                            isAutomatic: automaticSwitchTargetID == profileID)
                     }
                     return false
                 }
@@ -1329,8 +1380,7 @@ final class UsageStore: ObservableObject {
             return
         }
         guard !isLoggingIn,
-            !isRefreshing,
-            !isRefreshingWarmUpProfiles
+            !isAutomaticSwitch || (!isRefreshing && !isRefreshingWarmUpProfiles)
         else {
             presentAccountSwitchBlock(
                 WidgetLanguage.storedOrAutomatic().text("账号数据仍在读取；完成后再切换", "Wait for account data to finish loading before switching."), isAutomatic: isAutomaticSwitch)
@@ -1408,9 +1458,9 @@ final class UsageStore: ObservableObject {
             )
             return
         }
-        guard !isAutomaticSwitch || !codexWasRunning else {
+        guard !isAutomaticSwitch || !codexWasRunning || visibleThreadID != nil else {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "自动切换已暂停：Codex 仍在运行，界面历史需要人工确认", "Automatic switching paused: Codex is still running and conversation history needs manual confirmation.")
+                "自动切换已暂停：无法确认当前对话的恢复位置", "Automatic switching paused: the current conversation cannot be restored reliably.")
             finishAutomaticSwitchAttempt(
                 for: profileID,
                 succeeded: false,
@@ -1474,7 +1524,13 @@ final class UsageStore: ObservableObject {
                 statisticsPreference: preference,
                 codexHomeDirectory: systemProfile.codexHomeURL
             )
-            let verified = CodexSwitchPreparation.load(source: systemContext, target: context)
+            let verified =
+                isAutomaticSwitch
+                ? CodexSwitchPreparation.load(source: systemContext, target: context)
+                : (
+                    source: CodexSwitchSnapshotProjection.manualSnapshot(home: systemProfile.codexHomeURL, saved: systemProfile.lastSnapshot),
+                    target: CodexSwitchSnapshotProjection.manualSnapshot(home: targetCredentialHome, saved: profile.lastSnapshot)
+                )
             let verifiedSnapshot = verified.target
             let currentSystemSnapshot = verified.source
             let verifiedOfficialProfile = profile.officialProfile
@@ -1512,8 +1568,9 @@ final class UsageStore: ObservableObject {
                         .lowercased(),
                     targetCredentialIdentity.email == verifiedEmail,
                     currentSystemCredentialIdentity.email == currentSystemEmail,
-                    currentSystemEmail == systemProfile.recordedAccountKey,
-                    systemProfile.matchesRecordedCredential(currentSystemCredentialIdentity)
+                    !isAutomaticSwitch
+                        || (currentSystemEmail == systemProfile.recordedAccountKey
+                            && systemProfile.matchesRecordedCredential(currentSystemCredentialIdentity))
                 else {
                     self.isLaunchingCodex = false
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -1565,11 +1622,11 @@ final class UsageStore: ObservableObject {
                         let completeTasks = context.completeTasks,
                         !profile.isSystemProfile,
                         context.thresholds == self.lowQuotaAlertThresholds,
-                        NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty,
+                        NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty || threadIDToRestore != nil,
                         self.automaticAccountSwitchEnabled,
                         self.automaticSwitchParticipation(for: profileID),
                         self.automaticSwitchParticipation(for: context.sourceProfileID),
-                        context.sourceProfileID == self.selectedMonitorProfileID,
+                        self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID == context.sourceAccountID,
                         currentEmail == context.sourceIdentityKey,
                         currentSystemCredentialIdentity.accountID == context.sourceAccountID,
                         (try? self.accountActions.currentSystemAuthFingerprint(
@@ -1615,12 +1672,11 @@ final class UsageStore: ObservableObject {
                 }
                 var sourceBackupProfile: CodexProfile?
                 do {
-                    try self.profileStore.record(
-                        currentSystemSnapshot,
-                        for: systemProfile.id,
-                        allowAccountOnly: true,
-                        allowSystemAccountChange: true
-                    )
+                    if isAutomaticSwitch || !systemProfile.matchesRecordedCredential(currentSystemCredentialIdentity) {
+                        try self.profileStore.record(
+                            currentSystemSnapshot, for: systemProfile.id,
+                            allowAccountOnly: true, allowSystemAccountChange: true)
+                    }
                     let currentEmail = currentSystemSnapshot.account?.email?.lowercased()
                     if currentSystemCredentialIdentity.accountID != targetCredentialIdentity.accountID {
                         sourceBackupProfile = try self.profileStore.preserveSystemLogin(
@@ -1628,11 +1684,11 @@ final class UsageStore: ObservableObject {
                             expectedAccountID: currentSystemCredentialIdentity.accountID
                         )
                     }
-                    try self.profileStore.record(
-                        verifiedSnapshot,
-                        for: profile.id,
-                        allowSystemAccountChange: profile.isSystemProfile
-                    )
+                    if isAutomaticSwitch {
+                        try self.profileStore.record(
+                            verifiedSnapshot, for: profile.id,
+                            allowSystemAccountChange: profile.isSystemProfile)
+                    }
                     self.syncProfiles()
                 } catch {
                     self.isLaunchingCodex = false
@@ -1700,7 +1756,7 @@ final class UsageStore: ObservableObject {
                     guard let context = self.automaticSwitchContext,
                         let completeTasks = context.completeTasks,
                         context.thresholds == self.lowQuotaAlertThresholds,
-                        NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty,
+                        NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty || threadIDToRestore != nil,
                         self.automaticAccountSwitchEnabled,
                         self.automaticSwitchParticipation(for: profileID),
                         self.automaticSwitchParticipation(for: context.sourceProfileID),
@@ -1732,9 +1788,7 @@ final class UsageStore: ObservableObject {
                     profile: launchProfile,
                     sourceBackupProfile: sourceBackupProfile,
                     expectedSourceIdentity: currentSystemCredentialIdentity,
-                    retainRecoveryJournal: !isAutomaticSwitch
-                        && requiresCodexRestart
-                        && historyBaseline != nil,
+                    retainRecoveryJournal: requiresCodexRestart && historyBaseline != nil,
                     allowForcedTermination: isForcedManualSwitch,
                     progress: { [weak self] message in
                         guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
@@ -1834,7 +1888,9 @@ final class UsageStore: ObservableObject {
                         self.accountManagerMessage =
                             isAutomaticSwitch
                             ? WidgetLanguage.storedOrAutomatic().text("安全自动切换已完成，Codex 已重新打开", "Safe automatic switch complete. Codex reopened.")
-                            : WidgetLanguage.storedOrAutomatic().text("已切换账号并重新打开 Codex", "Account switched and Codex reopened.")
+                            : (requiresCodexRestart
+                                ? WidgetLanguage.storedOrAutomatic().text("已切换账号并重新打开 Codex，额度随后刷新", "Account switched and Codex reopened. Limits refresh next.")
+                                : WidgetLanguage.storedOrAutomatic().text("已核对本机登录为此账号，Codex 已打开；额度随后刷新", "Local sign-in matches this account. Codex is open; limits refresh next."))
                         self.finishAutomaticSwitchAttempt(
                             for: profileID,
                             succeeded: true,
@@ -1898,10 +1954,15 @@ final class UsageStore: ObservableObject {
                 return
             }
 
+            let isAutomaticSwitch = self.automaticSwitchTargetID == attemptedProfileID
             self.beginCodexHistoryConfirmation(
+                isAutomaticSwitch: isAutomaticSwitch,
                 onSuccess: { [weak self] in
                     guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
-                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("界面历史已确认，正在提交账号切换", "Conversation history confirmed. Finalizing the account switch.")
+                    self.accountManagerMessage =
+                        isAutomaticSwitch
+                        ? WidgetLanguage.storedOrAutomatic().text("任务恢复与分页历史核验通过，正在完成自动换号", "Task restoration and paginated history verified. Finalizing automatic switching.")
+                        : WidgetLanguage.storedOrAutomatic().text("界面历史已确认，正在提交账号切换", "Conversation history confirmed. Finalizing the account switch.")
                     self.accountActions.commitPendingSwitch { [weak self] error in
                         guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
                         if let error {
@@ -1925,13 +1986,19 @@ final class UsageStore: ObservableObject {
                         self.desktopSwitchSucceeded = true
                         self.finishAccountSwitchTransaction()
                         self.isLaunchingCodex = false
-                        self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                            "已切换账号；原任务窗口、分页数据和界面历史均已确认", "Account switched. The original task window, paginated data and visible history were verified.")
+                        self.accountManagerMessage =
+                            isAutomaticSwitch
+                            ? WidgetLanguage.storedOrAutomatic().text(
+                                "自动换号已完成；已请求恢复原任务并核对分页历史", "Automatic switching complete. The original task was reopened and its paginated history verified.")
+                            : WidgetLanguage.storedOrAutomatic().text(
+                                "已切换账号；原任务窗口、分页数据和界面历史均已确认", "Account switched. The original task window, paginated data and visible history were verified.")
                         self.finishAutomaticSwitchAttempt(
                             for: attemptedProfileID,
                             succeeded: true,
-                            detail: WidgetLanguage.storedOrAutomatic().text(
-                                "登录凭据、Codex 重启、账号状态、分页数据与界面历史均已确认", "Sign-in, restart, account state, paginated data and visible history verified.")
+                            detail: isAutomaticSwitch
+                                ? WidgetLanguage.storedOrAutomatic().text("身份、重启、账号状态与分页历史核验通过", "Identity, restart, account state and paginated history verified.")
+                                : WidgetLanguage.storedOrAutomatic().text(
+                                    "登录凭据、Codex 重启、账号状态、分页数据与界面历史均已确认", "Sign-in, restart, account state, paginated data and visible history verified.")
                         )
                         self.refresh(queueIfBusy: true)
                     }
@@ -1990,10 +2057,18 @@ final class UsageStore: ObservableObject {
     }
 
     private func beginCodexHistoryConfirmation(
+        isAutomaticSwitch: Bool,
         onSuccess: @escaping () -> Void,
         onFailure: @escaping (String) -> Void
     ) {
         clearCodexHistoryConfirmation()
+        // The caller has already verified restoration and the complete paginated
+        // history. Automatic mode commits this evidence; manual mode additionally
+        // asks the user to inspect the visible history.
+        if isAutomaticSwitch {
+            onSuccess()
+            return
+        }
         codexHistoryConfirmationSuccess = onSuccess
         codexHistoryConfirmationFailure = onFailure
         isAwaitingCodexHistoryConfirmation = true
@@ -2218,18 +2293,22 @@ final class UsageStore: ObservableObject {
         guard !pausedAutomationFeatures.contains(.lowQuota) else { return }
         guard automaticAccountSwitchEnabled != enabled else { return }
         automaticAccountSwitchEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: CodexAutomaticSwitchPolicy.enabledDefaultsKey)
+        if !isPreview { UserDefaults.standard.set(enabled, forKey: CodexAutomaticSwitchPolicy.enabledDefaultsKey) }
+        guard !isPreview else { return }
+        scheduleWarmUpMaintenanceTimer()
         if enabled {
             codexInactiveSince = nil
             updateCodexForegroundState()
             taskClient.start(reason: .startup)
             taskClient.refreshThreads()
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "低额度提醒已开启；5 小时剩余 ≤\(lowQuotaAlertThresholds.fiveHour)% 或 7 天剩余 <\(lowQuotaAlertThresholds.sevenDay)% 时推荐可用账号",
-                "Low-limit alerts enabled: suggestions appear at 5h remaining ≤\(lowQuotaAlertThresholds.fiveHour)% or weekly remaining <\(lowQuotaAlertThresholds.sevenDay)%.")
+                "自动换号已开启；低于额度阈值时核对备用账号，任务空闲后切换",
+                "Automatic switching enabled. Below the quota threshold, verify a backup and switch when tasks are idle.")
             refresh(queueIfBusy: true)
+            refreshWarmUpProfilesThenSchedule(performWarmUpAfterRefresh: false, quotaOnly: true)
         } else {
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("低额度提醒已关闭", "Low-limit alerts disabled.")
+            if automaticSwitchTargetID != nil, canCancelDesktopSwitch { cancelDesktopSwitchPreparation() }
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("额度不足自动换号已关闭", "Automatic switching for low quota is off.")
         }
     }
 
@@ -2628,14 +2707,20 @@ final class UsageStore: ObservableObject {
             !isRefreshing,
             !isRefreshingWarmUpProfiles,
             warmingProfileID == nil,
-            let sourceSnapshot = runtimeSnapshot(for: .codex)?.snapshot,
+            let systemProfile = profiles.first(where: \.isSystemProfile),
+            let savedSource = systemProfile.lastSnapshot,
+            let sourceIdentityEmail = savedSource.email,
+            let sourceIdentityID = savedSource.accountID
+        else { return }
+        let sourceSnapshot = CodexSwitchSnapshotProjection.snapshot(
+            saved: savedSource, identity: CodexCredentialIdentity(email: sourceIdentityEmail, accountID: sourceIdentityID))
+        guard
             sourceSnapshot.quotaReadSucceeded,
             let sourceEmail = sourceSnapshot.account?.email?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased(),
             !sourceEmail.isEmpty,
-            let sourceProfile = selectedMonitorProfile,
-            let systemProfile = profiles.first(where: \.isSystemProfile),
+            let sourceProfile = profiles.first(where: { !$0.isSystemProfile && $0.lastSnapshot?.accountID == sourceIdentityID }) ?? profiles.first(where: \.isSystemProfile),
             let sourceAccountID = sourceProfile.lastSnapshot?.accountID,
             !sourceAccountID.isEmpty,
             systemProfile.lastSnapshot?.accountID == sourceAccountID,
@@ -2660,7 +2745,7 @@ final class UsageStore: ObservableObject {
                 succeeded: systemProfile.lastSnapshot?.quotaReadSucceeded,
                 fetchedAt: systemProfile.lastSnapshot?.fetchedAt ?? .distantPast,
                 failedAt: systemProfile.lastQuotaReadFailureAt, now: now
-            ), NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty
+            )
         else { return }
         let defaults = UserDefaults.standard
         let sourceQuota = AutomaticSwitchQuotaState(snapshot: sourceSnapshot)
@@ -2683,7 +2768,6 @@ final class UsageStore: ObservableObject {
             )
         else { return }
 
-        defaults.set(now, forKey: CodexAutomaticSwitchPolicy.lastAttemptDefaultsKey)
         let candidates = profiles.filter { profile in
             !profile.isSystemProfile
                 && automaticSwitchParticipation(for: profile)
@@ -2693,6 +2777,30 @@ final class UsageStore: ObservableObject {
                 && FileManager.default.fileExists(
                     atPath: profile.codexHomeURL.appendingPathComponent("auth.json").path
                 )
+        }
+        let staleCandidateIDs = Set(
+            candidates.filter { profile in
+                guard let snapshot = profile.lastSnapshot else { return true }
+                return !Self.automaticQuotaEvidenceIsFresh(
+                    succeeded: snapshot.quotaReadSucceeded, fetchedAt: snapshot.fetchedAt,
+                    failedAt: profile.lastQuotaReadFailureAt, now: now)
+            }.map(\.id))
+        if !staleCandidateIDs.isEmpty,
+            automaticCandidateRefreshAttemptAt.map({ now.timeIntervalSince($0) >= 60 }) ?? true
+        {
+            automaticCandidateRefreshAttemptAt = now
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "额度不足，正在核对备用账号额度…", "Quota is low. Checking backup account limits…")
+            refreshWarmUpProfilesThenSchedule(
+                performWarmUpAfterRefresh: false,
+                profileIDs: staleCandidateIDs.union([sourceProfile.id, systemProfile.id]),
+                quotaOnly: true, refreshMembershipDates: false,
+                completion: { [weak self] _ in
+                    guard let self, self.automaticAccountSwitchEnabled else { return }
+                    self.taskClient.refreshThreads()
+                    self.evaluateAutomaticAccountSwitch()
+                })
+            return
         }
         let triggeredWindows = sourceQuota.triggeredWindows(thresholds: lowQuotaAlertThresholds)
         let preferred = CodexAutomaticSwitchPolicy.preferredCandidate(
@@ -2715,6 +2823,10 @@ final class UsageStore: ObservableObject {
         let recommendedProfile = preferred.flatMap { candidate in
             candidates.first(where: { $0.id == candidate.profileID })
         }
+        // Failed candidate reads can retry after the bounded refresh backoff.
+        // They do not consume the switch transaction's one-hour retry window.
+        guard recommendedProfile != nil || staleCandidateIDs.isEmpty else { return }
+        defaults.set(now, forKey: CodexAutomaticSwitchPolicy.lastAttemptDefaultsKey)
         let recommendedName =
             recommendedProfile.map {
                 AccountDisplay.profileName($0, allProfiles: profiles)
@@ -3221,10 +3333,13 @@ final class UsageStore: ObservableObject {
     /// 维护刷新始终 quota-only，不会发送暖号请求；暖号仅由独立的到期判定触发。
     private func scheduleWarmUpMaintenanceTimer() {
         guard hasStarted else { return }
-        let interval = CodexWarmUpPolicy.maintenanceRefreshInterval(
-            warmUpEnabled: warmUpSelection.isEnabled,
-            quotaNotificationsEnabled: observesOfficialQuotaEvents
-        )
+        let interval = accountRefreshFrequency.interval(
+            default: automaticAccountSwitchEnabled
+                ? 3 * 60
+                : CodexWarmUpPolicy.maintenanceRefreshInterval(
+                    warmUpEnabled: warmUpSelection.isEnabled,
+                    quotaNotificationsEnabled: observesOfficialQuotaEvents
+                ))
         if let timer = warmUpMaintenanceTimer,
             timer.isValid,
             !CodexWarmUpPolicy.maintenanceTimerNeedsReplacement(
@@ -3260,7 +3375,7 @@ final class UsageStore: ObservableObject {
                 retryQuotaReadOnce: true
             )
         }
-        timer.tolerance = observesOfficialQuotaEvents ? 5 : 30
+        timer.tolerance = min(interval * 0.1, observesOfficialQuotaEvents ? 5 : 30)
         RunLoop.main.add(timer, forMode: .common)
         warmUpMaintenanceTimer = timer
     }
@@ -3734,6 +3849,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func refreshProfileAfterWarmUp(_ profile: CodexProfile, manual: Bool = false) {
+        let generation = refreshGeneration
         let preference = statisticsPreference
         DispatchQueue.global(qos: .utility).async {
             let context = RuntimeLoadContext.live(
@@ -3742,6 +3858,7 @@ final class UsageStore: ObservableObject {
             )
             let snapshot = CodexUsageReader().load(context: context, quotaOnly: true)
             DispatchQueue.main.async {
+                guard self.refreshGeneration == generation, !self.isLaunchingCodex, !self.isAccountSwitchTransactionActive else { return }
                 do {
                     try self.profileStore.record(snapshot, for: profile.id)
                     self.observeOfficialQuotaChanges(snapshot, profileID: profile.id)
@@ -3893,6 +4010,7 @@ final class UsageStore: ObservableObject {
                 return (profile.id, snapshot)
             }
             DispatchQueue.main.async {
+                guard self.engineQuotaCancellation === quotaCancellation else { return }
                 self.isRefreshingWarmUpProfiles = false
                 self.refreshingProfileIDs.subtract(refreshingIDs)
                 self.warmUpRefreshStartedAt = nil
@@ -4279,12 +4397,16 @@ final class UsageStore: ObservableObject {
         guard !candidates.isEmpty else { return }
         let candidateIDs = Set(candidates.map(\.id))
         let preference = statisticsPreference
+        let cancellation = TokenMonitorCancellation()
+        engineQuotaCancellation?.cancel()
+        engineQuotaCancellation = cancellation
         isRefreshingWarmUpProfiles = true
         refreshingProfileIDs.formUnion(candidateIDs)
         warmUpRefreshStartedAt = Date()
         Task { @MainActor [weak self] in
             guard let self else { return }
             for candidate in candidates {
+                guard !cancellation.isCancelled else { break }
                 guard self.hasStarted, !self.isLoggingIn, !self.isLaunchingCodex,
                     !self.isAccountSwitchTransactionActive, self.warmingProfileID == nil,
                     let profile = self.profiles.first(where: { $0.id == candidate.id }),
@@ -4304,18 +4426,18 @@ final class UsageStore: ObservableObject {
                     "正在更新 \(AccountDisplay.profileName(profile)) 的会员日期…",
                     "Updating the subscription date for \(AccountDisplay.profileName(profile))…")
                 let result = await Task.detached(priority: .utility) {
-                    let context = RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: profile.codexHomeURL)
+                    let context = RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: profile.codexHomeURL, quotaCancellation: cancellation)
                     let reader = CodexUsageReader()
                     var messages: [String] = []
                     let account = reader.readQuotaSnapshot(
                         context: context, quotaOnly: true, messages: &messages, refreshingMembershipFor: profile)
                     let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL)
                     let succeeded = account.membershipRefreshSucceeded && profile.matchesRecordedCredential(identity)
-                    let official = succeeded ? CodexOfficialProfileReader.load(codexHomeURL: profile.codexHomeURL) : nil
+                    let official = succeeded && !cancellation.isCancelled ? CodexOfficialProfileReader.load(codexHomeURL: profile.codexHomeURL) : nil
                     let snapshot = reader.finishingLoad(appServer: account, messages: messages, context: context, quotaOnly: true)
                     return (succeeded, official, snapshot)
                 }.value
-                guard self.hasStarted,
+                guard self.hasStarted, !cancellation.isCancelled, self.engineQuotaCancellation === cancellation,
                     self.profiles.first(where: { $0.id == profile.id })?.recordedAccountKey == profile.recordedAccountKey
                 else { break }
                 let succeeded = result.0 && result.1 != nil
@@ -4332,6 +4454,8 @@ final class UsageStore: ObservableObject {
                         "\(AccountDisplay.profileName(profile)) 的会员日期刷新失败，稍后自动重试",
                         "Could not update the subscription date for \(AccountDisplay.profileName(profile)). It will retry later.")
             }
+            guard self.engineQuotaCancellation === cancellation else { return }
+            self.engineQuotaCancellation = nil
             self.isRefreshingWarmUpProfiles = false
             self.refreshingProfileIDs.subtract(candidateIDs)
             self.warmUpRefreshStartedAt = nil
@@ -4346,6 +4470,10 @@ final class UsageStore: ObservableObject {
 
     @MainActor
     func stop() {
+        fullRefreshCancellation?.cancel()
+        fullRefreshCancellation = nil
+        identityRefreshCancellation?.cancel()
+        identityRefreshCancellation = nil
         cancelStatisticsEngine()
         engineQuotaCancellation?.cancel()
         engineQuotaCancellation = nil
@@ -4425,6 +4553,9 @@ final class UsageStore: ObservableObject {
         refreshStatisticsEngine()
         refreshGeneration &+= 1
         let generation = refreshGeneration
+        let cancellation = TokenMonitorCancellation()
+        fullRefreshCancellation?.cancel()
+        fullRefreshCancellation = cancellation
         let preference = statisticsPreference
         let profileID = selectedMonitorProfileID
         let codexHomeDirectory = profileStore.effectiveCredentialHome(for: profileID)
@@ -4436,15 +4567,22 @@ final class UsageStore: ObservableObject {
             let multiSnapshot = MultiRuntimeUsageReader().load(
                 statisticsPreference: preference,
                 generation: generation,
-                codexHomeDirectory: codexHomeDirectory
+                codexHomeDirectory: codexHomeDirectory,
+                quotaCancellation: cancellation
             )
-            let officialProfile = codexHomeDirectory.flatMap {
-                CodexOfficialProfileReader.load(codexHomeURL: $0)
-            }
+            let officialProfile =
+                cancellation.isCancelled
+                ? nil
+                : codexHomeDirectory.flatMap {
+                    CodexOfficialProfileReader.load(codexHomeURL: $0)
+                }
             let credentialIdentity = codexHomeDirectory.flatMap {
                 CodexOfficialProfileReader.credentialIdentity(codexHomeURL: $0)
             }
             DispatchQueue.main.async {
+                PerformanceMonitor.shared.end(performanceSpan)
+                guard self.fullRefreshCancellation === cancellation, !cancellation.isCancelled else { return }
+                self.fullRefreshCancellation = nil
                 if generation == self.refreshGeneration,
                     multiSnapshot.statisticsIdentity.preference == self.statisticsPreference
                 {
@@ -4498,7 +4636,6 @@ final class UsageStore: ObservableObject {
                     }
                 }
                 self.isRefreshing = false
-                PerformanceMonitor.shared.end(performanceSpan)
                 self.lastFullRefreshCompletedAt = Date()
                 self.scheduleFullRefreshTimer()
                 if scheduleWarmUpAfterRefresh {
@@ -4797,6 +4934,14 @@ final class UsageStore: ObservableObject {
         fullTimer = timer
     }
 
+    func setAccountRefreshFrequency(_ frequency: AccountRefreshFrequency) {
+        guard accountRefreshFrequency != frequency else { return }
+        accountRefreshFrequency = frequency
+        if !isPreview { UserDefaults.standard.set(frequency.rawValue, forKey: AccountRefreshFrequency.defaultsKey) }
+        scheduleFullRefreshTimer()
+        scheduleWarmUpMaintenanceTimer()
+    }
+
     private func apply(_ multiSnapshot: MultiRuntimeUsageSnapshot) {
         let performanceSpan = PerformanceMonitor.shared.begin(.statePublish)
         defer { PerformanceMonitor.shared.end(performanceSpan) }
@@ -4989,14 +5134,20 @@ final class UsageStore: ObservableObject {
         }
         let authExists = authFileState(for: systemProfile).exists
         let preference = statisticsPreference
+        let cancellation = TokenMonitorCancellation()
+        identityRefreshCancellation?.cancel()
+        identityRefreshCancellation = cancellation
         DispatchQueue.global(qos: .utility).async {
             let context = RuntimeLoadContext.live(
                 statisticsPreference: preference,
-                codexHomeDirectory: systemProfile.codexHomeURL
+                codexHomeDirectory: systemProfile.codexHomeURL,
+                quotaCancellation: cancellation
             )
             let systemSnapshot = CodexUsageReader().load(context: context)
-            let officialProfile = CodexOfficialProfileReader.load(codexHomeURL: systemProfile.codexHomeURL)
+            let officialProfile = cancellation.isCancelled ? nil : CodexOfficialProfileReader.load(codexHomeURL: systemProfile.codexHomeURL)
             DispatchQueue.main.async {
+                guard self.identityRefreshCancellation === cancellation, !cancellation.isCancelled else { return }
+                self.identityRefreshCancellation = nil
                 let previousMonitorID = self.profileStore.selectedMonitorProfileID
                 do {
                     if systemSnapshot.account?.email?.isEmpty == false {

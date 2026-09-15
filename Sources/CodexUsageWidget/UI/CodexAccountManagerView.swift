@@ -124,13 +124,66 @@ enum HomeEngineProjection {
     static func cachedAt(_ state: TokenMonitorEngineState) -> String? {
         state.isStale ? state.lastGoodAt : nil
     }
+
+    struct PeriodSummary: Equatable {
+        let key: String
+        let tokens: Int64?
+        let recordedDays: Int
+        let calendarDays: Int
+    }
+
+    /// Uses the same canonical daily buckets as the charts, never source totals.
+    static func recentPeriods(_ response: TokenMonitorResponse?, now: Date = Date()) -> [PeriodSummary] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = response.flatMap { TimeZone(identifier: $0.timezone) } ?? TimeZone(identifier: "Asia/Shanghai")!
+        let end = calendar.startOfDay(for: now)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        var daily: [String: Int64] = [:]
+        var seen = Set<String>()
+        var invalid = false
+        let canonical = response?.payload["aggregate"] ?? response?.payload["usage"]
+        let history = canonical?["history"] ?? response?.payload["history"] ?? response?.payload["usage"]?["history"]
+        for row in history?["daily"]?.array ?? [] {
+            guard let date = row["date"]?.string, let parsed = formatter.date(from: date),
+                formatter.string(from: parsed) == date
+            else { continue }
+            guard seen.insert(date).inserted else {
+                invalid = true
+                break
+            }
+            if let value = exactTokens(row["tokens"]) { daily[date] = value }
+        }
+        let starts: [(String, Date)] = [
+            ("today", end),
+            ("week", calendar.date(byAdding: .day, value: -6, to: end)!),
+            ("month", calendar.dateInterval(of: .month, for: end)!.start),
+        ]
+        return starts.map { key, start in
+            let count = (calendar.dateComponents([.day], from: start, to: end).day ?? 0) + 1
+            var total: Int64 = 0
+            var recorded = 0
+            var overflowed = invalid
+            for offset in 0..<count {
+                guard let date = calendar.date(byAdding: .day, value: offset, to: start),
+                    let value = daily[formatter.string(from: date)]
+                else { continue }
+                let result = total.addingReportingOverflow(value)
+                if result.overflow { overflowed = true } else { total = result.partialValue }
+                recorded += 1
+            }
+            return PeriodSummary(key: key, tokens: recorded > 0 && !overflowed ? total : nil, recordedDays: invalid ? 0 : recorded, calendarDays: count)
+        }
+    }
 }
 
 private struct UpstreamHomeStatistics: View {
     let state: TokenMonitorEngineState
     let language: WidgetLanguage
-    let annotations: [UpstreamTrendView.ResetAnnotation]
-    let annotationsHasMore: Bool?
+    @Binding var detailsExpanded: Bool
     let refresh: () -> Void
 
     private var total: Int64? { HomeEngineProjection.total(state.lastGood) }
@@ -172,6 +225,53 @@ private struct UpstreamHomeStatistics: View {
                 .buttonStyle(.borderless)
                 .disabled(state.phase == .loading)
             }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 28) {
+                    lifetimeTotal.frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
+                    recentPeriodSummaries.frame(minWidth: 340, maxWidth: .infinity)
+                }
+                VStack(alignment: .leading, spacing: 16) {
+                    lifetimeTotal
+                    recentPeriodSummaries
+                }
+            }
+            if let statusText {
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(statusText)
+            }
+            if let dashboardJSON = state.dashboardJSON {
+                UpstreamTrendView(dashboardJSON: dashboardJSON, height: 320)
+                    .environment(\.widgetLanguage, language)
+            }
+            DisclosureGroup(language.text("统计详情", "Statistics details"), isExpanded: $detailsExpanded) {
+                VStack(alignment: .leading, spacing: 5) {
+                    if let response = state.lastGood {
+                        Text(
+                            language.text("已读取来源：", "Sources read: ")
+                                + "\(HomeEngineProjection.evidencedSources(response))/\(response.sources.filter { $0.status != .excluded }.count)")
+                        Text(language.text("累计值来自已读取记录，统计覆盖随来源而异。", "The total uses records read; coverage varies by source."))
+                        if let date = TokenMonitorResponse.timestamp(response.collectedAt) {
+                            Text(language.text("更新于 ", "Updated ") + language.dateTime(date))
+                        }
+                        if response.coverage.cost != .known {
+                            Text(language.text("费用暂不可确认，Token 统计独立显示。", "Cost is unavailable; token statistics are shown independently."))
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var lifetimeTotal: some View {
+        VStack(alignment: .leading, spacing: 7) {
             Text(total.map(language.tokens) ?? language.text("暂不可确认", "Temporarily unavailable"))
                 .font(.system(size: total == nil ? 20 : 34, weight: .semibold))
                 .foregroundStyle(total == nil ? Color.secondary : Color.primary)
@@ -186,42 +286,24 @@ private struct UpstreamHomeStatistics: View {
             )
             .font(.caption2.weight(.medium))
             .foregroundStyle(.secondary)
-            if let statusText {
-                Text(statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help(statusText)
-            }
-            if let dashboardJSON = state.dashboardJSON {
-                UpstreamTrendView(dashboardJSON: dashboardJSON, resetAnnotations: annotations)
-                    .environment(\.widgetLanguage, language)
-            }
-            DisclosureGroup(language.text("统计详情", "Statistics details")) {
-                VStack(alignment: .leading, spacing: 5) {
-                    if let response = state.lastGood {
-                        Text(
-                            language.text("已读取来源：", "Sources read: ")
-                                + "\(HomeEngineProjection.evidencedSources(response))/\(response.sources.filter { $0.status != .excluded }.count)")
-                        Text(language.text("累计值来自已读取记录，统计覆盖随来源而异。", "The total uses records read; coverage varies by source."))
-                        if let date = TokenMonitorResponse.timestamp(response.collectedAt) {
-                            Text(language.text("更新于 ", "Updated ") + language.dateTime(date))
-                        }
-                        if response.coverage.cost != .known {
-                            Text(language.text("费用暂不可确认，Token 统计独立显示。", "Cost is unavailable; token statistics are shown independently."))
-                        }
-                    }
-                    if annotationsHasMore == true {
-                        Text(language.text("重置注记展示当前已获取消息。", "Reset annotations show the updates retrieved so far."))
-                    }
+        }
+    }
+
+    private var recentPeriodSummaries: some View {
+        HStack(alignment: .top, spacing: 16) {
+            ForEach(HomeEngineProjection.recentPeriods(state.lastGood), id: \.key) { period in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(period.key == "today" ? language.text("今日", "Today") : period.key == "week" ? language.text("近 7 天", "Last 7 days") : language.text("本月", "This month"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(period.tokens.map(language.tokens) ?? language.text("未采集", "Not recorded"))
+                        .font(.system(size: 21, weight: .semibold)).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                    Text(language.text("\(period.recordedDays)/\(period.calendarDays) 天有记录", "\(period.recordedDays)/\(period.calendarDays) days recorded"))
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -273,6 +355,8 @@ struct CodexAccountManagerView: View {
 
     @StateObject private var localCLIAccounts: LocalCLIAccountStore
     @State private var selectedLocalCLI: LocalCLIKind?
+    @AppStorage("AiGoodBro.accountCardDensity") private var savedCardDensity = AccountCardDensity.compact.rawValue
+    private var cardDensity: AccountCardDensity { AccountCardDensity(rawValue: savedCardDensity) ?? .compact }
     @State private var accountSearch = ""
     @State private var accountScope = HomeAccountScope.all
     @State private var showingHome = true
@@ -283,6 +367,7 @@ struct CodexAccountManagerView: View {
     @StateObject private var quotaProviders = QuotaProviderStore()
     @State private var usageQuery = ""
     @State private var usageDimension: String? = nil
+    @State private var statisticsDetailsExpanded = false
 
     private enum ProfessionalWorkspaceSection: String, CaseIterable, Identifiable {
         case overview
@@ -374,6 +459,7 @@ struct CodexAccountManagerView: View {
         .onReceive(guideRequests) { openPrimaryGuide() }
         .environment(\.accountAvatarEdit, { avatarEditor = $0 })
         .environment(\.accountAvatarSettings, settings)
+        .environment(\.accountCardDensity, cardDensity)
         .onAppear {
             if !store.isPreview {
                 localCLIAccounts.discover()
@@ -381,7 +467,11 @@ struct CodexAccountManagerView: View {
                 hubTaskStatusModel.startPolling()
             }
             refreshQuotaProviderRows()
-            if settings.onboarding.shouldPresent { isOnboardingPresented = true }
+            if settings.onboarding.shouldPresent {
+                settings.onboarding.begin()
+                settings.setupProgress.step = .accounts
+                isSetupGuidePresented = true
+            }
         }
         .onDisappear {
             hubTaskStatusModel.stopPolling()
@@ -419,7 +509,7 @@ struct CodexAccountManagerView: View {
                 }
             }
         ) {
-            NextSetupGuideView(store: store, settings: settings) {
+            NextSetupGuideView(store: store, settings: settings, localAccounts: localCLIAccounts) {
                 openAutomationAfterGuide = true
                 isSetupGuidePresented = false
             }
@@ -500,6 +590,7 @@ struct CodexAccountManagerView: View {
         }
         .environment(\.widgetLanguage, language)
         .environment(\.locale, language.locale)
+        .disclosureGroupStyle(FullRowDisclosureGroupStyle())
     }
 
     private var workspaceContent: some View {
@@ -909,8 +1000,7 @@ struct CodexAccountManagerView: View {
         case .upstream:
             UpstreamHomeStatistics(
                 state: store.engineState, language: language,
-                annotations: HomeEngineProjection.annotations(resetAnnouncementMonitor.announcements, context: statisticsContext),
-                annotationsHasMore: resetAnnouncementMonitor.announcementsHasMore,
+                detailsExpanded: $statisticsDetailsExpanded,
                 refresh: { store.refresh() })
         case .custom:
             VStack(alignment: .leading, spacing: 10) {
@@ -1254,6 +1344,7 @@ struct CodexAccountManagerView: View {
                 Label(language.text("已登录账号", "Signed-in accounts"), systemImage: "person.2").font(.headline)
                 savedAccountsMenu(title: language.text("管理账号", "Manage accounts"))
                 Spacer()
+                AccountCardDensityPicker()
                 reloginAccountsMenu
                 if !usesHomeAccountCards {
                     Picker(language.text("账号显示方式", "Account layout"), selection: $settings.accountWorkspaceLayout) {
@@ -1606,11 +1697,8 @@ struct CodexAccountManagerView: View {
     }
 
     private func openPrimaryGuide() {
-        if settings.onboarding.status == .completed || settings.onboarding.status == .skipped {
-            isSetupGuidePresented = true
-        } else {
-            isOnboardingPresented = true
-        }
+        settings.setupProgress.step = .accounts
+        isSetupGuidePresented = true
     }
 
     private func refreshQuotaProviderRows() {
@@ -1664,7 +1752,9 @@ struct CodexAccountManagerView: View {
         .transaction { $0.disablesAnimations = true }
         .preferredColorScheme(settings.themeMode.preferredColorScheme)
         .environment(\.widgetLanguage, language)
+        .environment(\.accountCardDensity, cardDensity)
         .environment(\.locale, language.locale)
+        .disclosureGroupStyle(FullRowDisclosureGroupStyle())
     }
 
     private func saveLongScreenshot(for window: NSWindow) {
@@ -1675,22 +1765,30 @@ struct CodexAccountManagerView: View {
         }
         isSavingScreenshot = true
         screenshotFeedback = nil
-        do {
-            let capture = try WorkspaceScreenshotExporter.render(
-                screenshotContent, width: window.contentLayoutRect.width, scheme: effectiveColorScheme
-            )
-            WorkspaceScreenshotExporter.save(capture, for: window, language: language) { result in
-                isSavingScreenshot = false
-                switch result {
-                case .success(.some): screenshotFeedback = language.text("长截图已保存到所选位置。", "Screenshot saved.")
-                case .success(.none): break
-                case .failure: screenshotFeedback = language.text("截图未保存，请检查目标文件夹的写入权限后重试。", "Could not save the screenshot. Check folder permissions and try again.")
+        Task { @MainActor in
+            do {
+                guard let contentView = window.contentView else { throw WorkspaceScreenshotExporter.ExportError.invalidSize }
+                let width = window.contentLayoutRect.width
+                let charts = try await UpstreamTrendView.captureScreenshots(in: contentView)
+                guard window.contentLayoutRect.width == width, window.attachedSheet == nil else {
+                    throw WorkspaceScreenshotExporter.unavailable("window_changed_during_capture")
                 }
+                let capture = try WorkspaceScreenshotExporter.render(
+                    screenshotContent, width: width, scheme: effectiveColorScheme, liveCharts: charts
+                )
+                WorkspaceScreenshotExporter.save(capture, for: window, language: language) { result in
+                    isSavingScreenshot = false
+                    switch result {
+                    case .success(.some): screenshotFeedback = language.text("长截图已保存到所选位置。", "Screenshot saved.")
+                    case .success(.none): break
+                    case .failure: screenshotFeedback = language.text("截图未保存，请检查目标文件夹的写入权限后重试。", "Could not save the screenshot. Check folder permissions and try again.")
+                    }
+                }
+            } catch {
+                isSavingScreenshot = false
+                screenshotFeedback =
+                    (error as? WorkspaceScreenshotExporter.ExportError)?.message(language) ?? language.text("未能生成截图，请重试。", "Could not capture the workspace. Please try again.")
             }
-        } catch {
-            isSavingScreenshot = false
-            screenshotFeedback =
-                (error as? WorkspaceScreenshotExporter.ExportError)?.message(language) ?? language.text("未能生成截图，请重试。", "Could not capture the workspace. Please try again.")
         }
     }
 
@@ -2115,7 +2213,7 @@ struct CodexAccountManagerView: View {
 
     private var presentedProfiles: [CodexProfile] {
         store.profiles.filter { profile in
-            linkedManagedProfile(for: profile) == nil || profile.remark?.isEmpty == false
+            !profile.isSystemProfile
         }
     }
 
@@ -2132,7 +2230,7 @@ struct CodexAccountManagerView: View {
 
     private var profilesLayout: AnyLayout {
         displayedAccountLayout == .cards
-            ? AnyLayout(AccountCardGridLayout())
+            ? AnyLayout(AccountCardGridLayout(minimumWidth: cardDensity.minimumWidth))
             : AnyLayout(VStackLayout(spacing: 8))
     }
 
@@ -2178,7 +2276,8 @@ struct CodexAccountManagerView: View {
                 }
                 .help(language.text("查看工作状态，空闲后再派单；刷新不触发暖号", "Check task status before starting work. Refresh only reads usage; it does not warm up an account."))
                 Spacer()
-                Text(language.text("\(presentation.accountCount) 个账号", "\(presentation.accountCount) accounts"))
+                AccountCardDensityPicker()
+                Text(language.text("\(presentedProfiles.count) 个账号", "\(presentedProfiles.count) accounts"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Picker(language.text("账号显示方式", "Account layout"), selection: $settings.accountWorkspaceLayout) {
@@ -2287,12 +2386,12 @@ struct CodexAccountManagerView: View {
                 Button(store.isLoggingIn ? language.text("取消登录", "Cancel sign-in") : language.text("重新登录所选账号", "Sign in again")) {
                     if store.isLoggingIn {
                         store.cancelLogin()
-                    } else {
+                    } else if store.selectedMonitorProfile?.isSystemProfile == false {
                         store.loginSelectedMonitorProfile()
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(!store.isLoggingIn && selectedMonitorHubTaskStatus.blocksLocalCLI)
+                .disabled(!store.isLoggingIn && (selectedMonitorHubTaskStatus.blocksLocalCLI || store.selectedMonitorProfile?.isSystemProfile != false))
                 .help(
                     store.isLoggingIn
                         ? language.text("取消正在进行的登录", "Cancel the current sign-in")
@@ -2311,7 +2410,7 @@ struct CodexAccountManagerView: View {
         let visibleIDs = Set(orderedProfiles.map(\.id))
         let source =
             accountScope == .all
-            ? orderedProfiles + store.profiles.filter { !visibleIDs.contains($0.id) }
+            ? orderedProfiles + store.profiles.filter { !$0.isSystemProfile && !visibleIDs.contains($0.id) }
             : orderedProfiles
         return source.filter { profile in
             let eligibility = homeEligibility(profile)
@@ -2389,7 +2488,13 @@ struct CodexAccountManagerView: View {
                     store.loginProfile(profile.id)
                 }
             },
-            onLaunch: { store.launchCodex(with: profile.id) },
+            onLaunch: {
+                store.requestDesktopSwitch(
+                    with: profile.id,
+                    status: hubTaskStatusModel.status(
+                        forAccountAlias: store.accountTaskAlias(for: profile),
+                        accountKey: DispatchActivityStore.hash(profile.recordedAccountKey)))
+            },
             onOpenTerminal: { store.openTerminal(for: profile.id, workingDirectory: $0) },
             onCopyTerminalCommand: { store.copyTerminalCommand(for: profile.id) },
             onSetAutomaticSwitchParticipation: {
@@ -2442,7 +2547,7 @@ struct CodexAccountManagerView: View {
                 }
                 Text(
                     language.text(
-                        "低额度时推荐账号；自动切换须 Codex 已退出且任务、额度核验通过", "Suggests accounts at low quota. Auto-switch requires Codex to be closed and task and quota checks to pass.")
+                        "额度不足时自动换号；须空闲且任务、身份、备用额度核验通过", "Switches when quota is low and idle, task, identity and backup quota checks pass.")
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -2451,12 +2556,15 @@ struct CodexAccountManagerView: View {
 
             Spacer(minLength: 12)
 
-            Label(
-                store.automaticAccountSwitchEnabled ? language.text("已开启", "On") : language.text("未开启", "Off"),
-                systemImage: store.automaticAccountSwitchEnabled ? "checkmark.shield.fill" : "shield"
+            Toggle(
+                language.text("额度不足自动换号", "Switch when quota is low"),
+                isOn: Binding(
+                    get: { store.automaticAccountSwitchEnabled },
+                    set: { store.setAutomaticAccountSwitchEnabled($0) })
             )
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(store.automaticAccountSwitchEnabled ? FixedVisualPalette.statusSuccessForeground(effectiveColorScheme) : Color.secondary)
+            .toggleStyle(.switch)
+            .disabled(store.pausedAutomationFeatures.contains(.lowQuota))
+            .accessibilityIdentifier("next.autoSwitch.enabled")
 
             Button(language.text("运行问题日志", "Issue journal")) {
                 store.openOperationsIssueJournal()
@@ -2855,8 +2963,8 @@ struct AccountAutomationCenterView: View {
                             .font(.headline)
                         Text(
                             language.text(
-                                "默认开启；低额度时提醒并推荐，安全检查通过后自动切换。可随时关闭。",
-                                "On by default. Alerts and recommends at low quota, then switches only after safety checks pass. You can turn it off.")
+                                "手动开启后，额度不足时核对备用账号，空闲且检查通过后自动切换。",
+                                "Opt in to check backup accounts at low quota and switch when idle and all checks pass.")
                         )
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -2913,12 +3021,14 @@ struct AccountAutomationCenterView: View {
                             "官方 5 小时剩余 ≤\(store.lowQuotaAlertThresholds.fiveHour)%，或 7 天剩余严格低于 \(store.lowQuotaAlertThresholds.sevenDay)%",
                             "5h remaining at \(store.lowQuotaAlertThresholds.fiveHour)% or less, or weekly remaining below \(store.lowQuotaAlertThresholds.sevenDay)%."))
                     safetyRule(language.text("实时任务状态已连接、数据新鲜，且没有运行或等待输入的任务", "Requires fresh task status with no running tasks or pending input."))
-                    safetyRule(language.text("按已保存快照推荐参与提醒且对应窗口至少剩余 30% 的账号", "Suggests opted-in accounts with at least 30% in the affected window, based on saved snapshots."))
-                    safetyRule(language.text("推荐只显示候选；请回到账号卡手动启动 CLI 并执行 Hub 门禁", "Suggestions do not start work. Open CLI from the account card; Hub checks still apply."))
+                    safetyRule(language.text("重新核对候选额度：两个窗口均可用，触发窗口至少剩余 30%", "Rechecks candidates: both windows available and at least 30% in the affected window."))
+                    safetyRule(language.text("空闲两分钟后切换；有任务或无法确认状态时保持当前账号", "Switches after two idle minutes. Active or unverified tasks keep the current account."))
                 }
 
                 Label(
-                    language.text("只发送低额度提醒与账号推荐；不再自动改写 ~/.codex 身份。", "Sends alerts and suggestions only. Never switches your Codex sign-in automatically."),
+                    language.text(
+                        "开启后，桌面账号额度低于所设阈值时核对备用账号，满足条件后自动切换并恢复当前对话。",
+                        "When enabled, checks backup accounts below the configured quota threshold, then switches and restores the current conversation when checks pass."),
                     systemImage: "info.circle"
                 )
                 .font(.caption)
@@ -4537,12 +4647,10 @@ struct CodexAccountMenuView: View {
                     .buttonStyle(AccountGlassButtonStyle(tint: .clear, foreground: .primary, compact: true))
                     .disabled(profile.id == store.selectedMonitorProfileID)
 
-                    Button(isCurrent ? text("当前账号", "Current Account") : text("切换 Desktop 到此账号…", "Switch Desktop to Account…")) {
-                        guard !cliTaskStatus.blocksLocalCLI else { return }
-                        store.launchCodex(with: profile.id)
+                    Button(isCurrent ? text("核对并切换桌面…", "Verify Desktop account…") : text("切换 Desktop 到此账号…", "Switch Desktop to Account…")) {
+                        store.requestDesktopSwitch(with: profile.id, status: cliTaskStatus)
                     }
                     .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white, compact: true))
-                    .disabled(store.isLaunchingCodex || isCurrent || cliTaskStatus.blocksLocalCLI)
                     .help(
                         cliTaskStatus.blocksLocalCLI
                             ? (cliTaskStatus.blockingReason(language)
@@ -5008,6 +5116,7 @@ private struct ProfileRow: View {
     let onSetChromeProfile: (ChromeProfileBinding?) -> Void
     let onDelete: () -> Void
     let onAdjustResetCount: (Int) -> Void
+    @Environment(\.accountCardDensity) private var cardDensity
     @State private var isEditingRemark = false
     @State private var isConfirmingDelete = false
     @State private var remarkDraft = ""
@@ -5039,8 +5148,8 @@ private struct ProfileRow: View {
                 ScrollView(.horizontal, showsIndicators: true) { editControls }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, cardDensity.padding)
+        .padding(.vertical, cardDensity.padding)
         .cardBackground(cornerRadius: layout == .cards ? 14 : 12, elevated: isMonitoring)
         .overlay(
             RoundedRectangle(cornerRadius: layout == .cards ? 14 : 12, style: .continuous)
@@ -5523,10 +5632,9 @@ private struct ProfileRow: View {
             Button {
                 onOpenTerminal(nil)
             } label: {
-                Label(language.text("终端", "CLI"), systemImage: "terminal")
+                Image(systemName: "terminal")
                     .font(.system(size: 11, weight: .semibold))
-                    .padding(.horizontal, 9)
-                    .frame(minHeight: 26)
+                    .frame(width: 30, height: 20)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -5542,7 +5650,7 @@ private struct ProfileRow: View {
 
             Rectangle()
                 .fill(Color.white.opacity(0.28))
-                .frame(width: 1, height: 16)
+                .frame(width: 1, height: 12)
                 .accessibilityHidden(true)
 
             Menu {
@@ -5552,7 +5660,7 @@ private struct ProfileRow: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .bold))
-                    .frame(width: 25, height: 26)
+                    .frame(width: 20, height: 20)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
@@ -5607,22 +5715,21 @@ private struct ProfileRow: View {
             }
 
             Button {
-                guard !cliTaskStatus.blocksLocalCLI else { return }
                 onLaunch()
             } label: {
                 if isSwitchTarget && isLaunching {
                     ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                         .accessibilityLabel(language.text("正在切换到此账号", "Switching to this account"))
                 } else {
-                    Label(isCurrentCodexAccount ? language.text("当前账号", "Current account") : language.text("切换桌面", "Switch Desktop"), systemImage: "macwindow")
+                    Label(isCurrentCodexAccount ? language.text("核对桌面账号", "Verify Desktop account") : language.text("切换桌面", "Switch Desktop"), systemImage: "macwindow")
                         .frame(maxWidth: .infinity)
                 }
             }
             .buttonStyle(.bordered)
-            .disabled(isLaunching || linkedAccountName != nil || isCurrentCodexAccount || cliTaskStatus.blocksLocalCLI)
+            .disabled(linkedAccountName != nil)
             .help(
                 isCurrentCodexAccount
-                    ? language.text("当前已是此账号", "This account is already active")
+                    ? language.text("重新核对本机登录并打开 Codex，不等待额度刷新", "Verify local sign-in and open Codex without waiting for limits to refresh")
                     : cliTaskStatus.blocksLocalCLI
                         ? (cliTaskStatus.blockingReason(language)
                             ?? language.text(

@@ -2990,6 +2990,7 @@ enum CodexAccountSwitchSafetySelfTest {
     static func run() -> Bool {
         guard
             CodexSwitchPreparation.selfTest(),
+            CodexSwitchSnapshotProjection.selfTest(),
             !CodexManualAccountSwitchPolicy.requiresForceConfirmation(
                 codexWasRunning: true, isAutomaticSwitch: false,
                 isForcedManualSwitch: false, canPreserveSession: true),

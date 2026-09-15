@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 enum NextSetupPreviewRenderer {
     static func render(to directory: URL) -> Bool {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-setup-preview-\(UUID().uuidString)", isDirectory: true)
@@ -25,7 +26,7 @@ enum NextSetupPreviewRenderer {
                             .transaction { $0.disablesAnimations = true }
                             .preferredColorScheme(scheme)
                         let name = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-step\(step.rawValue + 1).png"
-                        try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 780, height: 580), scheme: scheme, to: directory.appendingPathComponent(name))
+                        try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 900, height: 680), scheme: scheme, to: directory.appendingPathComponent(name))
                         count += 1
                     }
                 }

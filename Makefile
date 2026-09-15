@@ -23,7 +23,7 @@ ARCH_NAME := $(shell echo "$(TARGET_TRIPLE)" | sed -E 's/-apple-macos.*//')
 DMG_NAME := $(APP_NAME)-$(VERSION)-mac-$(ARCH_NAME).dmg
 DMG_PATH := $(DIST_DIR)/$(DMG_NAME)
 SIGN_IDENTITY ?= -
-BUNDLE_COMPANION ?= 0
+BUNDLE_COMPANION ?= 1
 TOKEN_MONITOR_CACHE ?= $(HOME)/Library/Caches/AiGoodBro/Next/token-monitor-downloads
 TOKEN_MONITOR_RECEIPT_DIR ?= .build-receipts/AiGoodBro/Next
 TOKEN_MONITOR_RECEIPT = $(TOKEN_MONITOR_RECEIPT_DIR)/token-monitor-$(ARCH_NAME).json
@@ -102,6 +102,7 @@ lint:
 	$(SWIFT_FORMAT) lint --strict --parallel --recursive --configuration .swift-format Sources/CodexUsageWidget
 
 verify-runtime-resources:
+	@python3 scripts/prepare-companion-resources.py --verify --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" $(if $(filter 1,$(BUNDLE_COMPANION)),--include-hub,)
 	@for resource in $(RUNTIME_PNG_RESOURCES); do \
 		bundled="$(RESOURCES_DIR)/$$(basename "$$resource")"; \
 		test -s "$$bundled" || { echo "missing runtime resource: $$bundled"; exit 1; }; \

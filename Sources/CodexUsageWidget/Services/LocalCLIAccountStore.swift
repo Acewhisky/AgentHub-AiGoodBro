@@ -9,15 +9,18 @@ final class LocalCLIAccountStore: ObservableObject {
     typealias QuotaLoader = @Sendable (LocalCLIProfile) async -> LocalCLIQuotaResult
     @Published private(set) var profiles: [LocalCLIProfile] = []
     @Published private(set) var installed: [LocalCLIKind: String] = [:]
+    @Published private(set) var workBuddyInstalled: [WorkBuddyEdition: String] = [:]
     @Published private(set) var quotas: [String: LocalCLIQuotaResult] = [:]
     @Published private(set) var stale: Set<String> = []
     @Published private(set) var refreshing: Set<String> = []
     @Published private(set) var signingIn: Set<String> = []
     @Published private(set) var loginMessages: [String: String] = [:]
+    @Published private(set) var authentication: [String: LocalCLIAuthentication] = [:]
     @Published var message: String?
     private var requests: [String: UUID] = [:]
     private var tasks: [String: Task<Void, Never>] = [:]
     private var loginTasks: [String: Task<Void, Never>] = [:]
+    private var authenticationTasks: [String: Task<Void, Never>] = [:]
     private var loginVerification: Set<String> = []
     private var saved: [LocalCLIProfile] = []
     private var savedDigest: Data?
@@ -58,35 +61,44 @@ final class LocalCLIAccountStore: ObservableObject {
         let model = LocalCLIAccountStore(home: root, support: root, applicationsDirectory: root)
         model.profiles = profiles
         model.quotas = quotas
-        for profile in profiles { model.installed[profile.kind] = root.appendingPathComponent(profile.kind.commandName).path }
+        for profile in profiles {
+            let executable = root.appendingPathComponent(profile.kind.commandName).path
+            model.installed[profile.kind] = executable
+            if profile.kind == .workBuddy { model.workBuddyInstalled[WorkBuddyEdition.forProfile(profile)] = executable }
+        }
         return model
     }
 
     deinit {
         tasks.values.forEach { $0.cancel() }
         loginTasks.values.forEach { $0.cancel() }
+        authenticationTasks.values.forEach { $0.cancel() }
     }
 
     func discover() {
         let fm = FileManager.default
         var found: [LocalCLIKind: String] = [:]
+        var workBuddyFound: [WorkBuddyEdition: String] = [:]
         let applicationRoots = [applicationsDirectory, home.appendingPathComponent("Applications", isDirectory: true)]
         for kind in LocalCLIKind.allCases {
             if kind == .workBuddy {
                 // WorkBuddy ships a product-specific CLI. Never substitute an external
                 // codebuddy/cbc executable, which may belong to another product/account.
-                for applicationRoot in applicationRoots {
-                    let app = applicationRoot.appendingPathComponent("WorkBuddy.app", isDirectory: true)
-                    let cli = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
-                    let electron = app.appendingPathComponent("Contents/MacOS/Electron")
-                    let product = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/product.json")
-                    if regularFile(cli, executable: true), regularFile(electron, executable: true),
-                        regularFile(product, executable: false)
-                    {
-                        found[kind] = cli.path
-                        break
+                for edition in WorkBuddyEdition.allCases {
+                    for applicationRoot in applicationRoots {
+                        let app = applicationRoot.appendingPathComponent(edition.applicationName, isDirectory: true)
+                        let cli = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
+                        let electron = app.appendingPathComponent("Contents/MacOS/Electron")
+                        let product = app.appendingPathComponent("Contents/Resources/app.asar.unpacked/cli/product.json")
+                        if regularFile(cli, executable: true), regularFile(electron, executable: true),
+                            regularFile(product, executable: false)
+                        {
+                            workBuddyFound[edition] = cli.path
+                            break
+                        }
                     }
                 }
+                found[kind] = workBuddyFound[.domestic] ?? workBuddyFound[.international]
                 continue
             }
             if kind == .trae {
@@ -101,10 +113,8 @@ final class LocalCLIAccountStore: ObservableObject {
             if kind == .zcode {
                 for applicationRoot in applicationRoots {
                     let app = applicationRoot.appendingPathComponent("ZCode.app", isDirectory: true)
-                    let cli = app.appendingPathComponent("Contents/Resources/glm/zcode.cjs")
-                    let electron = app.appendingPathComponent("Contents/MacOS/ZCode")
-                    if regularFile(cli, executable: false), regularFile(electron, executable: true) {
-                        found[kind] = cli.path
+                    if isOfficialZCode(app) {
+                        found[kind] = app.path
                         break
                     }
                 }
@@ -121,6 +131,7 @@ final class LocalCLIAccountStore: ObservableObject {
             }
         }
         installed = found
+        workBuddyInstalled = workBuddyFound
         do {
             let data = try DispatchParticipationSync.readBoundedRegularFile(storageURL, maximumBytes: 256 * 1024, allowMissing: true)
             let decoded = try data.map { try JSONDecoder().decode([LocalCLIProfile].self, from: $0) } ?? []
@@ -136,6 +147,7 @@ final class LocalCLIAccountStore: ObservableObject {
         }
         rebuildProfiles()
         mergeImportedGrokObservation()
+        checkLocalSignIns()
     }
 
     func profiles(for kind: LocalCLIKind) -> [LocalCLIProfile] { profiles.filter { $0.kind == kind } }
@@ -170,10 +182,19 @@ final class LocalCLIAccountStore: ObservableObject {
         }
     }
 
-    func signIn(_ profile: LocalCLIProfile) {
+    func signIn(_ profile: LocalCLIProfile, updateProvider: Bool = false) {
         guard canSignIn(profile), signingIn.isEmpty,
-            let executable = installed[profile.kind]
+            let executable = executable(for: profile)
         else { return }
+        if profile.kind == .openCode, !updateProvider {
+            checkLocalSignIn(profile)
+            if hasConfiguredAuthentication(profile) {
+                loginMessages[profile.id] = language.text(
+                    "已复用保存的服务商配置，可直接打开 OpenCode。需要新增或更换 API 时选择“添加或更新服务商”。",
+                    "Saved provider configuration is ready to reuse. Open OpenCode directly; choose Add or update provider only to change credentials.")
+                return
+            }
+        }
         let directory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
         do {
             if profile.isDefault {
@@ -206,9 +227,18 @@ final class LocalCLIAccountStore: ObservableObject {
                     "Enter /login in WorkBuddy's bundled CLI, then choose a model available to your account.")
             case .zcode:
                 language.text(
-                    "请完成 Z.AI OAuth。登录退出码不代表指定模型已可用，请在 ZCode CLI 中另行确认。",
-                    "Complete Z.AI OAuth. A successful sign-in exit does not prove a requested model is available; confirm it separately in ZCode CLI.")
-            case .claudeCode, .trae, .kimi, .mimo, .gemini:
+                    "请在 ZCode 桌面应用中完成登录。",
+                    "Complete sign-in in the ZCode desktop app.")
+            case .gemini:
+                language.text(
+                    "在 Gemini CLI 中使用 Google 登录或 API Key；已有配置会复用。需要更换方式时输入 /auth。完成后自动检测，不必退出终端；额度单独读取。",
+                    "Use Google sign-in or an API key in Gemini CLI. Existing configuration is reused; enter /auth to change it. Detection does not require closing Terminal; quota is read separately."
+                )
+            case .claudeCode:
+                language.text(
+                    "已打开 Claude Code 官方登录。完成浏览器授权后自动刷新；API 配置与订阅额度分别核验。",
+                    "Official Claude Code sign-in is open. Limits refresh after browser authorization; API configuration and subscription limits are verified separately.")
+            case .trae, .kimi, .mimo:
                 language.text(
                     "请在官方 CLI 中完成登录；凭据只填写在官方终端。",
                     "Complete sign-in in the official CLI and enter credentials only there.")
@@ -222,6 +252,7 @@ final class LocalCLIAccountStore: ObservableObject {
                 else { return }
                 self.signingIn.remove(profile.id)
                 self.loginTasks.removeValue(forKey: profile.id)
+                self.authenticationTasks.removeValue(forKey: profile.id)?.cancel()
                 if code == 0 {
                     self.loginVerification.insert(profile.id)
                     self.loginMessages[profile.id] = self.language.text("官方登录流程已结束，正在核验账号。", "The official sign-in flow ended. Verifying the account.")
@@ -233,27 +264,38 @@ final class LocalCLIAccountStore: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 self.signingIn.remove(profile.id)
                 self.loginTasks.removeValue(forKey: profile.id)
+                self.authenticationTasks.removeValue(forKey: profile.id)?.cancel()
                 self.loginMessages[profile.id] = self.language.text(
                     "暂未确认登录结果。若浏览器已授权，点击刷新核验；终端窗口已保留。", "Sign-in has not been confirmed. If browser authorization finished, refresh to verify. The terminal was left open.")
+            }
+        }
+        authenticationTasks[profile.id]?.cancel()
+        authenticationTasks[profile.id] = Task { [weak self] in
+            // Interactive CLIs remain open after authentication. Watch their
+            // local credential evidence instead of requiring process exit.
+            for _ in 0..<300 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, let self, self.signingIn.contains(profile.id) else { return }
+                self.checkLocalSignIn(profile)
             }
         }
     }
 
     func openCLI(_ profile: LocalCLIProfile, workingDirectory: URL) {
         guard canOpen(profile), !signingIn.contains(profile.id),
-            let executable = installed[profile.kind]
+            let executable = executable(for: profile)
         else { return }
-        if profile.kind == .trae {
+        if profile.kind.isDesktopApplication {
             let app = URL(fileURLWithPath: executable, isDirectory: true)
-            guard isOfficialTRAESOLO(app) else { return }
+            guard profile.kind == .zcode ? isOfficialZCode(app) : isOfficialTRAESOLO(app) else { return }
             Task { [weak self] in
                 do {
                     _ = try await NSWorkspace.shared.openApplication(
                         at: app, configuration: NSWorkspace.OpenConfiguration())
                 } catch {
                     self?.message = self?.language.text(
-                        "未能打开 TRAE SOLO，请确认官方个人版仍安装在“应用程序”中。",
-                        "TRAE SOLO could not open. Confirm that the official personal edition is still installed in Applications.")
+                        "未能打开桌面应用，请确认官方应用仍安装在“应用程序”中。",
+                        "The desktop app could not open. Confirm that the official app is still installed in Applications.")
                 }
             }
             return
@@ -280,17 +322,54 @@ final class LocalCLIAccountStore: ObservableObject {
         }
     }
 
+    /// The user has finished authorization inside an interactive TUI. Stop only
+    /// waiting for its exit; leave the user's terminal and its receipt intact.
+    func checkInteractiveSignIn(_ profile: LocalCLIProfile) {
+        guard profiles.contains(profile) else { return }
+        loginTasks.removeValue(forKey: profile.id)?.cancel()
+        authenticationTasks.removeValue(forKey: profile.id)?.cancel()
+        signingIn.remove(profile.id)
+        authentication[profile.id] = LocalCLIAuthenticationReader().read(profile)
+        loginVerification.insert(profile.id)
+        refresh(profile)
+    }
+
+    func checkLocalSignIns() {
+        for profile in profiles { checkLocalSignIn(profile) }
+    }
+
+    private func checkLocalSignIn(_ profile: LocalCLIProfile) {
+        let evidence = LocalCLIAuthenticationReader().read(profile)
+        authentication[profile.id] = evidence
+        if evidence.isConfigured, signingIn.contains(profile.id) {
+            checkInteractiveSignIn(profile)
+        }
+    }
+
+    func hasConfiguredAuthentication(_ profile: LocalCLIProfile) -> Bool {
+        authentication[profile.id]?.isConfigured == true
+            || (!stale.contains(profile.id) && quotas[profile.id]?.state == .available && quotas[profile.id]?.identityFingerprint?.isEmpty == false)
+    }
+
+    func authenticationTitle(_ profile: LocalCLIProfile) -> String {
+        if let evidence = authentication[profile.id], evidence.isConfigured { return evidence.title(language) }
+        return language.text("已读到账号", "Account detected")
+    }
+
     func canSignIn(_ profile: LocalCLIProfile) -> Bool {
         profile.kind.supportsTerminalSignIn && profiles.contains(profile)
-            && installed[profile.kind] != nil
-            && (profile.kind != .zcode || profile.isDefault)
+            && executable(for: profile) != nil
+            && (!profile.kind.requiresDefaultEnvironmentForLaunch || profile.isDefault)
     }
 
     func canOpen(_ profile: LocalCLIProfile) -> Bool {
         profile.kind.supportsNativeOpen && profiles.contains(profile)
-            && installed[profile.kind] != nil
-            && (profile.kind != .zcode || profile.isDefault)
-            && (profile.kind != .trae || profile.isDefault)
+            && executable(for: profile) != nil
+            && (!profile.kind.requiresDefaultEnvironmentForLaunch || profile.isDefault)
+    }
+
+    func executable(for profile: LocalCLIProfile) -> String? {
+        profile.kind == .workBuddy ? workBuddyInstalled[WorkBuddyEdition.forProfile(profile)] : installed[profile.kind]
     }
 
     func link(kind: LocalCLIKind, directory: URL, name: String) {
@@ -345,10 +424,13 @@ final class LocalCLIAccountStore: ObservableObject {
             refreshing.remove(profile.id)
             loginMessages.removeValue(forKey: profile.id)
             loginVerification.remove(profile.id)
+            authentication.removeValue(forKey: profile.id)
+            authenticationTasks.removeValue(forKey: profile.id)?.cancel()
         }
     }
 
     func refresh(_ profile: LocalCLIProfile) {
+        authentication[profile.id] = LocalCLIAuthenticationReader().read(profile)
         guard !refreshing.contains(profile.id), profiles.contains(profile) else { return }
         let request = UUID()
         requests[profile.id] = request
@@ -380,8 +462,8 @@ final class LocalCLIAccountStore: ObservableObject {
                         "对应额度接口已验证当前配置；模型执行状态仍以 CLI 为准。",
                         "The matching quota endpoint verified this configuration; model execution status still comes from the CLI.")
                     : self.language.text(
-                        "官方登录窗口已结束；账号与实际调用仍需在 CLI 核验，不能仅凭退出码确认。",
-                        "The official sign-in window closed. Verify the account and an actual response in the CLI; exit status alone is not proof.")
+                        "已检查登录配置；额度暂未提供，可打开官方工具继续使用。",
+                        "Sign-in configuration checked. Quota is unavailable; open the official tool to continue.")
             }
             if result.state != .available, result.state != .needsLogin, previous?.state == .available {
                 self.stale.insert(profile.id)
@@ -418,6 +500,19 @@ final class LocalCLIAccountStore: ObservableObject {
     private func rebuildProfiles() {
         var result: [LocalCLIProfile] = []
         for kind in LocalCLIKind.allCases where installed[kind] != nil {
+            if kind == .workBuddy {
+                for edition in WorkBuddyEdition.allCases where workBuddyInstalled[edition] != nil {
+                    let directory = home.appendingPathComponent(edition.directoryName).standardizedFileURL.path
+                    result.append(
+                        saved.first { $0.id == edition.defaultProfileID && $0.kind == kind && $0.isDefault && $0.configDirectory == directory }
+                            ?? LocalCLIProfile(
+                                id: edition.defaultProfileID, kind: kind,
+                                displayName: edition == .domestic ? language.text("WorkBuddy 国内版", "WorkBuddy China") : language.text("WorkBuddy 国际版", "WorkBuddy International"),
+                                configDirectory: directory, isDefault: true))
+                }
+                result += saved.filter { $0.kind == kind && !$0.isDefault }
+                continue
+            }
             let id = "local-" + kind.rawValue
             let directory = kind.defaultConfigDirectory(home: home).standardizedFileURL.path
             if let override = saved.first(where: { $0.id == id && $0.kind == kind && $0.isDefault && $0.configDirectory == directory }) {
@@ -442,6 +537,10 @@ final class LocalCLIAccountStore: ObservableObject {
         for id in Array(loginTasks.keys) where !activeIDs.contains(id) {
             loginTasks.removeValue(forKey: id)?.cancel()
         }
+        for id in Array(authenticationTasks.keys) where !activeIDs.contains(id) {
+            authenticationTasks.removeValue(forKey: id)?.cancel()
+        }
+        authentication = authentication.filter { activeIDs.contains($0.key) }
         signingIn.formIntersection(activeIDs)
         loginVerification.formIntersection(activeIDs)
         loginMessages = loginMessages.filter { activeIDs.contains($0.key) }
@@ -471,6 +570,16 @@ final class LocalCLIAccountStore: ObservableObject {
         return !executable || info.st_mode & 0o111 != 0
     }
 
+    private func isOfficialZCode(_ app: URL) -> Bool {
+        let plist = app.appendingPathComponent("Contents/Info.plist")
+        guard app.lastPathComponent == "ZCode.app", validDirectory(app.path),
+            regularFile(app.appendingPathComponent("Contents/MacOS/ZCode"), executable: true),
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(plist, maximumBytes: 256 * 1024, allowMissing: false),
+            let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return false }
+        return info["CFBundleIdentifier"] as? String == "dev.zcode.app" && info["CFBundleExecutable"] as? String == "ZCode"
+    }
+
     private func isOfficialTRAESOLO(_ app: URL) -> Bool {
         var info = stat()
         guard app.isFileURL, app.path.hasPrefix("/"),
@@ -485,8 +594,18 @@ final class LocalCLIAccountStore: ObservableObject {
     private func validProfile(_ profile: LocalCLIProfile) -> Bool {
         guard validName(profile.displayName), validDirectory(profile.configDirectory) else { return false }
         if profile.isDefault {
+            if profile.kind == .workBuddy {
+                return WorkBuddyEdition.allCases.contains {
+                    profile.id == $0.defaultProfileID && profile.configDirectory == home.appendingPathComponent($0.directoryName).standardizedFileURL.path
+                }
+            }
             return profile.id == "local-" + profile.kind.rawValue
                 && profile.configDirectory == profile.kind.defaultConfigDirectory(home: home).standardizedFileURL.path
+        }
+        if profile.kind == .workBuddy,
+            WorkBuddyEdition.allCases.contains(where: { profile.configDirectory == home.appendingPathComponent($0.directoryName).standardizedFileURL.path })
+        {
+            return false
         }
         return UUID(uuidString: profile.id) != nil
             && profile.configDirectory != profile.kind.defaultConfigDirectory(home: home).standardizedFileURL.path

@@ -18,6 +18,7 @@ struct RuntimeLoadContext {
     var codexHomeDirectory: URL
     var cacheDirectory: URL
     var statistics = Statistics()
+    var quotaCancellation: TokenMonitorCancellation? = nil
 }
 struct Identity { var email = "synthetic-identity"; var accountID = "synthetic-account" }
 struct CodexProfile {

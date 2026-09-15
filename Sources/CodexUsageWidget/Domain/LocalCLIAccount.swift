@@ -66,19 +66,39 @@ enum LocalCLIKind: String, Codable, CaseIterable, Identifiable {
 
     var supportsTerminalSignIn: Bool {
         switch self {
-        case .grok, .openCode, .workBuddy, .zcode: true
-        case .claudeCode, .trae, .kimi, .mimo, .gemini: false
+        case .claudeCode, .grok, .openCode, .workBuddy, .kimi, .gemini: true
+        case .zcode, .trae, .mimo: false
         }
     }
 
+    var isDesktopApplication: Bool { self == .zcode || self == .trae }
+
     var supportsNativeOpen: Bool {
         switch self {
-        case .grok, .openCode, .trae, .workBuddy, .zcode: true
-        case .claudeCode, .kimi, .mimo, .gemini: false
+        case .claudeCode, .grok, .openCode, .trae, .workBuddy, .zcode, .kimi, .gemini: true
+        case .mimo: false
         }
     }
 
     var supportsLinkedEnvironments: Bool { self != .trae }
+
+    // These providers may keep authentication outside their config folder.
+    // Linked folders stay read-only until their complete isolation is supported.
+    var requiresDefaultEnvironmentForLaunch: Bool {
+        self == .claudeCode || self == .gemini || self == .zcode || self == .trae
+    }
+}
+
+enum WorkBuddyEdition: String, CaseIterable {
+    case domestic, international
+
+    var applicationName: String { self == .domestic ? "WorkBuddy.app" : "WorkBuddy AI.app" }
+    var directoryName: String { self == .domestic ? ".workbuddy" : ".workbuddy-ai" }
+    var defaultProfileID: String { self == .domestic ? "local-workBuddy" : "local-workBuddy-ai" }
+
+    static func forProfile(_ profile: LocalCLIProfile) -> Self {
+        URL(fileURLWithPath: profile.configDirectory).lastPathComponent == ".workbuddy-ai" ? .international : .domestic
+    }
 }
 
 struct LocalCLIProfile: Identifiable, Codable, Equatable {

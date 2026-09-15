@@ -73,6 +73,36 @@ r.payload = try JSONDecoder().decode(TokenMonitorJSON.self, from: Data(payload.u
 let encoded = try JSONEncoder().encode(r)
 let decoded = try JSONDecoder().decode(TokenMonitorResponse.self, from: encoded)
 check(decoded.payload == r.payload && decoded.sources.count == 2 && decoded.coverage.entries.count == 1, "real F DTO full envelope roundtrip two tools/accounts arbitrary models")
+let periodNow = ISO8601DateFormatter().date(from: "2026-03-09T00:30:00Z")!
+r.timezone = "America/Los_Angeles"
+r.payload = .object(["aggregate": .object(["history": .object(["daily": .array([
+ .object(["date": .string("2026-03-02"), "tokens": .number(5)]),
+ .object(["date": .string("2026-03-07"), "tokens": .number(0)]),
+ .object(["date": .string("2026-03-08"), "tokens": .number(7)]),
+ .object(["date": .string("2026-03-09"), "tokens": .number(1000)])
+])])])])
+let periods = HomeEngineProjection.recentPeriods(r, now: periodNow)
+check(periods[0].tokens == 7 && periods[0].recordedDays == 1, "today follows statistics time zone")
+check(periods[1].tokens == 12 && periods[1].recordedDays == 3 && periods[1].calendarDays == 7, "seven calendar days across DST retain zero and omit future bucket")
+check(periods[2].tokens == 12 && periods[2].calendarDays == 8, "month-to-date observed total")
+let canonicalPayload = r.payload
+let collectedHistory = canonicalPayload["aggregate"]?["history"]!
+r.payload = .object(["aggregate": .object([:]), "history": collectedHistory!])
+check(HomeEngineProjection.recentPeriods(r, now: periodNow) == periods, "collector top-level history matches chart totals")
+r.payload = .object(["usage": .object(["history": collectedHistory!])])
+check(HomeEngineProjection.recentPeriods(r, now: periodNow) == periods, "usage history follows chart fallback")
+r.payload = canonicalPayload
+check(HomeEngineProjection.recentPeriods(nil, now: periodNow).allSatisfy { $0.tokens == nil }, "missing days stay unknown")
+r.payload = .object(["aggregate": .object(["history": .object(["daily": .array([
+ .object(["date": .string("2026-03-08"), "tokens": .number(0)]),
+ .object(["date": .string("2026-03-08"), "tokens": .number(7)])
+])])])])
+check(HomeEngineProjection.recentPeriods(r, now: periodNow).allSatisfy { $0.tokens == nil }, "duplicate canonical day cannot double count")
+r.payload = .object(["aggregate": .object(["history": .object(["daily": .array([
+ .object(["date": .string("2026-03-07"), "tokens": .number(Decimal(Int64.max))]),
+ .object(["date": .string("2026-03-08"), "tokens": .number(1)])
+])])])])
+check(HomeEngineProjection.recentPeriods(r, now: periodNow)[1].tokens == nil, "period overflow is unavailable")
 '''
 (q/'consumer-fixture-0913v5.swift').write_text(source)
 with (q/'consumer-tests-0913v5.log').open('w') as log:

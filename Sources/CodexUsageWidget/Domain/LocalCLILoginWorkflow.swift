@@ -67,7 +67,7 @@ enum LocalCLILoginMethod: String, Codable, Equatable, Sendable {
     case grokCLIWebOAuth
     case openCodeProviderAuth
     case workBuddyBundledCLI
-    case zcodeBundledCLI
+    case zcodeDesktop
     case unsupported
 }
 
@@ -154,17 +154,17 @@ struct LocalCLILoginCapabilityDescriptor: Codable, Equatable, Sendable {
         case .zcode:
             Self(
                 provider: .zcode,
-                loginMethod: .zcodeBundledCLI,
+                loginMethod: .zcodeDesktop,
                 authorization: .verified,
                 identity: .unsupported,
                 quota: .unverified,
                 models: .unverified,
-                authorizationSource: "official ZCode bundle login --settings",
+                authorizationSource: "official ZCode desktop application",
                 identitySource: "no verified native OAuth identity adapter",
                 quotaSource: "Coding Plan configuration is not native OAuth identity evidence",
                 modelSource: "no verified per-model adapter",
                 supportsFallbackAssociation: true,
-                notes: "The default bundle may be opened, but its exit status cannot prove account or model readiness.")
+                notes: "Open the default desktop app for sign-in; opening it does not prove account or model readiness.")
         }
     }
 }

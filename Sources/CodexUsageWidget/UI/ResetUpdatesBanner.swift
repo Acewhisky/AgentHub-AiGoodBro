@@ -204,8 +204,17 @@ struct ResetUpdatesBanner: View {
     }
 
     private var resetCalendar: some View {
-        PublicResetCalendarView(announcements: calendarAnnouncements, language: language, hasMore: announcementsHasMore, selectedDay: $selectedCalendarDay)
-            .frame(width: 300)
+        VStack(alignment: .leading, spacing: 8) {
+            PublicResetCalendarView(announcements: calendarAnnouncements, language: language, hasMore: nil, selectedDay: $selectedCalendarDay)
+            Divider()
+            PublicResetRecentView(
+                announcements: calendarAnnouncements, language: language, featuredID: announcement?.id,
+                integratedInCalendar: true, selectedDay: $selectedCalendarDay)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            if selectedCalendarDay == nil { selectedCalendarDay = PublicResetCalendarModel.calendar.startOfDay(for: Date()) }
+        }
     }
 
     private var recentAnnouncements: some View {
@@ -217,7 +226,7 @@ struct ResetUpdatesBanner: View {
         ResetDashboardLayout {
             announcementCard
             resetCalendar
-            recentAnnouncements
+            AIHotTopicsView(language: language)
             accountSummary
         }
     }

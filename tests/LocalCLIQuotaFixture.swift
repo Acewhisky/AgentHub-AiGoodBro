@@ -61,7 +61,8 @@ struct LocalCLIQuotaFixture {
             LocalCLIKind.mimo.defaultConfigDirectory(home: home).path == "/synthetic-home/.local/share/mimocode",
             "MiMo data path")
         try expect(LocalCLIKind.workBuddy.supportsTerminalSignIn, "WorkBuddy native sign-in")
-        try expect(LocalCLIKind.zcode.supportsTerminalSignIn, "ZCode default native sign-in")
+        try expect(LocalCLIKind.zcode.isDesktopApplication && LocalCLIKind.zcode.supportsNativeOpen && !LocalCLIKind.zcode.supportsTerminalSignIn,
+                   "ZCode opens its desktop application without a CLI sign-in")
         try expect(LocalCLIKind.trae.supportsNativeOpen && !LocalCLIKind.trae.supportsTerminalSignIn,
                    "TRAE desktop-only capability")
         let profile = LocalCLIProfile(

@@ -371,7 +371,8 @@ final class CodexUsageReader {
         if profile != nil || managedProfile == nil {
             return readAppServer(
                 context: context, messages: &messages, quotaOnly: quotaOnly,
-                refreshingMembershipFor: profile, requestTimeout: requestTimeout)
+                refreshingMembershipFor: profile, requestTimeout: requestTimeout,
+                cancellation: context.quotaCancellation ?? cancellation)
         }
         guard !cancellation.isCancelled else {
             messages.append(TokenMonitorFailure.cancelled.rawValue)
@@ -1122,6 +1123,8 @@ final class CodexUsageReader {
         requestTimeout: TimeInterval? = nil,
         cancellation: TokenMonitorCancellation? = nil
     ) -> AppServerSnapshot {
+        let cancellation = cancellation ?? context.quotaCancellation
+        guard cancellation?.isCancelled != true else { return AppServerSnapshot() }
         // 系统默认 home 是官方 Codex 正在使用的登录，保持原有全局门禁不变；
         // 其他账号 home 只涉及自身凭据，按 home 互斥即可允许跨账号并行读取。
         let homePath = context.codexHomeDirectory
@@ -1129,14 +1132,23 @@ final class CodexUsageReader {
         let systemHomePath = context.homeDirectory
             .appendingPathComponent(".codex", isDirectory: true)
             .resolvingSymlinksInPath().standardizedFileURL.path
-        if profile != nil { CodexCredentialAccessGate.lock.lock() }
+        if profile != nil {
+            while !CodexCredentialAccessGate.lock.try() {
+                guard cancellation?.isCancelled != true else { return AppServerSnapshot() }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
         defer { if profile != nil { CodexCredentialAccessGate.lock.unlock() } }
         let gate: NSRecursiveLock =
             homePath == systemHomePath
             ? CodexCredentialAccessGate.lock
             : CodexCredentialAccessGate.homeLock(forHomePath: homePath)
-        gate.lock()
+        while !gate.try() {
+            guard cancellation?.isCancelled != true else { return AppServerSnapshot() }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
         defer { gate.unlock() }
+        guard cancellation?.isCancelled != true else { return AppServerSnapshot() }
         if let profile {
             let systemHome = context.homeDirectory.appendingPathComponent(".codex", isDirectory: true)
             let managedRoot = context.homeDirectory.appendingPathComponent(".codex-account-manager-next/profiles", isDirectory: true)
