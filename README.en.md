@@ -1,6 +1,6 @@
 # AiGoodBro · AgentHub
 
-**AiGoodBro** is a native macOS workspace for multiple Codex accounts, with **AgentHub** as its Home view. Check quota, receive reset announcements, switch accounts from one place, and dispatch isolated CLI tasks to other accounts. Upgrades preserve existing accounts and settings.
+**AiGoodBro** is a native macOS workspace for multiple Codex accounts, with **AgentHub** as its Home view. Check quota and multi-agent token usage, receive reset announcements, switch accounts from one place, and dispatch isolated CLI tasks to other accounts. Upgrades preserve existing accounts and settings.
 
 [中文](README.md) | **English**
 
@@ -21,9 +21,9 @@ AiGoodBro puts quota alerts and reset news first, so you can see when work can c
 
 A single account can use read-only monitoring. A public announcement, an account's recovered quota and its available reset credits are separate facts: an announcement neither spends a credit nor replaces an account refresh. The WeChat integration is a **WeCom group bot**; personal WeChat is not connected.
 
-**Current source preview: 0912v1 · 9.5.22 (36).** Build and install using the prompt below. This version has no binary Release yet; provider coverage is described below. [Candidate changes and validation boundaries](docs/release-notes-v9.5.22.md)
+**Current macOS source baseline: V1.0 · 0915v5 · 9.6.1 (50).** This is the rebuilt application baseline, with saved OpenCode provider reuse, CLI configuration detection, shared onboarding, compact cards, daily token summaries, the existing stacked-column trend, reset calendar and AI hotspots. Earlier Desktop-switch and refresh-frequency fixes are retained. The final CLI repair did not change the previously completed Codex switching implementation. There is no binary Release for this version. [Version notes and validation boundaries](docs/release-notes-v9.6.1.md)
 
-An installation prompt and four practical task prompts are below. Version 9.5.22 has not been published to GitHub Releases; build it from source for now.
+An installation prompt and four practical task prompts are below. Version 9.6.1 has not been published to GitHub Releases; build it from source for now.
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -45,9 +45,9 @@ cd AgentHub-AiGoodBro
 make build
 ```
 
-The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 9.5.22 download has been published.
+The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 9.6.0 download has been published.
 
-Future installer assets should use `AiGoodBro-<version>-mac-<arch>.dmg`. No 9.5.22 installer is currently available.
+Future installer assets should use `AiGoodBro-<version>-mac-<arch>.dmg`. No 9.6.0 installer is currently available.
 
 ## Start with the workspace
 
@@ -64,6 +64,14 @@ Refresh each account, set its model and open an isolated CLI environment. Saved 
 > Workspace screenshots are retained native renders of the 0910v1 production SwiftUI views using synthetic accounts, quota and dates. “Unverified” means that the demo is not connected to a Hub. The English header illustration is retained from 0909v4. [Image provenance and prompts](docs/images/0910v1/README.md)
 
 > Images may show an earlier layout and are included only to introduce the interface. This update adds no images.
+
+## Token Monitor statistics
+
+The 0913v1 Home view places editable Agent navigation first, followed by public reset news, Token totals and signed-in accounts. Reset news retains the original text, Beijing event time and Chinese translation status. Daily chart hints include the retrieved reset announcements using the statistics time zone.
+
+The statistics engine and chart code come from pinned Token Monitor v0.56.0. Its catalog contains 28 clients, with 26 enabled by upstream default; MiMo Code and Qoder CN are optional. Keep the previous custom mode for unsupported sources via Settings → Workspace → Statistics mode. Modes do not combine their totals. Historical account ownership and unavailable values remain unassigned rather than guessed.
+
+Node.js is bundled with the app. Source builds download pinned dependencies; installed statistics do not require a developer Node installation or build cache. See the [integration notes](docs/token-monitor-integration-0913v1.md) for scope and update procedure.
 
 ## Choose a CLI, preset and message fields
 
@@ -172,11 +180,11 @@ Saved choices take precedence, including disabled features. New users still rece
 
 0910v1 enables local reset updates by default, with optional Feishu forwarding, and moves Desktop switching into the background with visible stage progress. It fixes Terminal executable and directory selection, adds private launch receipts and dispatch schedules, and preserves warm-up history. Sign-in reservations remain occupied until the login child process has actually stopped.
 
-Version 9.5.22 is a source preview. The [candidate notes](docs/release-notes-v9.5.22.md) list the offline checks actually run in this round and the remaining runtime boundaries. A full official reset cycle, multi-CLI sign-in and real calls, Desktop switching, and notification delivery require separate evidence.
+V1.0 identifies the source for macOS 9.6.1 (50), not a GitHub binary Release. The [version notes](docs/release-notes-v9.6.1.md) distinguish configuration detection, native launch and model-call evidence. Some provider setup and real calls remain unverified; source integration does not complete those checks. Windows acceptance is tracked separately.
 
-The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.5.22 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
+The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.6.0 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
 
-[9.5.22 candidate notes](docs/release-notes-v9.5.22.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
+[9.6.0 candidate notes](docs/release-notes-v9.6.0.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
 
 ## The rest of the workspace
 

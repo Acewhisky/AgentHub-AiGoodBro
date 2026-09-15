@@ -11,11 +11,13 @@ struct LocalCLIWorkspaceView: View {
     var embeddedLayout: AccountWorkspaceLayout? = nil
     var onOpenDetails: (() -> Void)? = nil
     var onOpenSetup: (() -> Void)? = nil
+    @Environment(\.accountCardDensity) private var cardDensity
     @State private var preparationProfile: LocalCLIProfile?
     @State private var editing: LocalCLIProfile?
     @State private var nameDraft = ""
     @State private var addingGrok = false
     @State private var newAccountName = ""
+    @State private var avatarEditor: AccountAvatarTarget?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -27,6 +29,7 @@ struct LocalCLIWorkspaceView: View {
                         Text(language.text("账号与额度", "Accounts and limits")).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    AccountCardDensityPicker()
                     if kind == .grok {
                         Button {
                             newAccountName = language.text("Grok 账号 \(model.profiles(for: kind).count + 1)", "Grok account \(model.profiles(for: kind).count + 1)")
@@ -57,6 +60,10 @@ struct LocalCLIWorkspaceView: View {
             }
         }
         .padding(.vertical, onlyProfileID == nil ? 8 : 0)
+        .onAppear { model.checkLocalSignIns() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.checkLocalSignIns()
+        }
         .sheet(item: $preparationProfile) { profile in
             let state = readiness(profile)
             VStack(alignment: .leading, spacing: 16) {
@@ -107,6 +114,19 @@ struct LocalCLIWorkspaceView: View {
                 if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
             }.padding(24).frame(width: 400)
         }
+        .sheet(item: $avatarEditor) { target in
+            AccountAvatarEditor(
+                target: target, language: language,
+                initial: settings.accountAvatars.record(for: target.profileID),
+                existingImage: settings.avatarImage(for: target.profileID),
+                store: settings.avatarAssetStore,
+                onSave: { record, _ in
+                    settings.setAvatar(record, for: target.profileID)
+                    avatarEditor = nil
+                },
+                onCancel: { avatarEditor = nil }
+            )
+        }
         .sheet(item: $editing) { profile in
             VStack(alignment: .leading, spacing: 16) {
                 Text(language.text("账号名称", "Account name")).font(.headline)
@@ -145,6 +165,12 @@ struct LocalCLIWorkspaceView: View {
             .compactMap { byID[$0] }
     }
 
+    private func profileAvatar(_ profile: LocalCLIProfile, slot: ProviderIconSlot) -> some View {
+        let providerID = AgentNavCatalog.workspaceProviders.first(where: { $0.localKind == kind })?.id ?? kind.rawValue
+        let target = AccountAvatarTarget(profileID: profile.id, providerID: providerID, displayName: profile.displayName)
+        return AccountProfileAvatarView(settings: settings, target: target, slot: slot, onEdit: { avatarEditor = $0 })
+    }
+
     private func moreMenuRequest(for profile: LocalCLIProfile, includeUnlink: Bool = false) -> AnchoredMenuRequest {
         var actions = [
             AnchoredMenuAction(id: "refresh", title: language.text("刷新额度", "Refresh limits")),
@@ -158,7 +184,8 @@ struct LocalCLIWorkspaceView: View {
             AnchoredMenuAction(id: "rename", title: language.text("重命名", "Rename")),
         ]
         if model.canSignIn(profile) {
-            actions.insert(AnchoredMenuAction(id: "signin", title: language.text("登录", "Sign in")), at: 1)
+            actions.insert(
+                AnchoredMenuAction(id: "signin", title: profile.kind == .openCode ? language.text("添加或更新服务商", "Add or update provider") : language.text("登录", "Sign in")), at: 1)
         }
         if includeUnlink {
             actions.append(AnchoredMenuAction(id: "unlink", title: language.text("取消关联", "Unlink"), destructive: true))
@@ -169,7 +196,7 @@ struct LocalCLIWorkspaceView: View {
     private func handleMoreMenu(_ actionID: String, profile: LocalCLIProfile) {
         switch actionID {
         case "refresh": model.refresh(profile)
-        case "signin": model.signIn(profile)
+        case "signin": model.signIn(profile, updateProvider: profile.kind == .openCode)
         case "prepare": preparationProfile = profile
         case "pin":
             let key = ResetCardPresentation.localKey(kind: kind.rawValue, profileID: profile.id)
@@ -204,7 +231,7 @@ struct LocalCLIWorkspaceView: View {
         return arrangement {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    LocalCLIIcon(kind: kind).frame(width: 20, height: 20)
+                    profileAvatar(profile, slot: layout == .cards ? .card : .list)
                     Text(profile.displayName).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text(kind.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 }
@@ -224,9 +251,12 @@ struct LocalCLIWorkspaceView: View {
                     Text(fresh ? result.sourceLabel : language.text("上次快照 · 请刷新", "Previous snapshot · Refresh needed"))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
-                DisclosureGroup(language.text("模型与来源", "Models & source")) { modelAvailabilitySummary(for: profile) }.font(.caption2)
             }.frame(minWidth: layout == .rows ? 170 : nil, maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 6) {
+                if model.hasConfiguredAuthentication(profile) {
+                    Label(model.authenticationTitle(profile), systemImage: "checkmark.circle")
+                        .font(.caption.weight(.medium)).foregroundStyle(.green)
+                }
                 Label(state.title(language), systemImage: state.symbol)
                     .font(.caption.weight(.medium)).foregroundStyle(state.color)
                     .fixedSize(horizontal: false, vertical: true)
@@ -246,31 +276,13 @@ struct LocalCLIWorkspaceView: View {
                 } else if let balance = result?.balance {
                     Text(language.text("余额 ", "Balance ") + balance.formatted()).font(.callout.monospacedDigit())
                 } else {
-                    Text(language.text("未接通", "Not connected")).font(.title3.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(language.text("暂无额度数据", "No quota data")).font(.caption).foregroundStyle(.secondary)
                 }
             }
             .frame(width: layout == .rows ? 168 : nil)
-            // Mirrors ProfileRow's Spacer: the quota block absorbs the row height
-            // AccountCardGridLayout proposes so every card in a row shares one height
-            // and footer controls share one baseline.
-            // maxWidth 弹性仅限 cards；rows 必须保持 168 固定列，
-            // 否则会与头部列分摊剩余宽度，额度列起点左移、与 ProfileRow 列不对齐。
             .frame(maxWidth: layout == .cards ? .infinity : nil, maxHeight: layout == .cards ? .infinity : nil, alignment: .topLeading)
-            VStack(alignment: .leading, spacing: layout == .cards ? 5 : 6) {
-                if layout == .cards { Divider().opacity(0.4) }
-                if layout == .cards {
-                    // Codex's compact execution-preference row occupies the
-                    // first footer slot even when a local provider has no
-                    // equivalent control. Keeping it empty preserves the
-                    // first action baseline without changing functionality.
-                    Button {
-                        preparationProfile = profile
-                    } label: {
-                        Label(language.text("调用准备", "Call preparation"), systemImage: "checklist")
-                            .font(.caption2).frame(maxWidth: .infinity, alignment: .leading)
-                    }.buttonStyle(.plain).foregroundStyle(.secondary)
-                        .frame(minHeight: AccountCardFooterSlots.preferenceRow)
-                }
+            VStack(alignment: .leading, spacing: 10) {
+                if layout == .cards { Divider() }
                 HStack(spacing: 6) {
                     primaryAction(profile)
                     Button(language.text("详情", "Details")) {
@@ -286,59 +298,46 @@ struct LocalCLIWorkspaceView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .frame(minHeight: layout == .cards ? AccountCardFooterSlots.firstActionRow : nil, alignment: .leading)
-                if layout == .cards {
-                    // Codex keeps dispatch participation in a secondary row;
-                    // local cards do not have that control, but the slot stays
-                    // present so provider cards share the same footer geometry.
-                    Color.clear
-                        .frame(maxWidth: .infinity).frame(height: AccountCardFooterSlots.secondaryRow)
-                        .accessibilityHidden(true)
-                }
-                if layout == .cards {
-                    // Keep refresh progress beside the timestamp slot. This
-                    // avoids moving the action baseline while the read runs,
-                    // and the minimum still expands for real content.
-                    HStack(spacing: 6) {
-                        if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
+                DisclosureGroup(language.text("模型与来源", "Models & source")) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        modelAvailabilitySummary(for: profile)
+                        Button {
+                            preparationProfile = profile
+                        } label: {
+                            Label(language.text("调用准备", "Call preparation"), systemImage: "checklist")
+                        }.buttonStyle(.bordered).controlSize(.small)
                         if let date = result?.fetchedAt {
-                            Text(date, style: .time).font(.caption2).foregroundStyle(.secondary)
+                            Text(language.text("更新于 ", "Updated ") + language.dateTime(date))
+                                .font(.caption2).foregroundStyle(.secondary)
                         }
+                    }.padding(.top, 8)
+                }.font(.caption)
+                if model.refreshing.contains(profile.id) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(language.text("正在刷新…", "Refreshing…")).font(.caption).foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity, minHeight: AccountCardFooterSlots.timestamp, alignment: .leading)
-                } else {
-                    if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
-                    if let date = result?.fetchedAt { Text(date, style: .time).font(.caption2).foregroundStyle(.secondary) }
                 }
-                if layout == .cards {
-                    // 共同页脚槽位：镜像 ProfileRow 的 officialResetSummary 沉底区，
-                    // 重置卡/到期警示信息保留但不占头部槽位. The minimum
-                    // allows the parent's official-link/reset additions to grow.
-                    VStack(alignment: .leading, spacing: 0) {
-                        if kind == .grok, result?.resetCards == nil, let officialUsageURL {
-                            grokResetLookupLink(destination: officialUsageURL)
-                                .font(.caption2)
-                        } else if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
-                            Label(summary, systemImage: "creditcard")
-                                .font(.caption2)
-                                .foregroundStyle(expiring ? FixedVisualPalette.statusDanger : Color.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        if expiring {
-                            Text(ResetCardPresentation.expiringLabelText(language: language))
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                if layout == .cards, kind == .grok {
+                    if result?.resetCards == nil, let officialUsageURL {
+                        grokResetLookupLink(destination: officialUsageURL).font(.caption2)
+                    } else if let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
+                        Label(summary, systemImage: "creditcard")
+                            .font(.caption2).foregroundStyle(expiring ? FixedVisualPalette.statusDanger : Color.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .frame(maxWidth: .infinity, minHeight: AccountCardFooterSlots.resetSummary, alignment: .topLeading)
+                    if expiring {
+                        Text(ResetCardPresentation.expiringLabelText(language: language))
+                            .font(.caption2.weight(.semibold)).foregroundStyle(FixedVisualPalette.statusDanger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .frame(width: layout == .rows ? 290 : nil)
             .frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .leading)
         }
-        .padding(.horizontal, layout == .cards ? 10 : 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, cardDensity.padding)
+        .padding(.vertical, cardDensity.padding)
         .cardBackground(cornerRadius: layout == .cards ? 14 : 12)
         .overlay {
             if expiring {
@@ -377,7 +376,7 @@ struct LocalCLIWorkspaceView: View {
             evidenceFresh: !isStale)
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                LocalCLIIcon(kind: kind).frame(width: 24, height: 24)
+                profileAvatar(profile, slot: .detail)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         Text(profile.displayName).font(.headline).lineLimit(2)
@@ -412,7 +411,7 @@ struct LocalCLIWorkspaceView: View {
                 HStack(spacing: 12) {
                     if model.canSignIn(profile) {
                         Button {
-                            model.signIn(profile)
+                            model.signIn(profile, updateProvider: profile.kind == .openCode)
                         } label: {
                             Label(signInTitle(result), systemImage: "person.crop.circle.badge.checkmark")
                         }
@@ -423,7 +422,7 @@ struct LocalCLIWorkspaceView: View {
                         Button {
                             openNative(profile)
                         } label: {
-                            Label(openTitle, systemImage: profile.kind == .trae ? "macwindow" : "terminal")
+                            Label(openTitle, systemImage: profile.kind.isDesktopApplication ? "macwindow" : "terminal")
                         }.buttonStyle(.bordered).disabled(model.signingIn.contains(profile.id))
                     }
                     if model.signingIn.contains(profile.id) { ProgressView().controlSize(.small) }
@@ -431,11 +430,11 @@ struct LocalCLIWorkspaceView: View {
                 if let message = model.loginMessages[profile.id] {
                     Text(message).font(.caption).foregroundStyle(.secondary)
                 }
-            } else if profile.kind == .zcode, !profile.isDefault {
+            } else if profile.kind.requiresDefaultEnvironmentForLaunch, !profile.isDefault {
                 Label(
                     language.text(
-                        "此链接环境仅用于额度读取；隔离启动尚未验证，不会借用默认 ZCode 身份。",
-                        "This linked environment is quota-only. Isolated launch is not verified and will not borrow the default ZCode identity."),
+                        "此关联环境用于读取额度；请在对应的官方 CLI 中登录。",
+                        "This linked environment is for quota reads. Sign in through its matching official CLI."),
                     systemImage: "lock.shield"
                 )
                 .font(.caption).foregroundStyle(.secondary)
@@ -532,7 +531,7 @@ struct LocalCLIWorkspaceView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(18)
+        .padding(cardDensity.padding)
         .sectionBackground()
         .overlay(
             expiringSoon
@@ -545,35 +544,40 @@ struct LocalCLIWorkspaceView: View {
 
     private func readiness(_ profile: LocalCLIProfile) -> LocalCLIReadiness {
         .resolve(
-            installed: model.installed[profile.kind] != nil, result: model.quotas[profile.id],
+            installed: model.executable(for: profile) != nil, result: model.quotas[profile.id],
             stale: model.stale.contains(profile.id) || (model.quotas[profile.id].map { !ResetCardPresentation.isFresh($0.fetchedAt, now: Date()) } ?? false))
     }
 
     @ViewBuilder private func primaryAction(_ profile: LocalCLIProfile) -> some View {
         let state = readiness(profile)
         Button {
-            if state.isFailure || state == .notInstalled {
+            if model.canOpen(profile) {
+                openNative(profile)
+            } else if state.isFailure || state == .notInstalled {
                 preparationProfile = profile
             } else if state == .needsLogin {
                 if model.canSignIn(profile) { model.signIn(profile) } else { preparationProfile = profile }
-            } else if state == .available, model.canOpen(profile) {
-                openNative(profile)
             } else {
                 model.refresh(profile)
             }
         } label: {
             Label(
-                state.isFailure
-                    ? language.text("查看原因", "Review cause")
-                    : state == .needsLogin
-                        ? language.text("登录", "Sign in")
-                        : state == .notInstalled
-                            ? language.text("准备", "Prepare") : state == .available && model.canOpen(profile) ? language.text("打开终端", "Terminal") : language.text("刷新", "Refresh"),
-                systemImage: state.isFailure ? "exclamationmark.circle" : state == .needsLogin ? "person.crop.circle" : state == .available ? "terminal" : "arrow.clockwise"
+                model.canOpen(profile)
+                    ? profile.kind.isDesktopApplication ? language.text("打开桌面版", "Open desktop app") : language.text("打开终端", "Open terminal")
+                    : state.isFailure
+                        ? language.text("查看原因", "Review cause")
+                        : state == .needsLogin
+                            ? language.text("登录", "Sign in")
+                            : state == .notInstalled
+                                ? language.text("准备", "Prepare")
+                                : language.text("刷新", "Refresh"),
+                systemImage: model.canOpen(profile)
+                    ? profile.kind.isDesktopApplication ? "macwindow" : "terminal"
+                    : state.isFailure ? "exclamationmark.circle" : state == .needsLogin ? "person.crop.circle" : "arrow.clockwise"
             ).frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
-        .disabled(model.refreshing.contains(profile.id) || model.signingIn.contains(profile.id))
+        .disabled(model.signingIn.contains(profile.id))
     }
 
     private func statusText(_ result: LocalCLIQuotaResult?) -> String {
@@ -643,7 +647,7 @@ struct LocalCLIWorkspaceView: View {
     }
 
     private func openNative(_ profile: LocalCLIProfile) {
-        if profile.kind == .trae {
+        if profile.kind.isDesktopApplication {
             model.openCLI(
                 profile,
                 workingDirectory: FileManager.default.homeDirectoryForCurrentUser)
@@ -677,15 +681,28 @@ struct LocalCLIWorkspaceView: View {
                 "Uses WorkBuddy's bundled CLI. Choose an available model after opening it.")
         case .zcode:
             language.text(
-                "默认环境可打开官方 ZCode 登录与 TUI。链接环境仅展示额度；CLI 与桌面模型配置彼此独立，登录成功不等于指定模型可用。",
-                "The default environment can open official ZCode sign-in and TUI. Linked environments are quota-only. CLI and desktop model settings are separate, and sign-in does not prove a requested model is available."
+                "ZCode 使用桌面版，在官方应用内登录。Coding Plan 配置的额度与桌面订阅分别显示，不据此判断桌面登录成功。",
+                "ZCode opens its desktop app for sign-in. Coding Plan configuration quotas are separate from desktop subscription and sign-in status."
             )
         case .trae:
             language.text(
                 "仅打开已安装的 TRAE SOLO 个人版桌面。独立 traecli 属于企业产品，本页不把它显示为个人版登录、执行或额度能力。",
                 "Only the installed TRAE SOLO personal desktop is opened. Standalone traecli is an enterprise product and is not presented here as personal sign-in, execution, or quota support."
             )
-        case .claudeCode, .kimi, .mimo, .gemini:
+        case .claudeCode:
+            language.text(
+                "默认环境使用 Claude Code 官方浏览器登录。订阅额度和本机 Token 记录分别显示；关联目录只读取额度。",
+                "The default environment uses official Claude Code browser sign-in. Subscription limits and local Token records are separate; linked folders are read-only.")
+        case .kimi:
+            language.text(
+                "登录和启动使用同一配置目录，完成 Kimi Code 浏览器授权后刷新对应额度。",
+                "Sign-in and launch use the same configuration directory. Refresh matching limits after Kimi Code browser authorization.")
+        case .gemini:
+            language.text(
+                "支持已配置的 Google 登录或 API Key。打开终端即可使用，/auth 可更换方式；API Key 不使用 Code Assist 订阅额度接口。",
+                "Use the configured Google sign-in or API key. Open Terminal to continue, or /auth to change methods. API keys do not use the Code Assist subscription quota endpoint."
+            )
+        case .mimo:
             language.text(
                 "本机登录会自动显示；已有其他独立环境时，可关联该 CLI 的配置目录。",
                 "The local sign-in appears automatically. Link a CLI configuration directory for another existing environment.")
@@ -693,6 +710,7 @@ struct LocalCLIWorkspaceView: View {
     }
 
     private func signInTitle(_ result: LocalCLIQuotaResult?) -> String {
+        if kind == .openCode { return language.text("添加或更新服务商", "Add or update provider") }
         if result?.state == .available {
             return language.text("重新登录", "Sign in again")
         }
@@ -700,8 +718,8 @@ struct LocalCLIWorkspaceView: View {
     }
 
     private var openTitle: String {
-        kind == .trae
-            ? language.text("打开 TRAE SOLO", "Open TRAE SOLO")
+        kind.isDesktopApplication
+            ? language.text("打开 \(kind.displayName) 桌面版", "Open \(kind.displayName) desktop")
             : language.text("打开 \(kind.displayName) CLI", "Open \(kind.displayName) CLI")
     }
 }
@@ -722,10 +740,7 @@ struct LocalCLIIcon: View {
             ZStack {
                 switch kind {
                 case .claudeCode:
-                    ForEach(0..<12) { index in
-                        Capsule().frame(width: size * 0.088, height: box)
-                            .rotationEffect(.degrees(Double(index) * 15))
-                    }
+                    RuntimeLogoView(scope: .claudeCode, size: size)
                 case .grok:
                     Circle().trim(from: 0.08, to: 0.86).stroke(lineWidth: size * 0.10)
                         .padding(size * 0.11).rotationEffect(.degrees(-30))

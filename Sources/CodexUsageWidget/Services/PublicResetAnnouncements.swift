@@ -52,22 +52,18 @@ struct PublicResetAnnouncement: Codable, Equatable, Identifiable {
     }
 
     func title(_ language: WidgetLanguage = .storedOrAutomatic()) -> String {
-        switch resetType {
-        case .regular: return language.text("🔄 额度刷新了", "🔄 Quota refreshed")
-        case .banked: return language.text("🎫 发重置卡了", "🎫 Reset credits granted")
-        }
+        PublicResetTranslationModel.isForecast(text)
+            ? language.text("重置预告 · 尚未确认", "Reset forecast · unconfirmed")
+            : language.text("额度重置公告", "Quota reset announcement")
     }
 
-    /// 人话版说明：这条公告对当前用户实际意味着什么。
-    /// 独立成方法，便于横幅直接展示提醒，不必解析 summary 的换行。
+    /// A public claim never confirms this account's balance or completion.
     func meaning(_ language: WidgetLanguage = .storedOrAutomatic()) -> String {
-        resetType == .banked
-            ? language.text(
-                "有人在发重置卡，你的账号不一定已经到账。请到账号页刷新，核对你自己的可用次数。",
-                "Reset credits are being granted, but that does not mean yours arrived. Refresh on the Accounts page to check your own balance.")
-            : language.text(
-                "有人的额度刷新了，这不等于发重置卡。请到账号页刷新，看你实际还剩多少。",
-                "Someone's quota refreshed — that is not a reset credit. Refresh on the Accounts page to see what you actually have left.")
+        let claim =
+            PublicResetTranslationModel.isForecast(text)
+            ? language.text("公开重置预告，尚未确认完成。", "Public reset forecast; completion is unconfirmed. ")
+            : language.text("公开重置公告；公告类型本身不证明已完成或已到账。", "Public reset announcement; its type does not confirm completion or receipt. ")
+        return claim + language.text("请到账号页核对官方额度与可用重置卡。", "Verify official quota and available reset credits on the Accounts page.")
     }
 
     func summary(_ language: WidgetLanguage = .storedOrAutomatic()) -> String {
@@ -428,6 +424,10 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     static let enabledKey = "CodexManagerNext.publicResetAnnouncements.enabled"
     @Published private(set) var enabled: Bool
     @Published private(set) var latest: PublicResetAnnouncement?
+    /// Validated current API page only, not a complete historical archive.
+    @Published private(set) var announcements: [PublicResetAnnouncement] = []
+    /// Unknown before the first successful fetch; failures preserve the last page.
+    @Published private(set) var announcementsHasMore: Bool?
     @Published private(set) var status: String?
     @Published private(set) var checking = false
     @Published private(set) var checkedAt: Date?
@@ -650,6 +650,10 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
             do {
                 let page = try await fetchPage()
                 guard isCurrent(epoch) else { return }
+                announcements = page.data.sorted {
+                    $0.announcedAt == $1.announcedAt ? $0.id < $1.id : $0.announcedAt < $1.announcedAt
+                }
+                announcementsHasMore = page.pagination.hasMore
                 latest = page.data.max { $0.announcedAt < $1.announcedAt }
                 checkedAt = Date()
                 let language = WidgetLanguage.storedOrAutomatic()
@@ -1107,6 +1111,50 @@ extension PublicResetAnnouncementMonitor {
         } catch { return false }
     }
 
+    /// Read the same bounded feed page with delivery disabled; no ledger or network.
+    fileprivate static func pagePublicationSelfTest(now: Date) async -> Bool {
+        actor Replies {
+            var count = 0
+            let page: PublicResetPage
+            init(page: PublicResetPage) { self.page = page }
+            func next() throws -> PublicResetPage {
+                count += 1
+                if count == 2 { throw PublicResetFailure.unavailable }
+                if count == 3 {
+                    return PublicResetPage(data: [], pagination: .init(hasMore: false, nextCursor: nil), meta: page.meta)
+                }
+                return page
+            }
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-public-page-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let events = (100...152).map { index in
+            PublicResetAnnouncement(
+                id: String(index), resetType: .regular,
+                announcedAt: now.addingTimeInterval(-600 + Double((index - 100) / 2)), text: "Synthetic page fixture",
+                source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/\(index)")))
+        }
+        let page = PublicResetPage(
+            data: Array(events.reversed()), pagination: .init(hasMore: true, nextCursor: "synthetic-older"), meta: .init(apiVersion: "v1", generatedAt: now))
+        let replies = Replies(page: page)
+        let monitor = PublicResetAnnouncementMonitor(
+            preview: true, supportDirectory: root, fixtureScheduling: true, fetchPage: { try await replies.next() })
+        monitor.enabled = false
+        guard monitor.announcements.isEmpty, monitor.announcementsHasMore == nil else { return false }
+        monitor.check()
+        await monitor.lifecycleTask?.value
+        guard monitor.announcements.map(\.id) == (100...152).map(String.init), monitor.announcementsHasMore == true else { return false }
+        let originalCheck = monitor.checkedAt
+        monitor.check()
+        await monitor.lifecycleTask?.value
+        guard monitor.announcements == events, monitor.announcementsHasMore == true, monitor.checkedAt == originalCheck else { return false }
+        monitor.check()
+        await monitor.lifecycleTask?.value
+        let fetchCount = await replies.count
+        return monitor.announcements.isEmpty && monitor.announcementsHasMore == false && fetchCount == 3
+            && !FileManager.default.fileExists(atPath: root.path)
+    }
+
     /// Invoke delivery from a detached task and verify that Combine receives
     /// the published state on the main thread after the async delivery work.
     /// This fails against an unisolated `deliverLocally` implementation.
@@ -1268,8 +1316,8 @@ enum PublicResetAnnouncementSelfTest {
             } catch PublicResetFailure.localState {}
             let payload = try FeishuWebhookService.publicResetPayload(initial.data[0], language: .zh)
             guard let body = String(data: payload, encoding: .utf8),
-                body.contains("🎫 发重置卡了"), body.contains("有人在发重置卡"), body.contains("请到账号页刷新"),
-                body.contains("不一定已经到账"), body.contains("\"template\":\"purple\""),
+                body.contains("额度重置公告"), body.contains("公告类型本身不证明已完成或已到账"), body.contains("请到账号页核对官方额度与可用重置卡"),
+                !body.contains("发重置卡了"), body.contains("\"template\":\"purple\""),
                 !body.contains("Public fixture"), !body.contains("官方公告"), !body.contains("Official announcement")
             else { return false }
             let regular = PublicResetAnnouncement(
@@ -1277,8 +1325,8 @@ enum PublicResetAnnouncementSelfTest {
                 source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/103")))
             let regularPayload = try FeishuWebhookService.publicResetPayload(regular, language: .en)
             guard let regularBody = String(data: regularPayload, encoding: .utf8),
-                regularBody.contains("🔄 Quota refreshed"),
-                regularBody.contains("not a reset credit"), regularBody.contains("\"template\":\"turquoise\""),
+                regularBody.contains("Quota reset announcement"),
+                regularBody.contains("does not confirm completion or receipt"), regularBody.contains("\"template\":\"turquoise\""),
                 // \p{Han} also matches U+00B7 (its Script_Extensions include Han),
                 // so assert on the ideograph blocks the copy could actually use.
                 regularBody.range(of: "[\\x{3400}-\\x{9FFF}\\x{F900}-\\x{FAFF}]", options: .regularExpression) == nil
@@ -1290,7 +1338,8 @@ enum PublicResetAnnouncementSelfTest {
                 let localPassed = await PublicResetAnnouncementMonitor.deliverySelfTest(now: now)
                 let optionalPassed = await PublicResetAnnouncementMonitor.optionalFeishuRecoverySelfTest(now: now)
                 let mainActorPassed = await PublicResetAnnouncementMonitor.mainActorDeliverySelfTest(now: now)
-                result.set(historyPassed && localPassed && optionalPassed && mainActorPassed)
+                let pagePublicationPassed = await PublicResetAnnouncementMonitor.pagePublicationSelfTest(now: now)
+                result.set(historyPassed && localPassed && optionalPassed && mainActorPassed && pagePublicationPassed)
                 completed.signal()
             }
             // The self-test entry point runs on MainActor. Pump its run loop

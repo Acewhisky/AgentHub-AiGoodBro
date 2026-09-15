@@ -21,6 +21,7 @@ def section(start, end):
 parts = [
     section('    private struct AutomaticSwitchContext {', '    private static let feishuNotificationsEnabledKey'),
     section('    func launchCodex(with profileID:', '    private func reserveDesktopSwitchMaintenance('),
+    section('    private func beginCodexHistoryConfirmation(', '    private func rollbackManualSwitch('),
     section('    private func evaluateAutomaticAccountSwitch()', '    private func sendFeishuNotification('),
 ]
 # Only access-control adaptation; all branches, shared-entry calls and defaults
@@ -37,8 +38,8 @@ generated.write_text(template.replace('// PRODUCTION_METHODS', methods)
                      .replace('// PRODUCTION_FINAL_GATE', predicate)
                      .replace('// PRODUCTION_ATOMIC_PROBE', probe))
 checks = {
-    'one_shared_entry_call': parts[2].count('launchCodex(with: target.id)') == 1,
-    'context_before_shared_entry': parts[2].index('automaticSwitchContext = AutomaticSwitchContext(') < parts[2].index('launchCodex(with: target.id)'),
+    'one_shared_entry_call': parts[3].count('launchCodex(with: target.id)') == 1,
+    'context_before_shared_entry': parts[3].index('automaticSwitchContext = AutomaticSwitchContext(') < parts[3].index('launchCodex(with: target.id)'),
     'always_read_complete_tasks': 'client.awaitSnapshot(timeout: 5)' in parts[1] and 'previousTasks' not in parts[1],
     'nil_invalidates_display': 'codexLiveTasks = .disconnected' in parts[1],
     'preparation_cleanup': 'defer {' in parts[1] and 'if !handedOff' in parts[1],

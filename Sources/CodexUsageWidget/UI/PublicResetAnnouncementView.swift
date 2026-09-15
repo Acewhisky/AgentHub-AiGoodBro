@@ -16,6 +16,7 @@ struct PublicResetAnnouncementView: View {
                 HStack(spacing: 8) {
                     Label(PublicResetAnnouncementPresentation.title(language), systemImage: "megaphone.fill")
                         .font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
                     Button {
                         monitor.check()
@@ -26,6 +27,7 @@ struct PublicResetAnnouncementView: View {
                         )
                     }
                     .disabled(monitor.checking)
+                    .fixedSize(horizontal: true, vertical: true)
                 }
                 Toggle(
                     language.text("接收额度重置公告", "Receive quota reset announcements"),
@@ -41,9 +43,9 @@ struct PublicResetAnnouncementView: View {
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 if let announcement = monitor.latest {
-                    Text(PublicResetAnnouncementPresentation.typeTitle(announcement.resetType, language: language))
+                    Text(announcement.title(language))
                         .font(.caption.weight(.semibold))
-                    AnnouncementOriginalText(text: announcement.text, language: language, compact: false)
+                    PublicResetTranslatedText(eventID: announcement.id, original: announcement.text, language: language, compact: false)
                     Text(
                         language.text("事件时间：", "Event time: ")
                             + PublicResetAnnouncementPresentation.eventTime(announcement.announcedAt, language: language)
@@ -52,23 +54,22 @@ struct PublicResetAnnouncementView: View {
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    Text(PublicResetAnnouncementPresentation.interpretation(announcement.resetType, language: language))
+                    Text(announcement.meaning(language))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     PublicResetAnnouncementLinks(source: announcement.source, language: language)
                 } else {
-                    Link("codex-resets.com", destination: PublicResetClient.siteURL)
+                    Link(language.text("查看公开记录", "Browse public history"), destination: PublicResetClient.siteURL)
                         .font(.caption)
                 }
                 HStack {
                     if let checkedAt = monitor.checkedAt {
-                        Text(language.text("上次检查：", "Last checked: ") + language.dateTime(checkedAt))
+                        Text(language.text("上次检查：", "Last checked: ") + PublicResetAnnouncementPresentation.eventTime(checkedAt, language: language))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
-                if let status = monitor.localStatus ?? monitor.status { Text(status).font(.caption).foregroundStyle(.secondary) }
                 if monitor.needsLocalBaseline {
                     Button(language.text("从当前消息继续接收", "Resume from current updates")) { isEstablishingLocalBaseline = true }
                         .disabled(monitor.checking || !monitor.enabled)
@@ -93,6 +94,13 @@ struct PublicResetAnnouncementView: View {
                     }
                     .disabled(monitor.checking)
                 }
+            }
+            ForEach(PublicResetAnnouncementPresentation.visibleStatuses(local: monitor.localStatus, general: monitor.status), id: \.self) { status in
+                Text(verbatim: status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
         }
         .alert(language.text("请先核对飞书中的重置公告", "Check the reset announcement in Feishu first"), isPresented: $isResolvingDelivery) {
@@ -123,3 +131,167 @@ struct PublicResetAnnouncementView: View {
         }
     }
 }
+
+#if canImport(Translation) && compiler(>=6.0)
+    import Translation
+#endif
+
+/// Identity resets the view's request owner when either ID or exact bytes change.
+@MainActor
+struct PublicResetTranslatedText: View {
+    let eventID: String
+    let original: String
+    let language: WidgetLanguage
+    let compact: Bool
+
+    var body: some View {
+        PublicResetTranslationContent(
+            key: .init(eventID: eventID, original: original), original: original,
+            language: language, compact: compact
+        )
+        .id(PublicResetTranslationModel.Key(eventID: eventID, original: original))
+    }
+}
+
+@MainActor
+private struct PublicResetTranslationContent: View {
+    let key: PublicResetTranslationModel.Key
+    let original: String
+    let language: WidgetLanguage
+    let compact: Bool
+    @ObservedObject private var store = PublicResetTranslationStore.shared
+    @State private var request: PublicResetTranslationModel.Request?
+
+    private var supported: Bool {
+        #if canImport(Translation) && compiler(>=6.0)
+            if #available(macOS 15.0, *) { return true }
+        #endif
+        return false
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            AnnouncementOriginalText(text: original, language: language, compact: compact)
+            switch store.model.state(for: key, original: original) {
+            case .notRequested:
+                Button(language.text("翻译为简体中文", "Translate to Simplified Chinese")) { start(resources: .requiresDownload, userInitiated: true) }
+            case .downloadRequired:
+                Text(language.text("需下载中英文语言包；原文可直接阅读。", "English and Simplified Chinese language downloads are required; the original is available."))
+                Button(language.text("下载语言包并翻译", "Download languages and translate")) { start(resources: .requiresDownload, userInitiated: true) }
+            case .preparing:
+                Text(language.text("正在准备系统翻译…", "Preparing system translation…"))
+            case .translating:
+                Text(language.text("系统翻译中…", "Translating with macOS…"))
+            case .translated(let text, let vetted):
+                if !compact {
+                    Text(vetted ? language.text("已核对译文", "Vetted translation") : language.text("系统翻译 · 简体中文", "System translation · Simplified Chinese"))
+                        .foregroundStyle(.secondary)
+                }
+                Text(verbatim: PublicResetAnnouncementPresentation.readableText(text)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            case .unavailable:
+                Text(language.text("系统翻译暂不可用；请阅读原文。", "System translation unavailable; read the original."))
+                if supported {
+                    Button(language.text("重试翻译", "Retry translation")) { start(resources: .requiresDownload, userInitiated: true) }
+                } else {
+                    Text(language.text("需要 macOS 15 或更新版本及支持翻译的构建。", "Requires macOS 15 or later and a translation-enabled build."))
+                }
+            }
+            #if canImport(Translation) && compiler(>=6.0)
+                if #available(macOS 15.0, *), let request, store.model.owns(request) {
+                    PublicResetNativeTranslation(request: request, store: store)
+                        .id(request.generation)
+                }
+            #endif
+        }
+        .font(.caption)
+        .task {
+            await startAutomatically()
+        }
+        .onDisappear {
+            if let request { store.model.cancel(request) }
+            request = nil
+        }
+    }
+
+    private var mayStartAutomatically: Bool {
+        switch store.model.state(for: key, original: original) {
+        case .notRequested, .downloadRequired: return true
+        default: return false
+        }
+    }
+
+    private func startAutomatically() async {
+        guard mayStartAutomatically else { return }
+        var resources: PublicResetTranslationModel.LanguageResources = .unsupported
+        #if canImport(Translation) && compiler(>=6.0)
+            if #available(macOS 15.0, *) {
+                let status = await LanguageAvailability().status(
+                    from: Locale.Language(identifier: "en"), to: Locale.Language(identifier: "zh-Hans")
+                )
+                switch status {
+                case .installed: resources = .installed
+                case .supported: resources = .requiresDownload
+                case .unsupported: resources = .unsupported
+                @unknown default: resources = .unsupported
+                }
+            }
+        #endif
+        guard !Task.isCancelled, mayStartAutomatically else { return }
+        start(resources: resources)
+    }
+
+    private func start(resources: PublicResetTranslationModel.LanguageResources, userInitiated: Bool = false) {
+        if let next = store.model.begin(key: key, original: original, resources: supported ? resources : .unsupported, userInitiated: userInitiated) {
+            request = next
+        }
+    }
+}
+
+#if canImport(Translation) && compiler(>=6.0)
+    @available(macOS 15.0, *)
+    @MainActor
+    private struct PublicResetNativeTranslation: View {
+        let request: PublicResetTranslationModel.Request
+        let store: PublicResetTranslationStore
+        // A fresh view per generation creates a fresh configuration/task on retry.
+        @State private var configuration: TranslationSession.Configuration? = .init(
+            source: Locale.Language(identifier: "en"), target: Locale.Language(identifier: "zh-Hans")
+        )
+
+        var body: some View {
+            Color.clear.frame(width: 0, height: 0)
+                .translationTask(configuration) { session in
+                    await run(session)
+                }
+                .onDisappear { store.model.cancel(request) }
+        }
+
+        private func run(_ session: TranslationSession) async {
+            guard store.model.owns(request) else { return }
+            defer { store.model.cancel(request) }
+            do {
+                let status = await LanguageAvailability().status(
+                    from: Locale.Language(identifier: "en"), to: Locale.Language(identifier: "zh-Hans")
+                )
+                try Task.checkCancellation()
+                guard status != .unsupported, store.model.owns(request) else { return }
+                guard status == .installed || request.allowsResourcePreparation else {
+                    store.model.requireDownload(request)
+                    return
+                }
+                if request.allowsResourcePreparation {
+                    try await session.prepareTranslation()
+                }
+                try Task.checkCancellation()
+                guard store.model.owns(request) else { return }
+                store.model.prepared(request)
+                let response = try await session.translate(request.original)
+                try Task.checkCancellation()
+                store.model.finish(request, source: response.sourceText, translation: response.targetText)
+            } catch {
+                // No raw errors, paths or payloads are exposed to UI or logs.
+                store.model.cancel(request)
+            }
+        }
+    }
+#endif

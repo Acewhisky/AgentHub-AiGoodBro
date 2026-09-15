@@ -14,5 +14,6 @@ extension EnvironmentValues {
 extension View {
     func appVisualEnvironment(catalog: PaletteCatalog, paletteID: String, appearance: PaletteAppearance) -> some View {
         environment(\.visualTokens, catalog.resolve(id: paletteID, appearance: appearance))
+            .disclosureGroupStyle(FullRowDisclosureGroupStyle())
     }
 }

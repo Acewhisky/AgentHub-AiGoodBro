@@ -10,12 +10,14 @@ final class MultiRuntimeUsageReader {
     func load(
         statisticsPreference: StatisticsTimeZonePreference = .default,
         generation: UInt64 = 0,
-        codexHomeDirectory: URL? = nil
+        codexHomeDirectory: URL? = nil,
+        quotaCancellation: TokenMonitorCancellation? = nil
     ) -> MultiRuntimeUsageSnapshot {
         let span = PerformanceMonitor.shared.begin(.runtimeLoad)
         let context = RuntimeLoadContext.live(
             statisticsPreference: statisticsPreference,
-            codexHomeDirectory: codexHomeDirectory
+            codexHomeDirectory: codexHomeDirectory,
+            quotaCancellation: quotaCancellation
         )
         let runtimeSnapshots = registry.providers.map { provider in
             provider.loadSnapshot(context: context)

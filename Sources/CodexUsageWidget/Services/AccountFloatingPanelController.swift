@@ -11,6 +11,7 @@ final class AccountFloatingPanelController: NSObject, NSWindowDelegate {
     private let settings: AppSettings
     private let updateStore: AppUpdateStore
     private let paletteCatalog: PaletteCatalog
+    private let localCLIAccounts: LocalCLIAccountStore
     private let openFullWindow: () -> Void
     private let openPaletteLibrary: () -> Void
     private let quit: () -> Void
@@ -30,6 +31,7 @@ final class AccountFloatingPanelController: NSObject, NSWindowDelegate {
         updateStore: AppUpdateStore,
         paletteCatalog: PaletteCatalog,
         defaults: UserDefaults = .standard,
+        localCLIAccounts: LocalCLIAccountStore? = nil,
         openFullWindow: @escaping () -> Void,
         openPaletteLibrary: @escaping () -> Void,
         quit: @escaping () -> Void,
@@ -40,6 +42,7 @@ final class AccountFloatingPanelController: NSObject, NSWindowDelegate {
         self.updateStore = updateStore
         self.paletteCatalog = paletteCatalog
         self.defaults = defaults
+        self.localCLIAccounts = localCLIAccounts ?? LocalCLIAccountStore()
         self.openFullWindow = openFullWindow
         self.openPaletteLibrary = openPaletteLibrary
         self.quit = quit
@@ -105,6 +108,7 @@ final class AccountFloatingPanelController: NSObject, NSWindowDelegate {
                 paletteCatalog: paletteCatalog,
                 panelModel: model,
                 isFloatingPanel: true,
+                localCLIAccounts: localCLIAccounts,
                 openFullWindow: { [weak self] in
                     guard let self else { return }
                     self.close()

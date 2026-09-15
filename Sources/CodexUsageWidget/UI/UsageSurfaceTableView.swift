@@ -22,21 +22,26 @@ enum UsageSurfaceProjector {
         modelTokens: [String: Int],
         dimension: String?,
         query: String,
+        sharesAreComparable: Bool = false,
         sortKey: String = "tokens",
         sortDir: String = "desc"
     ) -> UsageSurfaceTable {
         var rows: [UsageSurfaceRow] = []
         rows.append(contentsOf: toolTokens.map { UsageSurfaceRow(id: "tool:\($0.key)", dimension: "tool", name: $0.key, tokens: $0.value, costUsd: nil, share: nil) })
         rows.append(contentsOf: modelTokens.map { UsageSurfaceRow(id: "model:\($0.key)", dimension: "model", name: $0.key, tokens: $0.value, costUsd: nil, share: nil) })
-        let grand = rows.reduce(0) { $0 + $1.tokens }
+        let totalsByDimension: [String: Double] = [
+            "tool": toolTokens.values.reduce(0.0) { $0 + Double($1) },
+            "model": modelTokens.values.reduce(0.0) { $0 + Double($1) },
+        ]
         rows = rows.map {
-            UsageSurfaceRow(
+            let total = totalsByDimension[$0.dimension] ?? 0
+            return UsageSurfaceRow(
                 id: $0.id,
                 dimension: $0.dimension,
                 name: $0.name,
                 tokens: $0.tokens,
                 costUsd: $0.costUsd,
-                share: grand > 0 ? Double($0.tokens) / Double(grand) : nil
+                share: sharesAreComparable && total > 0 ? Double($0.tokens) / total : nil
             )
         }
         if let dimension {
@@ -75,7 +80,7 @@ struct UsageSurfaceTableView: View {
         VStack(alignment: .leading, spacing: WorkspaceVisualMetrics.Space.sm) {
             Text(language.text("用量明细", "Usage details"))
                 .font(WorkspaceVisualMetrics.titleFont())
-            Text(language.text("本机 token 统计，不是官方账号额度，未去重前不提供合计。", "Local token counts, not official remaining quota. No combined total until overlap is proven."))
+            Text(language.text("按工具或模型查看 Token 用量。占比按各自维度计算。", "Explore token usage by tool or model. Shares use the total for each dimension."))
                 .font(WorkspaceVisualMetrics.metaFont())
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -61,7 +61,8 @@ struct LocalCLIQuotaFixture {
             LocalCLIKind.mimo.defaultConfigDirectory(home: home).path == "/synthetic-home/.local/share/mimocode",
             "MiMo data path")
         try expect(LocalCLIKind.workBuddy.supportsTerminalSignIn, "WorkBuddy native sign-in")
-        try expect(LocalCLIKind.zcode.supportsTerminalSignIn, "ZCode default native sign-in")
+        try expect(LocalCLIKind.zcode.isDesktopApplication && LocalCLIKind.zcode.supportsNativeOpen && !LocalCLIKind.zcode.supportsTerminalSignIn,
+                   "ZCode opens its desktop application without a CLI sign-in")
         try expect(LocalCLIKind.trae.supportsNativeOpen && !LocalCLIKind.trae.supportsTerminalSignIn,
                    "TRAE desktop-only capability")
         let profile = LocalCLIProfile(
@@ -303,7 +304,8 @@ struct LocalCLIQuotaFixture {
                 .write(to: directory.appendingPathComponent("auth.json"))
             let unauthorized = await LocalCLIQuotaReader(
                 transport: MockTransport(status: 401, data: Data())).load(profile: profile(.grok, directory))
-            try expect(unauthorized.state == .needsLogin, "401 mapping")
+            try expect(unauthorized.state == .unavailable, "generic 401 does not prove permanent sign-out")
+            try expect(unauthorized.messageCode == "local_cli_authorization_unverified", "401 remains a verification failure")
             let limited = await LocalCLIQuotaReader(
                 transport: MockTransport(status: 429, data: Data())).load(profile: profile(.grok, directory))
             try expect(limited.state == .rateLimited, "429 mapping")

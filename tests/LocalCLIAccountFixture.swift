@@ -11,12 +11,22 @@ private enum FixtureFailure: Error { case failed(String) }
 
 // These persistence tests never open Terminal or perform authentication.
 enum LocalCLITerminalLauncher {
+    @MainActor static var permitsSyntheticSession = false
+    @MainActor static var launchCount = 0
     enum Action { case signIn, open }
     struct Session {}
-    static func launch(profile: LocalCLIProfile, executable: String, action: Action, workingDirectory: URL) async throws -> Session {
+    @MainActor static func launch(profile: LocalCLIProfile, executable: String, action: Action, workingDirectory: URL) async throws -> Session {
+        if permitsSyntheticSession {
+            launchCount += 1
+            return Session()
+        }
         throw FixtureFailure.failed("interactive launcher must not run in the persistence fixture")
     }
-    static func waitForExit(_ session: Session) async throws -> Int32 {
+    @MainActor static func waitForExit(_ session: Session) async throws -> Int32 {
+        if permitsSyntheticSession {
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+            return 0
+        }
         throw FixtureFailure.failed("interactive launcher must not run in the persistence fixture")
     }
 }
@@ -63,11 +73,9 @@ private func makeRoot(_ label: String) throws -> (root: URL, home: URL, support:
                                             attributes: [.posixPermissions: 0o700])
     let applications = home.appendingPathComponent("Applications", isDirectory: true)
     let zcode = applications.appendingPathComponent("ZCode.app", isDirectory: true)
-    let zcodeCLI = zcode.appendingPathComponent("Contents/Resources/glm/zcode.cjs")
     let zcodeElectron = zcode.appendingPathComponent("Contents/MacOS/ZCode")
-    try FileManager.default.createDirectory(at: zcodeCLI.deletingLastPathComponent(), withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: zcodeElectron.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try Data("synthetic zcode entry".utf8).write(to: zcodeCLI)
+    try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "dev.zcode.app", "CFBundleExecutable": "ZCode"], format: .xml, options: 0).write(to: zcode.appendingPathComponent("Contents/Info.plist"))
     try Data("synthetic electron".utf8).write(to: zcodeElectron)
     guard chmod(zcodeElectron.path, 0o700) == 0 else { throw FixtureFailure.failed("chmod ZCode runner") }
 
@@ -83,6 +91,8 @@ private func makeRoot(_ label: String) throws -> (root: URL, home: URL, support:
     guard chmod(workBuddyCLI.path, 0o700) == 0, chmod(workBuddyElectron.path, 0o700) == 0 else {
         throw FixtureFailure.failed("chmod WorkBuddy bundle")
     }
+
+    try FileManager.default.copyItem(at: workBuddy, to: applications.appendingPathComponent("WorkBuddy AI.app"))
 
     let externalCodeBuddy = home.appendingPathComponent(".local/bin/codebuddy")
     try Data("synthetic external product".utf8).write(to: externalCodeBuddy)
@@ -118,12 +128,30 @@ private func testDiscoveryLinkRenameUnlinkAndPermissions() async throws {
     let applications = paths.home.appendingPathComponent("Applications", isDirectory: true)
     try expect(
         store.installed[.zcode] == applications.appendingPathComponent(
-            "ZCode.app/Contents/Resources/glm/zcode.cjs").path,
+            "ZCode.app").path,
         "bundled ZCode discovery")
     try expect(
         store.installed[.workBuddy] == applications.appendingPathComponent(
             "WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy").path,
         "bundled WorkBuddy discovery does not substitute external codebuddy")
+    let workBuddyProfiles = store.profiles(for: .workBuddy)
+    try expect(
+        workBuddyProfiles.count == 2 && Set(workBuddyProfiles.map(\.id)).count == 2,
+        "domestic and international defaults remain distinct")
+    for edition in WorkBuddyEdition.allCases {
+        guard let profile = workBuddyProfiles.first(where: { $0.id == edition.defaultProfileID }) else {
+            throw FixtureFailure.failed("WorkBuddy edition profile missing")
+        }
+        try expect(
+            profile.configDirectory == paths.home.appendingPathComponent(edition.directoryName).path,
+            "each edition owns its config directory")
+        try expect(
+            store.executable(for: profile)
+                == applications.appendingPathComponent(
+                    edition.applicationName + "/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"
+                ).path,
+            "each edition launches its own bundle")
+    }
     let defaults = store.profiles(for: .zcode)
     try expect(defaults.count == 1 && defaults[0].isDefault, "default profile discovery")
 
@@ -137,8 +165,8 @@ private func testDiscoveryLinkRenameUnlinkAndPermissions() async throws {
     guard let linked = store.profiles(for: .zcode).first(where: { !$0.isDefault }) else {
         throw FixtureFailure.failed("linked profile")
     }
-    try expect(store.canSignIn(defaults[0]) && store.canOpen(defaults[0]),
-               "default ZCode exposes official login and TUI")
+    try expect(!store.canSignIn(defaults[0]) && store.canOpen(defaults[0]),
+               "default ZCode opens desktop only without any bundled CLI")
     try expect(!store.canSignIn(linked) && !store.canOpen(linked),
                "linked ZCode remains quota-only")
 
@@ -171,6 +199,25 @@ private func testDiscoveryLinkRenameUnlinkAndPermissions() async throws {
     let afterUnlink = try JSONDecoder().decode([LocalCLIProfile].self,
                                                 from: Data(contentsOf: storage(paths.support)))
     try expect(afterUnlink.isEmpty, "unlink persistence")
+}
+
+@MainActor
+private func testWorkBuddyInternationalOnlyDiscovery() throws {
+    let paths = try makeRoot("international-only")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    try FileManager.default.removeItem(at: paths.home.appendingPathComponent("Applications/WorkBuddy.app"))
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    let profiles = store.profiles(for: .workBuddy)
+    try expect(
+        profiles.count == 1 && profiles[0].id == "local-workBuddy-ai",
+        "international-only installation has no false domestic profile")
+    try expect(
+        store.installed[.workBuddy] == store.executable(for: profiles[0]),
+        "international bundle remains accessible from workspace navigation")
+    try expect(
+        store.canOpen(profiles[0]) && store.canSignIn(profiles[0]),
+        "international login and TUI are exposed")
 }
 
 @MainActor
@@ -312,14 +359,128 @@ private func testManagedGrokIsolationAndStaleWriter() throws {
     try expect(fm.fileExists(atPath: auth.path), "unlink preserves Grok CLI-owned credentials")
 }
 
+private actor QuotaReadSequence {
+    private var states: [LocalCLIQuotaState] = [.available, .unavailable, .needsLogin, .available]
+    func next() -> LocalCLIQuotaResult {
+        LocalCLIQuotaResult(state: states.removeFirst(), fetchedAt: Date(), maskedIdentity: nil,
+                            identityFingerprint: nil, planLabel: "Synthetic", windows: [],
+                            balance: nil, balanceCurrency: nil, sourceLabel: "Synthetic", messageCode: nil)
+    }
+}
+
+@MainActor
+private func testTransientFailureAndConfirmedSignOut() async throws {
+    let paths = try makeRoot("read-state")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let sequence = QuotaReadSequence()
+    let store = makeStore(home: paths.home, support: paths.support, loader: { _ in await sequence.next() })
+    store.discover()
+    let directory = paths.root.appendingPathComponent("linked", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    store.link(kind: .zcode, directory: directory, name: "Synthetic")
+    guard let linked = store.profiles(for: .zcode).first(where: { !$0.isDefault }) else {
+        throw FixtureFailure.failed("synthetic linked profile")
+    }
+    for (expected, isStale) in [(LocalCLIQuotaState.available, false), (.available, true), (.needsLogin, false), (.available, false)] {
+        store.refresh(linked)
+        for _ in 0..<100 where store.refreshing.contains(linked.id) {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        try expect(store.quotas[linked.id]?.state == expected, "read state updates without retaining a false login")
+        try expect(store.stale.contains(linked.id) == isStale, "only temporary failure retains stale quota")
+        try expect(store.profiles.contains(where: { $0.id == linked.id }), "sign-out preserves saved account identity")
+    }
+}
+
+@MainActor
+private func testAuthenticationWithoutQuotaOrTerminalExit() async throws {
+    let paths = try makeRoot("authentication")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let directory = paths.home.appendingPathComponent(".gemini", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let executable = paths.home.appendingPathComponent(".local/bin/gemini")
+    try Data("synthetic executable".utf8).write(to: executable)
+    _ = chmod(executable.path, 0o700)
+    try Data(#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#.utf8).write(to: directory.appendingPathComponent("settings.json"))
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    guard let profile = store.profiles(for: .gemini).first else { throw FixtureFailure.failed("Gemini profile") }
+    try expect(!store.hasConfiguredAuthentication(profile), "selected API mode alone cannot prove a saved key")
+    LocalCLITerminalLauncher.permitsSyntheticSession = true
+    defer { LocalCLITerminalLauncher.permitsSyntheticSession = false }
+    store.signIn(profile)
+    for _ in 0..<8 { await Task.yield() }
+    try expect(store.signingIn.contains(profile.id), "interactive terminal remains open before credentials exist")
+    let credentials = Data("GEMINI_API_KEY=synthetic-local-key\n".utf8)
+    let env = directory.appendingPathComponent(".env")
+    try credentials.write(to: env)
+    for _ in 0..<60 where store.signingIn.contains(profile.id) { try await Task.sleep(nanoseconds: 50_000_000) }
+    try expect(!store.signingIn.contains(profile.id), "saved Gemini API key ends authorization waiting without terminal exit")
+    try expect(store.authentication[profile.id] == .apiKey, "API auth is recognized independently of Google quota")
+    try expect(store.canOpen(profile), "configured CLI can open without quota")
+    let after = try Data(contentsOf: env)
+    try expect(after == credentials, "credential checks never change the user's key")
+    var reader = LocalCLIAuthenticationReader()
+    reader.keychainReader = { _, _ in nil }
+    reader.fileReader = { url in
+        if url.lastPathComponent == "settings.json" { return Data(#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#.utf8) }
+        if url.lastPathComponent == "oauth_creds.json" { return Data(#"{"refresh_token":"old-oauth"}"#.utf8) }
+        return nil
+    }
+    try expect(reader.read(profile) == .unknown, "API selection cannot borrow an old Google OAuth credential")
+    let opencode = LocalCLIProfile(id: "synthetic", kind: .openCode, displayName: "Synthetic", configDirectory: directory.path, isDefault: false)
+    reader.fileReader = { _ in Data(#"{"anthropic":{"type":"oauth","refresh":"synthetic"},"provider":{"type":"api","key":"synthetic"},"invalid":{"type":"api","key":""}}"#.utf8) }
+    try expect(reader.read(opencode) == .providers(2), "OpenCode provider credentials do not require OpenCode Go")
+    try expect(!LocalCLIAuthenticationReader.hasEnvironmentValue("GEMINI_API_KEY=''\n# GEMINI_API_KEY=x", names: ["GEMINI_API_KEY"]), "empty or commented API keys stay unknown")
+}
+
+@MainActor
+private func testOpenCodeReusesSavedProviderUnlessUpdateRequested() async throws {
+    let paths = try makeRoot("opencode-reuse")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let directory = LocalCLIKind.openCode.defaultConfigDirectory(home: paths.home)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let executable = paths.home.appendingPathComponent(".local/bin/opencode")
+    try Data("synthetic executable".utf8).write(to: executable)
+    _ = chmod(executable.path, 0o700)
+    let auth = directory.appendingPathComponent("auth.json")
+    let credentials = Data(#"{"provider":{"type":"api","key":"synthetic-saved-provider"}}"#.utf8)
+    try credentials.write(to: auth)
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    guard let profile = store.profiles(for: .openCode).first else { throw FixtureFailure.failed("OpenCode profile") }
+    try expect(store.authentication[profile.id] == .providers(1), "saved provider is recognized without OpenCode Go quota")
+    LocalCLITerminalLauncher.permitsSyntheticSession = true
+    LocalCLITerminalLauncher.launchCount = 0
+    defer { LocalCLITerminalLauncher.permitsSyntheticSession = false }
+    store.signIn(profile)
+    for _ in 0..<8 { await Task.yield() }
+    try expect(LocalCLITerminalLauncher.launchCount == 0 && store.signingIn.isEmpty,
+               "default sign-in reuses saved providers without reopening authentication")
+    try expect(store.canOpen(profile) && store.loginMessages[profile.id]?.contains("已复用") == true,
+               "reused provider remains openable even when quota is unavailable")
+    store.signIn(profile, updateProvider: true)
+    for _ in 0..<100 where LocalCLITerminalLauncher.launchCount == 0 { try await Task.sleep(nanoseconds: 5_000_000) }
+    try expect(LocalCLITerminalLauncher.launchCount == 1,
+               "an explicit provider update still opens the official authentication entry")
+    store.checkLocalSignIns()
+    try expect(store.signingIn.isEmpty, "an existing credential never leaves the checklist waiting for terminal exit")
+    let after = try Data(contentsOf: auth)
+    try expect(after == credentials, "reuse and provider-update launch never rewrite stored credentials")
+}
+
 @main enum Main {
     @MainActor static func main() async throws {
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
+        try testWorkBuddyInternationalOnlyDiscovery()
         try await testStaleWriterConflictPreservesWinner()
         try await testInvalidStoredProfilesRemainUntouched()
         try await testUnlinkRejectsLateRefresh()
         try await testRediscoveryRemovesOtherWritersAccountState()
         try testManagedGrokIsolationAndStaleWriter()
+        try await testTransientFailureAndConfirmedSignOut()
+        try await testAuthenticationWithoutQuotaOrTerminalExit()
+        try await testOpenCodeReusesSavedProviderUnlessUpdateRequested()
         print("local-cli-account-fixture: ok")
     }
 }

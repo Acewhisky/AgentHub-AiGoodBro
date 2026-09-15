@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "upstreamCommit": "ef079b6fb494e1cfcb24736cfcf4d4e591222eaf",
+  "source": "https://github.com/Javis603/token-monitor/blob/ef079b6fb494e1cfcb24736cfcf4d4e591222eaf/src/shared/clientCatalog.js",
+  "sourceSHA256": "2aebeae0704d5e3b240d0659a037d03a9a4f879dc3898b2a920991a74213ba14",
+  "clients": [
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "claude",
+      "label": "Claude Code"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "codex",
+      "label": "Codex"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "opencode",
+      "label": "OpenCode"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "hermes",
+      "label": "Hermes Agent"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "openclaw",
+      "label": "OpenClaw"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "cursor",
+      "label": "Cursor"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "antigravity",
+      "label": "Antigravity"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "cline",
+      "label": "Cline"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "kimi",
+      "label": "Kimi"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "qwen",
+      "label": "Qwen"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "grok",
+      "label": "Grok Build"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "copilot",
+      "label": "GitHub Copilot"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "pi",
+      "label": "Pi"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "zed",
+      "label": "Zed"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "kilo",
+      "label": "Kilo"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "commandcode",
+      "label": "Command Code"
+    },
+    {
+      "defaultTracked": false,
+      "locallyParsed": false,
+      "id": "micode",
+      "label": "MiMo Code"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "zcode",
+      "label": "ZCode"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "kiro",
+      "label": "Kiro"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "codebuddy",
+      "label": "CodeBuddy"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "workbuddy",
+      "label": "WorkBuddy"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": true,
+      "id": "proma",
+      "label": "Proma"
+    },
+    {
+      "defaultTracked": false,
+      "locallyParsed": true,
+      "id": "qodercn",
+      "label": "Qoder CN"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "reasonix",
+      "label": "Reasonix"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "dsh",
+      "label": "DeepSeek Harness"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "cherrystudio",
+      "label": "Cherry Studio"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "lmstudio",
+      "label": "LM Studio"
+    },
+    {
+      "defaultTracked": true,
+      "locallyParsed": false,
+      "id": "unsloth",
+      "label": "Unsloth"
+    }
+  ]
+}

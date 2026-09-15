@@ -20,6 +20,7 @@ enum TokenMonitorUISelfTest {
         reproduceLocalUsageCoverage(expect: expect)
         reproduceTrendRendererBoundaries(expect: expect)
         reproduceResetAnnouncementPresentation(expect: expect)
+        reproducePublicResetCalendar(expect: expect)
         expect(OnboardingModesSelfTest.run(), "onboarding modes, 6pt track and skip/back fixtures")
 
         if failures.isEmpty {
@@ -28,6 +29,25 @@ enum TokenMonitorUISelfTest {
         }
         failures.forEach { print("token-monitor UI self-test failed: \($0)") }
         return false
+    }
+
+    private static func reproducePublicResetCalendar(expect: (Bool, String) -> Void) {
+        let parser = ISO8601DateFormatter()
+        let lateUTC = parser.date(from: "2026-09-03T23:12:00Z")!
+        let beijingDay = parser.date(from: "2026-09-03T16:00:00Z")!
+        let earlierDay = parser.date(from: "2026-09-02T16:00:00Z")!
+        let event = PublicResetAnnouncement(
+            id: "fixture-reset-calendar", resetType: .banked, announcedAt: lateUTC, text: "A public reset announcement", source: .init(type: "observed", author: nil, url: nil))
+        expect(PublicResetCalendarModel.events(on: beijingDay, from: [event]).count == 1, "reset calendar uses Beijing day boundaries")
+        expect(PublicResetCalendarModel.events(on: earlierDay, from: [event]).isEmpty, "UTC date is not incorrectly used as Beijing calendar day")
+        expect(PublicResetCalendarModel.normalized([event, event]).count == 1, "latest announcement and API page do not duplicate calendar counts")
+        let leap = PublicResetCalendarModel.days(in: parser.date(from: "2024-02-12T00:00:00Z")!)
+        expect(leap.compactMap { $0 }.count == 29 && leap.count.isMultiple(of: 7), "reset calendar preserves leap days and complete weeks")
+        let september = PublicResetCalendarModel.days(in: lateUTC)
+        expect(september.first! == nil && september[1] != nil, "calendar starts Monday with correct leading empty cells")
+        let january = PublicResetCalendarModel.days(in: parser.date(from: "2027-01-12T00:00:00Z")!)
+        expect(january.compactMap { $0 }.count == 31, "calendar month navigation crosses year boundaries")
+        expect(PublicResetCalendarModel.events(on: beijingDay, from: []).isEmpty, "missing historical records are not invented")
     }
 
     private static func reproduceFloatingBubble(expect: (Bool, String) -> Void) {
@@ -165,7 +185,9 @@ enum TokenMonitorUISelfTest {
         expect(
             ProviderIconSlot.card.hitTarget >= 32 && ProviderIconSlot.detail.hitTarget >= 32 && ProviderIconSlot.editor.hitTarget >= 32,
             "card/detail/editor avatars keep a 32pt hit target")
-        expect(ProviderIconSlot.list.container == 24, "list avatars stay 24pt so compact rows do not grow")
+        expect(
+            ProviderIconSlot.compactRow.container == 20 && ProviderIconSlot.compactRow.glyph == 20,
+            "compact-row avatars keep the original 20pt footprint")
         var table = AccountAvatarTable()
         table.set(.init(mode: .emoji, emoji: "😀"), for: "a")
         table.set(.init(mode: .image, assetID: "avatar-a-1"), for: "b")
@@ -510,7 +532,15 @@ enum TokenMonitorUISelfTest {
         let observedLabel = PublicResetAnnouncementPresentation.sourceLabel(observedSource, language: .zh)
         expect(xLabel.contains("X") && xLabel.contains("thsottiaux"), "X source keeps its author visible")
         expect(!xLabel.contains("网友观察"), "X source is not mislabeled as generic user observation")
-        expect(observedLabel.contains("codex-resets.com") && observedLabel.contains("观察记录"), "observed source is identified as aggregator observation")
+        expect(observedLabel.contains("观察记录") && !observedLabel.contains(".com"), "observed source keeps its meaning without showing a bare domain")
+        expect(
+            PublicResetAnnouncementPresentation.readableText("Reset complete. https://t.co/example") == "Reset complete.",
+            "announcement presentation removes trailing web addresses"
+        )
+        expect(
+            PublicResetAnnouncementPresentation.readableText("第一行\nHTTPS://example.com/reset\n确认完成") == "第一行\n\n确认完成",
+            "URL filtering preserves surrounding multilingual content and paragraph boundaries"
+        )
         expect(
             PublicResetAnnouncementPresentation.sourceLinkTitle(observedSource, language: .zh).contains("来源"),
             "an aggregator URL is labeled as its source"
@@ -525,12 +555,21 @@ enum TokenMonitorUISelfTest {
             "banked announcements are labeled as reset-card announcements"
         )
         let regularMeaning = PublicResetAnnouncementPresentation.interpretation(.regular, language: .zh)
-        expect(!regularMeaning.contains("有人额度") && regularMeaning.contains("不确认"), "regular copy does not invent personal delivery")
-        expect(AnnouncementOriginalText.collapsedLineLimit == 3, "home announcement defaults to three lines")
+        expect(!regularMeaning.contains("有人额度") && regularMeaning.contains("不代表个人额度已刷新"), "regular copy does not invent personal delivery")
+        expect(AnnouncementOriginalText.collapsedLineLimit == 2, "home announcement defaults to two lines with a full-text expansion")
         expect(
             PublicResetAnnouncementPresentation.eventTime(Date(timeIntervalSince1970: 1_789_000_000), language: .zh).contains(":"),
             "announcement event time keeps an exact clock value"
         )
+        let event = ISO8601DateFormatter().date(from: "2026-09-12T08:09:17Z")!
+        let compactTime = PublicResetAnnouncementPresentation.compactEventTime(event, language: .zh)
+        expect(compactTime.contains("9月12日") && compactTime.contains("4:09") && compactTime.contains("下午"), "home announcement converts UTC into the Beijing afternoon clock")
+        expect(
+            PublicResetAnnouncementPresentation.relativeEventTime(event, now: event.addingTimeInterval(7 * 3600), language: .zh).contains("7"),
+            "home announcement age uses its event time")
+        expect(
+            PublicResetAnnouncementPresentation.relativeEventTime(event, now: event.addingTimeInterval(-30), language: .zh) == "刚刚",
+            "allowed source clock skew does not create a future reset claim")
     }
 
     private static func solidPNG(color: NSColor) -> Data {

@@ -165,26 +165,78 @@ struct LocalCLIQuotaReader {
     typealias ClaudeKeychainReader = () throws -> Data?
 
     private static let maximumCredentialBytes = 1_048_576
+    typealias UpstreamReader = (LocalCLIProfile, Date) async throws -> LocalCLIQuotaResult
+    private let upstreamReader: UpstreamReader?
     private let transport: any LocalCLIQuotaTransport
     private let fileReader: FileReader
     private let claudeKeychainReader: ClaudeKeychainReader
 
     init(
-        transport: any LocalCLIQuotaTransport = LocalCLIURLSessionTransport(),
-        fileReader: @escaping FileReader = { url, maximumBytes, allowMissing in
-            try DispatchParticipationSync.readBoundedRegularFile(
-                url,
-                maximumBytes: maximumBytes,
-                allowMissing: allowMissing)
-        },
-        claudeKeychainReader: @escaping ClaudeKeychainReader = Self.readDefaultClaudeKeychain
+        transport: (any LocalCLIQuotaTransport)? = nil,
+        fileReader: FileReader? = nil,
+        claudeKeychainReader: ClaudeKeychainReader? = nil,
+        upstreamReader: UpstreamReader? = nil
     ) {
-        self.transport = transport
-        self.fileReader = fileReader
-        self.claudeKeychainReader = claudeKeychainReader
+        self.upstreamReader =
+            upstreamReader
+            ?? (transport == nil && fileReader == nil && claudeKeychainReader == nil
+                ? { profile, now in try await TokenMonitorLocalCLIQuotaReader().load(profile: profile, now: now) } : nil)
+        self.transport = transport ?? LocalCLIURLSessionTransport()
+        self.fileReader =
+            fileReader ?? { url, maximumBytes, allowMissing in
+                try DispatchParticipationSync.readBoundedRegularFile(
+                    url,
+                    maximumBytes: maximumBytes,
+                    allowMissing: allowMissing)
+            }
+        self.claudeKeychainReader = claudeKeychainReader ?? Self.readDefaultClaudeKeychain
     }
 
     func load(profile: LocalCLIProfile, now: Date = Date()) async -> LocalCLIQuotaResult {
+        if profile.kind == .openCode, let upstreamReader {
+            do {
+                try Task.checkCancellation()
+                return try await upstreamReader(profile, now)
+            } catch {
+                if Task.isCancelled || error is CancellationError || (error as? TokenMonitorFailure) == .cancelled {
+                    return result(state: .unavailable, now: now, source: TokenMonitorLocalCLIQuotaReader.sourceLabel, messageCode: "local_cli_cancelled")
+                }
+                if case TokenMonitorLocalCLIQuotaReader.Failure.rejected(let reason) = error {
+                    return result(
+                        state: .unavailable, now: now, source: TokenMonitorLocalCLIQuotaReader.sourceLabel,
+                        messageCode: "local_cli_upstream_" + reason.rawValue)
+                }
+                if let failure = error as? TokenMonitorFailure,
+                    ![.missingBundle, .timedOut, .spawnFailed, .processFailed, .engineError].contains(failure)
+                {
+                    return result(
+                        state: .unavailable, now: now, source: TokenMonitorLocalCLIQuotaReader.sourceLabel,
+                        messageCode: "local_cli_upstream_" + failure.rawValue)
+                }
+                let reason: String
+                if case TokenMonitorLocalCLIQuotaReader.Failure.unavailable(let value) = error {
+                    reason = value.rawValue
+                } else {
+                    reason = (error as? TokenMonitorFailure)?.rawValue ?? "engine_error"
+                }
+                guard !Task.isCancelled else {
+                    return result(state: .unavailable, now: now, source: TokenMonitorLocalCLIQuotaReader.sourceLabel, messageCode: "local_cli_cancelled")
+                }
+                let native = await loadNative(profile: profile, now: now)
+                guard !Task.isCancelled else {
+                    return result(state: .unavailable, now: now, source: TokenMonitorLocalCLIQuotaReader.sourceLabel, messageCode: "local_cli_cancelled")
+                }
+                return LocalCLIQuotaResult(
+                    state: native.state, fetchedAt: native.fetchedAt, maskedIdentity: native.maskedIdentity,
+                    identityFingerprint: native.identityFingerprint, planLabel: native.planLabel, windows: native.windows,
+                    balance: native.balance, balanceCurrency: native.balanceCurrency,
+                    sourceLabel: "OpenCode Go native fallback (" + reason + ")", messageCode: native.messageCode)
+            }
+        }
+        return await loadNative(profile: profile, now: now)
+    }
+
+    private func loadNative(profile: LocalCLIProfile, now: Date) async -> LocalCLIQuotaResult {
         do {
             switch profile.kind {
             case .grok:
@@ -448,8 +500,10 @@ struct LocalCLIQuotaReader {
         -> LocalCLIQuotaResult
     {
         switch failure {
-        case .credentialsMissing, .credentialsExpired, .unauthorized:
+        case .credentialsMissing, .credentialsExpired:
             result(state: .needsLogin, now: now, source: sourceLabel(for: kind), messageCode: "local_cli_needs_login")
+        case .unauthorized:
+            result(state: .unavailable, now: now, source: sourceLabel(for: kind), messageCode: "local_cli_authorization_unverified")
         case .rateLimited:
             result(state: .rateLimited, now: now, source: sourceLabel(for: kind), messageCode: "local_cli_rate_limited")
         case .invalidCredentials:

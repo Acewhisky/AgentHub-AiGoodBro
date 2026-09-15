@@ -16,6 +16,8 @@ struct AccountAvatarEditor: View {
     @State private var pickedImage: NSImage?
     @State private var cropOffset = CGSize.zero
     @State private var cropScale: CGFloat = 1
+    @State private var dragOrigin: CGSize?
+    @State private var scaleOrigin: CGFloat?
     @State private var errorText: String?
     @State private var warningText: String?
 
@@ -41,21 +43,28 @@ struct AccountAvatarEditor: View {
     }
 
     var body: some View {
+        let renderedPreview = localPreviewImage
         VStack(alignment: .leading, spacing: 16) {
             Text(language.text("更换头像", "Change avatar")).font(.headline)
             Text(target.displayName).font(.subheadline).foregroundStyle(.secondary)
             HStack(alignment: .top, spacing: 20) {
-                preview(slot: .list)
-                preview(slot: .card)
-                preview(slot: .detail)
-                preview(slot: .editor)
+                preview(slot: .list, image: renderedPreview)
+                preview(slot: .card, image: renderedPreview)
+                preview(slot: .detail, image: renderedPreview)
+                preview(slot: .editor, image: renderedPreview)
             }
+            Text(language.text("本地预览 · 保存后应用，取消放弃本次修改。", "Local preview · Save applies changes; Cancel discards this draft."))
+                .font(.caption).foregroundStyle(.secondary)
             Picker(language.text("头像来源", "Avatar source"), selection: $mode) {
                 Text(language.text("默认平台图标", "Default platform icon")).tag(AccountAvatarMode.platformDefault)
                 Text(language.text("图片", "Image")).tag(AccountAvatarMode.image)
                 Text("Emoji").tag(AccountAvatarMode.emoji)
             }
             .pickerStyle(.segmented)
+            .onChange(of: mode) { _ in
+                errorText = mode == .emoji ? AccountAvatarEmoji.validationMessage(emojiDraft, language: language) : nil
+                if mode != .image { warningText = nil }
+            }
             if mode == .emoji {
                 TextField(language.text("一个 emoji", "One emoji"), text: $emojiDraft)
                     .textFieldStyle(.roundedBorder)
@@ -90,22 +99,23 @@ struct AccountAvatarEditor: View {
                 }
                 Spacer()
                 Button(language.text("取消", "Cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
                 Button(language.text("保存", "Save"), action: save)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(errorText != nil)
+                    .disabled(mode == .emoji ? AccountAvatarEmoji.validationMessage(emojiDraft, language: language) != nil : mode == .image && pickedImage == nil)
             }
         }
         .padding(24)
         .frame(width: 560)
     }
 
-    private func preview(slot: ProviderIconSlot) -> some View {
+    private func preview(slot: ProviderIconSlot, image: NSImage?) -> some View {
         VStack(spacing: 6) {
             AccountAvatarView(
                 record: previewRecord,
                 providerID: target.providerID,
                 slot: slot,
-                image: pickedImage
+                image: image
             )
             Text("\(Int(slot.container))pt").font(.caption2).foregroundStyle(.secondary)
         }
@@ -124,7 +134,10 @@ struct AccountAvatarEditor: View {
             if let pickedImage {
                 Image(nsImage: pickedImage)
                     .resizable()
-                    .scaledToFill()
+                    .frame(
+                        width: pickedImage.size.width * 160 / min(pickedImage.size.width, pickedImage.size.height),
+                        height: pickedImage.size.height * 160 / min(pickedImage.size.width, pickedImage.size.height)
+                    )
                     .scaleEffect(cropScale)
                     .offset(cropOffset)
             }
@@ -132,9 +145,34 @@ struct AccountAvatarEditor: View {
         .frame(width: 160, height: 160)
         .clipped()
         .clipShape(Circle())
-        .gesture(DragGesture().onChanged { cropOffset = $0.translation })
-        .gesture(MagnificationGesture().onChanged { cropScale = max(1, $0) })
+        .gesture(
+            DragGesture().onChanged { value in
+                if dragOrigin == nil { dragOrigin = cropOffset }
+                let origin = dragOrigin ?? .zero
+                cropOffset = boundedOffset(
+                    CGSize(
+                        width: origin.width + value.translation.width,
+                        height: origin.height + value.translation.height))
+            }.onEnded { _ in dragOrigin = nil }
+        )
+        .simultaneousGesture(
+            MagnificationGesture().onChanged { value in
+                if scaleOrigin == nil { scaleOrigin = cropScale }
+                cropScale = min(8, max(1, (scaleOrigin ?? 1) * value))
+                cropOffset = boundedOffset(cropOffset)
+            }.onEnded { _ in scaleOrigin = nil }
+        )
         .help(language.text("拖动和缩放以裁剪为正方形", "Drag and zoom to crop a square"))
+    }
+
+    private func boundedOffset(_ offset: CGSize) -> CGSize {
+        AvatarCropGeometry.offset(offset, image: pickedImage?.size ?? .zero, scale: cropScale)
+    }
+
+    private var localPreviewImage: NSImage? {
+        guard mode == .image, let pickedImage else { return nil }
+        let crop = AvatarCropGeometry.rect(image: pickedImage.size, scale: cropScale, offset: cropOffset)
+        return AccountAvatarImageProcessor.renderPNG(image: pickedImage, crop: crop).flatMap { NSImage(data: $0) }
     }
 
     private func pickImage() {
@@ -181,14 +219,7 @@ struct AccountAvatarEditor: View {
                 errorText = language.text("请先选择一张图片。", "Choose an image first.")
                 return
             }
-            let size = pickedImage.size
-            let side = min(size.width, size.height)
-            let crop = NSRect(
-                x: (size.width - side) / 2 - cropOffset.width,
-                y: (size.height - side) / 2 + cropOffset.height,
-                width: side / cropScale,
-                height: side / cropScale
-            )
+            let crop = AvatarCropGeometry.rect(image: pickedImage.size, scale: cropScale, offset: cropOffset)
             guard let png = AccountAvatarImageProcessor.renderPNG(image: pickedImage, crop: crop) else {
                 errorText = AccountAvatarImageProcessor.Rejection.undecodable.message(language)
                 return

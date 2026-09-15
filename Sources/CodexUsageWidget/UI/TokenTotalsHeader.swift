@@ -92,7 +92,9 @@ struct TokenTotalsHeader: View {
             preference: .default,
             now: Date()
         ),
-        dailyTrend: [UpstreamTrendView.Point] = []
+        dailyTrend: [UpstreamTrendView.Point] = [],
+        upstreamDashboardJSON: String? = nil,
+        resetAnnotations: [UpstreamTrendView.ResetAnnotation] = []
     ) {
         self.layout = layout
         self.language = language
@@ -105,8 +107,12 @@ struct TokenTotalsHeader: View {
         self.officialAccountsStatsAsOf = officialAccountsStatsAsOf
         self.statisticsContext = statisticsContext
         self.dailyTrend = dailyTrend
+        self.upstreamDashboardJSON = upstreamDashboardJSON
+        self.resetAnnotations = resetAnnotations
     }
 
+    let upstreamDashboardJSON: String?
+    let resetAnnotations: [UpstreamTrendView.ResetAnnotation]
     let dailyTrend: [UpstreamTrendView.Point]
 
     /// Shared offline-safe conversion used by the calendar and its fixtures.
@@ -161,6 +167,17 @@ struct TokenTotalsHeader: View {
     @MainActor
     @ViewBuilder
     private var dailyActivity: some View {
+        if let upstreamDashboardJSON {
+            UpstreamTrendView(dashboardJSON: upstreamDashboardJSON, resetAnnotations: resetAnnotations, height: 260)
+                .environment(\.widgetLanguage, language)
+                .frame(height: 260)
+        } else {
+            legacyDailyActivity
+        }
+    }
+
+    @MainActor
+    private var legacyDailyActivity: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(language.text("本机每日消耗", "Local daily usage"))

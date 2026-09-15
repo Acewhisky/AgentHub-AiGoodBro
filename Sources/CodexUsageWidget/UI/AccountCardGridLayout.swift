@@ -8,6 +8,7 @@ struct AccountCardGridLayout: Layout {
     /// primary actions. The old 250pt minimum fit three cards at the 822pt
     /// window and truncated those controls. Add columns only when this
     /// natural width fits.
+    var minimumWidth: CGFloat = Self.minimumCardWidth
     static let minimumCardWidth: CGFloat = 320
     static let spacing: CGFloat = 10
 
@@ -47,9 +48,9 @@ struct AccountCardGridLayout: Layout {
         }
     }
 
-    static func columnCount(width: CGFloat, itemCount: Int) -> Int {
+    static func columnCount(width: CGFloat, itemCount: Int, minimumWidth: CGFloat = minimumCardWidth) -> Int {
         guard width.isFinite, width > 0, itemCount > 0 else { return 1 }
-        let available = floor((width + spacing) / (minimumCardWidth + spacing))
+        let available = floor((width + spacing) / (max(260, minimumWidth) + spacing))
         // A pathological but valid CGFloat can overflow the division or be
         // outside Int's conversion range. Returning all requested columns is
         // safe in that case and keeps this pure helper trap-free.
@@ -74,9 +75,9 @@ struct AccountCardGridLayout: Layout {
     /// `intrinsicHeights` are the unconstrained heights returned by each
     /// subview for the resolved card width. Invalid heights are treated as
     /// unavailable rather than allowing NaN/infinity to poison the whole grid.
-    static func metrics(width: CGFloat, intrinsicHeights: [CGFloat]) -> Metrics {
+    static func metrics(width: CGFloat, intrinsicHeights: [CGFloat], minimumWidth: CGFloat = minimumCardWidth) -> Metrics {
         let resolvedWidth = Self.resolvedWidth(width)
-        let columns = columnCount(width: resolvedWidth, itemCount: intrinsicHeights.count)
+        let columns = columnCount(width: resolvedWidth, itemCount: intrinsicHeights.count, minimumWidth: minimumWidth)
         let cardWidth = Self.cardWidth(width: resolvedWidth, columns: columns)
         let cardHeight = sharedCardHeight(intrinsicHeights)
         let rows = rowCount(itemCount: intrinsicHeights.count, columns: columns)
@@ -109,14 +110,14 @@ struct AccountCardGridLayout: Layout {
 
     private func measurements(width: CGFloat, subviews: Subviews) -> Metrics {
         let resolvedWidth = Self.resolvedWidth(width)
-        let columns = Self.columnCount(width: resolvedWidth, itemCount: subviews.count)
+        let columns = Self.columnCount(width: resolvedWidth, itemCount: subviews.count, minimumWidth: minimumWidth)
         let cardWidth = Self.cardWidth(width: resolvedWidth, columns: columns)
         var heights: [CGFloat] = []
         heights.reserveCapacity(subviews.count)
         for index in subviews.indices {
             heights.append(subviews[index].sizeThatFits(.init(width: cardWidth, height: nil)).height)
         }
-        return Self.metrics(width: resolvedWidth, intrinsicHeights: heights)
+        return Self.metrics(width: resolvedWidth, intrinsicHeights: heights, minimumWidth: minimumWidth)
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -141,7 +142,9 @@ struct AccountCardGridLayout: Layout {
         // 0%, 100%, and unknown quota cards while keeping the check renderer-free.
         let heights: [CGFloat] = [148, 112, 116, 96, 132, 104, 108, 112, 100]
         let shared = sharedCardHeight(heights)
-        guard columnCount(width: 720, itemCount: heights.count) == 2,
+        guard columnCount(width: 870, itemCount: 9, minimumWidth: 280) == 3,
+            columnCount(width: 870, itemCount: 9, minimumWidth: 380) == 2,
+            columnCount(width: 720, itemCount: heights.count) == 2,
             columnCount(width: 980, itemCount: heights.count) == 3,
             columnCount(width: 784, itemCount: 9) == 2,
             columnCount(width: 944, itemCount: 9) == 2,
@@ -191,5 +194,38 @@ struct AccountCardGridLayout: Layout {
         }
         print("account card grid layout self-test passed")
         return true
+    }
+}
+
+// One saved control applies to every provider without scaling text or hit targets.
+enum AccountCardDensity: String, CaseIterable {
+    case compact, standard, spacious
+    var minimumWidth: CGFloat { self == .compact ? 280 : self == .standard ? 320 : 380 }
+    var padding: CGFloat { self == .compact ? 10 : self == .standard ? 14 : 18 }
+    func title(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .compact: language.text("紧凑", "Compact")
+        case .standard: language.text("标准", "Standard")
+        case .spacious: language.text("宽松", "Spacious")
+        }
+    }
+}
+private struct AccountCardDensityKey: EnvironmentKey { static let defaultValue = AccountCardDensity.compact }
+extension EnvironmentValues {
+    var accountCardDensity: AccountCardDensity {
+        get { self[AccountCardDensityKey.self] }
+        set { self[AccountCardDensityKey.self] = newValue }
+    }
+}
+struct AccountCardDensityPicker: View {
+    @AppStorage("AiGoodBro.accountCardDensity") private var saved = AccountCardDensity.compact.rawValue
+    @Environment(\.widgetLanguage) private var language
+    var body: some View {
+        Picker(language.text("卡片大小", "Card size"), selection: $saved) {
+            ForEach(AccountCardDensity.allCases, id: \.rawValue) { density in
+                Text(density.title(language)).tag(density.rawValue)
+            }
+        }.fixedSize().controlSize(.small)
+            .help(language.text("统一调整所有账号卡片的宽度与间距", "Adjust width and spacing for all account cards"))
     }
 }

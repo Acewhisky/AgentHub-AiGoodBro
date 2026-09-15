@@ -23,11 +23,7 @@ enum LocalCLITerminalLauncher {
         let electron: URL
         let productConfig: URL
         let configDirectory: URL
-    }
-
-    private struct ZCodeBundle {
-        let cli: URL
-        let electron: URL
+        let edition: WorkBuddyEdition
     }
 
     /// Build the exact command that will be written to the private Terminal
@@ -47,6 +43,54 @@ enum LocalCLITerminalLauncher {
         }
 
         switch profile.kind {
+        case .claudeCode, .gemini:
+            guard profile.isDefault,
+                profile.id == "local-" + profile.kind.rawValue,
+                profileDirectory.lastPathComponent == (profile.kind == .claudeCode ? ".claude" : ".gemini")
+            else { throw Failure.unsupported }
+            guard lexicallyValidInput(executable), validExecutable(URL(fileURLWithPath: executable)) else {
+                throw executableFailure(for: executable)
+            }
+            if profile.kind == .claudeCode {
+                return shellCommand(
+                    workingDirectory: workingDirectory,
+                    executableParts: [executable] + (action == .signIn ? ["auth", "login"] : []),
+                    unsetEnvironment: [
+                        "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+                        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                        "CLAUDE_CODE_USE_MANTLE", "DISABLE_LOGIN_COMMAND",
+                    ],
+                    environment: ["CLAUDE_CONFIG_DIR": profileDirectory.path, "DISABLE_AUTOUPDATER": "1"])
+            }
+            // Gemini uses its interactive authentication selector. A positional
+            // "login" would instead become a model prompt.
+            return shellCommand(
+                workingDirectory: workingDirectory, executableParts: [executable],
+                unsetEnvironment: [
+                    "GEMINI_CLI_HOME", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+                    "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
+                    "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY_AUTH_HEADER",
+                ], environment: [:])
+
+        case .kimi:
+            guard lexicallyValidInput(executable), validExecutable(URL(fileURLWithPath: executable)) else {
+                throw executableFailure(for: executable)
+            }
+            return shellCommand(
+                workingDirectory: workingDirectory,
+                executableParts: [executable] + (action == .signIn ? ["login"] : []),
+                unsetEnvironment: [
+                    "KIMI_CODE_HOME", "KIMI_SHARE_DIR", "KIMI_API_KEY", "KIMI_CODE_API_KEY", "KIMI_BASE_URL",
+                    "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+                ],
+                // New Kimi Code and the older Python CLI use different names.
+                // Both are explicitly bound to the directory the card reads.
+                environment: [
+                    "KIMI_CODE_HOME": profileDirectory.path, "KIMI_SHARE_DIR": profileDirectory.path,
+                    "KIMI_CLI_NO_AUTO_UPDATE": "1",
+                ])
+
         case .grok:
             guard lexicallyValidInput(executable), validExecutable(URL(fileURLWithPath: executable)) else {
                 throw executableFailure(for: executable)
@@ -110,35 +154,15 @@ enum LocalCLITerminalLauncher {
                     "ACC_PRODUCT_CONFIG_PATH": bundle.productConfig.path,
                     "CODEBUDDY_CONFIG_DIR": bundle.configDirectory.path,
                     "WORKBUDDY_CONFIG_DIR": bundle.configDirectory.path,
-                    "WORKBUDDY_DATA_FOLDER_NAME": ".workbuddy",
+                    "WORKBUDDY_DATA_FOLDER_NAME": bundle.edition.directoryName,
                     "DISABLE_AUTOUPDATER": "1",
                 ])
 
         case .zcode:
-            // ZCode's CLI and desktop model/auth stores do not have a proven
-            // complete profile override. A linked folder may be displayed for
-            // quota inspection, but must never be presented as launchable.
-            guard profile.isDefault,
-                profile.id == "local-" + LocalCLIKind.zcode.rawValue,
-                profileDirectory.lastPathComponent == ".zcode"
-            else { throw Failure.unsupported }
-            let bundle = try zcodeBundle(for: executable)
-            let settings = profileDirectory.appendingPathComponent("cli/config.json", isDirectory: false)
-            guard validPath(settings, mustExist: false) else { throw Failure.invalidDirectory }
-            let arguments = action == .signIn ? ["login"] : ["tui"]
-            return shellCommand(
-                workingDirectory: workingDirectory,
-                executableParts: [bundle.electron.path, bundle.cli.path] + arguments + ["--settings", settings.path],
-                unsetEnvironment: [
-                    // These variables can redirect ZCode's desktop credential
-                    // or runtime stores to an unrelated account. The default
-                    // CLI uses ~/.zcode/cli/config.json and is left to resolve
-                    // that path normally.
-                    "ZCODE_DATA_BASE_DIR", "ZCODE_STORAGE_DIR", "ZCODE_HOME", "ELECTRON_RUN_AS_NODE",
-                ],
-                environment: ["ELECTRON_RUN_AS_NODE": "1"])
+            // ZCode is a desktop product; never run its private bundled script.
+            throw Failure.unsupported
 
-        case .trae, .claudeCode, .kimi, .mimo, .gemini:
+        case .trae, .mimo:
             throw Failure.unsupported
         }
     }
@@ -229,9 +253,13 @@ enum LocalCLITerminalLauncher {
     private static func workBuddyBundle(for executable: String, profileDirectory: URL) throws -> WorkBuddyBundle {
         guard lexicallyValidInput(executable) else { throw Failure.invalidDirectory }
         let cli = URL(fileURLWithPath: executable)
-        let marker = "/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"
-        guard cli.path.hasSuffix(marker) else { throw Failure.unsupported }
-        let applicationPath = String(cli.path.dropLast(marker.count)) + "/WorkBuddy.app"
+        guard
+            let edition = WorkBuddyEdition.allCases.first(where: {
+                cli.path.hasSuffix("/\($0.applicationName)/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
+            })
+        else { throw Failure.unsupported }
+        let marker = "/\(edition.applicationName)/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"
+        let applicationPath = String(cli.path.dropLast(marker.count)) + "/" + edition.applicationName
         let application = URL(fileURLWithPath: applicationPath, isDirectory: true)
         let expectedCLI = application.appendingPathComponent(
             "Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
@@ -248,29 +276,17 @@ enum LocalCLITerminalLauncher {
         // The default profile is already ~/.workbuddy. A linked profile may
         // represent a parent folder; in that case the product-specific config
         // directory is its child named .workbuddy.
+        if WorkBuddyEdition.allCases.contains(where: { $0.directoryName == profileDirectory.lastPathComponent }),
+            profileDirectory.lastPathComponent != edition.directoryName
+        {
+            throw Failure.unsupported
+        }
         let configDirectory =
-            profileDirectory.lastPathComponent == ".workbuddy"
+            profileDirectory.lastPathComponent == edition.directoryName
             ? profileDirectory
-            : profileDirectory.appendingPathComponent(".workbuddy", isDirectory: true)
+            : profileDirectory.appendingPathComponent(edition.directoryName, isDirectory: true)
         guard validPath(configDirectory, mustExist: false) else { throw Failure.invalidDirectory }
-        return WorkBuddyBundle(cli: cli, electron: electron, productConfig: product, configDirectory: configDirectory)
-    }
-
-    private static func zcodeBundle(for executable: String) throws -> ZCodeBundle {
-        guard lexicallyValidInput(executable) else { throw Failure.invalidDirectory }
-        let cli = URL(fileURLWithPath: executable)
-        let marker = "/ZCode.app/Contents/Resources/glm/zcode.cjs"
-        guard cli.path.hasSuffix(marker) else { throw Failure.unsupported }
-        let applicationPath = String(cli.path.dropLast(marker.count)) + "/ZCode.app"
-        let application = URL(fileURLWithPath: applicationPath, isDirectory: true)
-        let expectedCLI = application.appendingPathComponent("Contents/Resources/glm/zcode.cjs")
-        let electron = application.appendingPathComponent("Contents/MacOS/ZCode")
-        guard cli.path == expectedCLI.path,
-            validDirectory(application),
-            validRegularFile(cli),
-            validExecutable(electron)
-        else { throw Failure.invalidDirectory }
-        return ZCodeBundle(cli: cli, electron: electron)
+        return WorkBuddyBundle(cli: cli, electron: electron, productConfig: product, configDirectory: configDirectory, edition: edition)
     }
 
     private static func executableFailure(for path: String) -> Failure {

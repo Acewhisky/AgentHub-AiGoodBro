@@ -13,6 +13,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('runtime_setup', ROOT / 'scripts/next_runtime_setup.py')
 setup = importlib.util.module_from_spec(spec); spec.loader.exec_module(setup)
+package_spec = importlib.util.spec_from_file_location('companion_package', ROOT / 'scripts/prepare-companion-resources.py')
+package = importlib.util.module_from_spec(package_spec); package_spec.loader.exec_module(package)
 
 
 class RuntimeSetupTests(unittest.TestCase):
@@ -20,8 +22,8 @@ class RuntimeSetupTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='next-runtime-test-')
         self.root = Path(self.temp.name).resolve()
         self.resources = self.root / 'resources'
-        shutil.copytree(ROOT / '.agents/skills/multi-agent-management', self.resources / 'CompanionSkill',
-                        ignore=shutil.ignore_patterns('__pycache__'))
+        self.resources.mkdir()
+        package.copy_public_skill(self.resources / 'CompanionSkill')
         self.codex = self.root / 'codex'
         self.codex.write_text(
             '#!/bin/sh\n'
@@ -38,6 +40,16 @@ class RuntimeSetupTests(unittest.TestCase):
         self.project = self.root / 'project'; self.project.mkdir()
 
     def tearDown(self): self.temp.cleanup()
+
+    def test_packaged_files_cover_every_installer_requirement(self):
+        support = self.resources / 'SupportTools'; support.mkdir()
+        shutil.copyfile(ROOT / 'scripts/next_runtime_setup.py', support / 'next_runtime_setup.py')
+        package.verify_resources(self.resources, require_hub=True)
+        self.manager.install_tools()
+        self.assertTrue(self.manager.skill_ready())
+        (self.resources / 'CompanionSkill/references/onboarding-login.md').unlink()
+        with self.assertRaises(SystemExit):
+            package.verify_resources(self.resources, require_hub=True)
 
     def profiles(self):
         profile_home = self.manager.home / '.codex-account-manager-next/profiles/profileA'

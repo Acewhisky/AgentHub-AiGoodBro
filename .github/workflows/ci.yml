@@ -18,10 +18,34 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare companion build toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: Companion/Hub/go.mod
+          cache: false
       - name: Lint Swift sources
         run: make lint
       - name: Build, verify runtime resources, and run self-tests
         run: make test
+      - name: Verify Token Monitor and credential integration
+        run: |
+          python3 -m unittest tests.test_token_monitor_packaging
+          python3 scripts/test-statistics-integration.py
+          python3 tests/token-monitor-native/run.py
+          build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node tests/token-monitor-native/protocol-boundaries.cjs
+          python3 tests/token-monitor-home/run.py
+          python3 -m unittest tests.test_aihot_topics tests.test_local_cli_terminal_launcher tests.test_local_cli_accounts tests.test_runtime_setup
+          python3 tests/token-monitor-engine/run.py --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine --trusted-receipt ".build-receipts/AiGoodBro/Next/token-monitor-$(uname -m).json"
+          build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node scripts/test-upstream-dashboard-0913v1.js
+          python3 scripts/test-upstream-dashboard-cache-0913v1.py
+          build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node scripts/test-opencode-quota-0913v1.cjs --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine
+          build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node scripts/test-disabled-antigravity-oauth-0913v1.cjs --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine
+          bash scripts/test-opencode-native-0913v1.sh
+          python3 scripts/test-credential-copy-outcomes.py
+          python3 scripts/test-auth-stability.py
+          python3 scripts/test-automatic-switch-wiring.py
+          python3 -m unittest tests.test_account_refresh_frequency
+          python3 scripts/test-public-reset-translation.py
       - name: Check shared dispatch coordination and Swift interoperability
         run: |
           python3 scripts/next_dispatch_preflight.py --self-test
@@ -29,6 +53,7 @@ jobs:
           python3 tests/test-dispatch-activity-interop.py
           python3 scripts/test-message-channels.py
           bash scripts/test-grok-reset-cards.sh
+          python3 -m unittest tests.test_local_cli_quota tests.test_additional_cli_quota tests.test_zcode_cli_quota
 
   windows-rust-format:
     if: github.event_name == 'workflow_dispatch' && inputs.windows == true

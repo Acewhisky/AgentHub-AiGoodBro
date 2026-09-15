@@ -47,6 +47,9 @@ def fixture_source(source_root: Path) -> str:
     actions = read_source(source_root, f"{services}/CodexAccountActions.swift")
     profile_store = read_source(source_root, f"{services}/CodexProfileStore.swift")
     pipe_reader = read_source(source_root, f"{services}/CodexAppServerTaskClient.swift")
+    models = read_source(source_root, "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift")
+    engine = read_source(source_root, f"{services}/TokenMonitorEngine.swift")
+    usage_models = read_source(source_root, "Sources/CodexUsageWidget/Domain/UsageModels.swift")
 
     gate = extract_declaration(actions, "enum CodexCredentialAccessGate")
     pending = extract_declaration(reader, "final class AppServerPendingResponses")
@@ -57,10 +60,10 @@ def fixture_source(source_root: Path) -> str:
     )
     # Compare the exact production gate selection directly; child startup time is not lock evidence.
     selection_start = read_app_server.index("        let homePath =")
-    selection_end = read_app_server.index("        gate.lock()", selection_start)
+    selection_end = read_app_server.index("        while !gate.try()", selection_start)
     gate_selection = (
-        "\nfunc selectedReaderGate(context: RuntimeLoadContext, profile: CodexProfile? = nil) -> NSRecursiveLock {\n"
-        + read_app_server[selection_start:selection_end]
+        "\nfunc selectedReaderGate(context: RuntimeLoadContext, profile: CodexProfile? = nil) -> NSRecursiveLock {\n        let cancellation = context.quotaCancellation\n"
+        + read_app_server[selection_start:selection_end].replace("return AppServerSnapshot()", "return CodexCredentialAccessGate.lock")
         + "        return gate\n}\n"
     )
     failure_message = extract_declaration(reader, "static func appServerFailureMessage(")
@@ -81,6 +84,7 @@ struct WidgetLanguage {
 struct RuntimeLoadContext {
     var codexHomeDirectory: URL
     var homeDirectory: URL
+    var quotaCancellation: TokenMonitorCancellation? = nil
 }
 
 struct Identity { var accountID: String }
@@ -121,8 +125,6 @@ enum CodexOfficialProfileReader {
 }
 
 struct AccountInfo { var email: String? }
-struct RateWindow {}
-struct CreditsInfo {}
 
 class PerformanceMonitor {
     enum Kind { case appServerQuota }
@@ -262,6 +264,9 @@ for line in sys.stdin:
     request = json.loads(line)
     request_id = request.get("id")
     if request_id == 1:
+        if case == "wait-cancel":
+            import time
+            time.sleep(30)
         if case == "early-exit":
             sys.exit(0)
         if case == "init-error":
@@ -310,6 +315,16 @@ for name in ["early-exit", "partial-eof", "init-error", "missing-result", "succe
         expect(!messages.isEmpty, "\(name) explains the incomplete response")
     }
 }
+
+setenv("FIXTURE_CASE", "wait-cancel", 1)
+let cancellation = TokenMonitorCancellation()
+let cancelContext = RuntimeLoadContext(codexHomeDirectory: b1Home, homeDirectory: synthetic, quotaCancellation: cancellation)
+DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { cancellation.cancel() }
+let cancelStart = Date()
+var cancelledMessages: [String] = []
+let cancelledResult = CodexUsageReader(fakeScript.path).readAppServer(context: cancelContext, messages: &cancelledMessages, quotaOnly: true, requestTimeout: 20)
+expect(Date().timeIntervalSince(cancelStart) < 2, "manual cancellation stops an in-flight quota reader promptly")
+expect(!cancelledResult.quotaReadSucceeded, "cancelled quota read cannot report success")
 
 let userHome = synthetic.appendingPathComponent("user-home", isDirectory: true)
 let systemHome = userHome.appendingPathComponent(".codex", isDirectory: true)
@@ -375,6 +390,10 @@ exit(Int32(failures == 0 ? 0 : 1))
 
     return (
         stubs
+        + "\n"
+        + models + "\n" + engine + "\n"
+        + "\n".join(extract_declaration(usage_models, name) for name in [
+            "struct RateWindow:", "struct CreditsInfo:", "struct ResetCreditDetail:"])
         + "\n"
         + gate
         + "\nenum CodexProfileStore {\n"

@@ -286,6 +286,55 @@ struct TokenMonitorFloatingBubblePreferences: Codable, Equatable {
     var selectedProviderID: String?
     var selectedProfileID: String?
     var valueMode = "remaining"
+    var selectedMetricID: String?
+
+    init(
+        enabled: Bool = false,
+        showIcon: Bool = true,
+        showQuotaBar: Bool = true,
+        showPercent: Bool = true,
+        showResetTime: Bool = true,
+        showCost: Bool = false,
+        customText: String = "",
+        fontStyle: String = "menubar",
+        selectedProviderID: String? = nil,
+        selectedProfileID: String? = nil,
+        valueMode: String = "remaining",
+        selectedMetricID: String? = nil
+    ) {
+        self.enabled = enabled
+        self.showIcon = showIcon
+        self.showQuotaBar = showQuotaBar
+        self.showPercent = showPercent
+        self.showResetTime = showResetTime
+        self.showCost = showCost
+        self.customText = customText
+        self.fontStyle = fontStyle
+        self.selectedProviderID = selectedProviderID
+        self.selectedProfileID = selectedProfileID
+        self.valueMode = valueMode
+        self.selectedMetricID = selectedMetricID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, showIcon, showQuotaBar, showPercent, showResetTime, showCost, customText, fontStyle, selectedProviderID, selectedProfileID, valueMode, selectedMetricID
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        showIcon = try values.decodeIfPresent(Bool.self, forKey: .showIcon) ?? true
+        showQuotaBar = try values.decodeIfPresent(Bool.self, forKey: .showQuotaBar) ?? true
+        showPercent = try values.decodeIfPresent(Bool.self, forKey: .showPercent) ?? true
+        showResetTime = try values.decodeIfPresent(Bool.self, forKey: .showResetTime) ?? true
+        showCost = try values.decodeIfPresent(Bool.self, forKey: .showCost) ?? false
+        customText = try values.decodeIfPresent(String.self, forKey: .customText) ?? ""
+        fontStyle = try values.decodeIfPresent(String.self, forKey: .fontStyle) ?? "menubar"
+        selectedProviderID = try values.decodeIfPresent(String.self, forKey: .selectedProviderID)
+        selectedProfileID = try values.decodeIfPresent(String.self, forKey: .selectedProfileID)
+        valueMode = try values.decodeIfPresent(String.self, forKey: .valueMode) ?? "remaining"
+        selectedMetricID = try values.decodeIfPresent(String.self, forKey: .selectedMetricID)
+    }
 
     static func load(_ data: Data?) -> Self {
         guard let data, let value = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
@@ -312,4 +361,14 @@ struct TokenMonitorFloatingBubbleSnapshot: Equatable {
     var customText: String
     var isUnknown: Bool
     var isZero: Bool
+    var accountID: String? = nil
+    var accountName: String = ""
+    var metricID: String? = nil
+    var metricName: String = ""
+    var sourceID: String? = nil
+    var fetchedAt: Date? = nil
+    var isStale = false
+    var isUnavailable = false
+    var hasCost = false
+    var valueLabel: String? = nil
 }

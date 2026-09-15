@@ -31,6 +31,7 @@ def main():
 
         announcement = (repo / "Sources/CodexUsageWidget/Services/PublicResetAnnouncements.swift").read_text()
         announcement = announcement[announcement.index("struct PublicResetAnnouncement:"):announcement.index("struct PublicResetPage:")]
+        translation = (repo / "Sources/CodexUsageWidget/Services/PublicResetTranslation.swift").read_text()
         if "--typecheck-only" in os.sys.argv:
             # WidgetLanguage plus its EnvironmentKey and EnvironmentValues
             # extension: everything the message-channel UI needs, without the
@@ -44,7 +45,7 @@ def main():
                 + (repo / "Sources/CodexUsageWidget/Domain/TokenFormatter.swift").read_text()
                 + "\n" + language)
             announcement_file = work / "public-reset-announcement-extract.swift"
-            announcement_file.write_text("import Foundation\n" + announcement)
+            announcement_file.write_text(translation + "\n" + announcement)
             source_paths = [announcement_file,
                 language_file,
                 repo / "Sources/CodexUsageWidget/Domain/MessageChannel.swift",
@@ -67,6 +68,7 @@ def main():
         parts = [
             (repo / "Sources/CodexUsageWidget/Domain/TokenFormatter.swift").read_text(),
             language,
+            translation,
             announcement,
             (repo / "Sources/CodexUsageWidget/Domain/MessageChannel.swift").read_text(),
             (repo / "Sources/CodexUsageWidget/Services/TelegramMessageChannel.swift").read_text(),

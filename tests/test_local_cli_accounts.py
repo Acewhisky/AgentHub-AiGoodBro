@@ -12,7 +12,9 @@ class LocalCLIAccountTests(unittest.TestCase):
     def test_actual_store_and_atomic_persistence_with_synthetic_home(self):
         sources = [
             ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/LocalCLIAuthenticationReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/GrokResetStatusObservationReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift",
             ROOT / "tests/LocalCLIAccountFixture.swift",
         ]

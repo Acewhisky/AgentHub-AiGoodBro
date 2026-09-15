@@ -1,8 +1,10 @@
 import SwiftUI
 
+@MainActor
 struct NextSetupGuideView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var settings: AppSettings
+    @ObservedObject var localAccounts: LocalCLIAccountStore
     var openAutomation: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -10,9 +12,13 @@ struct NextSetupGuideView: View {
     @State private var confirmsCompanionInstall = false
     @StateObject private var runtime: NextRuntimeSetupModel
 
-    init(store: UsageStore, settings: AppSettings, openAutomation: @escaping () -> Void, runtime: NextRuntimeSetupModel = NextRuntimeSetupModel()) {
+    init(
+        store: UsageStore, settings: AppSettings, localAccounts: LocalCLIAccountStore? = nil, openAutomation: @escaping () -> Void,
+        runtime: NextRuntimeSetupModel = NextRuntimeSetupModel()
+    ) {
         self.store = store
         self.settings = settings
+        self.localAccounts = localAccounts ?? LocalCLIAccountStore()
         self.openAutomation = openAutomation
         _runtime = StateObject(wrappedValue: runtime)
     }
@@ -36,7 +42,7 @@ struct NextSetupGuideView: View {
                 footer
             }
         }
-        .frame(width: 780, height: 580)
+        .frame(width: 900, height: 680)
         .background(Color(nsColor: .windowBackgroundColor))
         .confirmationDialog(language.text("安装配套调用工具？", "Install companion tools?"), isPresented: $confirmsCompanionInstall, titleVisibility: .visible) {
             Button(language.text("安装并检查", "Install and check")) { runtime.installTools() }
@@ -54,6 +60,9 @@ struct NextSetupGuideView: View {
             if !store.isPreview { store.refreshLocalNotificationAuthorization() }
             if step == .runtime { runtime.refresh() }
         }
+        .onDisappear {
+            if settings.onboarding.shouldPresent { settings.onboarding.skip() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             store.refreshLocalNotificationAuthorization()
             if step == .runtime { runtime.refresh() }
@@ -64,7 +73,7 @@ struct NextSetupGuideView: View {
         VStack(alignment: .leading, spacing: 28) {
             VStack(alignment: .leading, spacing: 5) {
                 Label {
-                    Text("AgentHub")
+                    Text("AiGoodBro")
                 } icon: {
                     AHBrandSymbol(size: 24)
                 }.font(.headline)
@@ -110,7 +119,7 @@ struct NextSetupGuideView: View {
     private var pageContent: some View {
         switch step {
         case .runtime: runtimePage
-        case .accounts: accountsPage
+        case .accounts: SetupAccountsView(store: store, localAccounts: localAccounts, language: language)
         case .features: featuresPage
         case .notifications: notificationsPage
         case .ready: readyPage
@@ -279,31 +288,9 @@ struct NextSetupGuideView: View {
     private var featuresPage: some View {
         VStack(alignment: .leading, spacing: 18) {
             heading(
-                language.text("功能默认全开，按需调整", "On by default, yours to adjust"),
+                language.text("按需设置自动维护", "Set up automatic maintenance"),
                 language.text("已保存的选择会保留。暖号会发送最小请求，消耗少量额度。", "Saved choices are kept. Warm-up sends a minimal request and uses a small amount of quota.")
             )
-            VStack(alignment: .leading, spacing: 8) {
-                Text(language.text("工作台显示", "Workspace display"))
-                    .font(.subheadline.weight(.semibold))
-                Picker(language.text("工作台显示", "Workspace display"), selection: $settings.workspaceDisplayMode) {
-                    ForEach(WorkspaceDisplayMode.allCases, id: \.self) { mode in
-                        Text(mode.title(language)).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 280)
-                .accessibilityLabel(language.text("工作台显示", "Workspace display"))
-                Text(
-                    language.text(
-                        "专业版保留当前完整主页并默认展开；极简版减少信息，可在总览、账号卡片或自定义模块中选择。",
-                        "Professional keeps the current Home, expanded. Simple reduces information and lets you choose Overview, Account cards, or custom modules."
-                    )
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
             HStack {
                 Text(language.text("\(store.enabledSetupFeatureCount) / 7 项已开启", "\(store.enabledSetupFeatureCount) of 7 enabled"))
                     .font(.caption.weight(.medium)).foregroundStyle(.secondary)
@@ -421,8 +408,9 @@ struct NextSetupGuideView: View {
     private var readyPage: some View {
         VStack(alignment: .leading, spacing: 22) {
             heading(
-                language.text("现在可以开始了", "You're ready to begin"),
-                language.text("工作台会持续显示真实状态，未完成的通知设置也能随时补齐。", "Your workspace keeps actual status visible. Finish any pending notification setup whenever you like."))
+                language.text("查看设置，开始使用", "Review your setup"),
+                language.text("登录是否完成以工具清单中的结果为准；未完成的工具和通知设置可以继续补齐。", "Check the tool checklist for sign-in results. Finish any pending tools or notification setup when ready."))
+            Button(language.text("查看登录清单", "Review sign-in checklist")) { go(to: .accounts) }
             VStack(alignment: .leading, spacing: 16) {
                 connectionTitle(
                     language.text("日常功能", "Daily features"), symbol: "switch.2",
@@ -467,16 +455,18 @@ struct NextSetupGuideView: View {
         HStack(spacing: 10) {
             Button(language.text("以后再说", "Not now")) {
                 settings.setupProgress.dismissed = true
+                if settings.onboarding.shouldPresent { settings.onboarding.skip() }
                 dismiss()
             }
             .keyboardShortcut(.cancelAction)
             Spacer()
-            if step != .runtime {
+            if step != NextSetupStep.allCases.first {
                 Button(language.text("上一步", "Back")) { go(to: step.previous) }
             }
             Button(step == .ready ? language.text("开始使用", "Open workspace") : language.text("下一步", "Continue")) {
                 if step == .ready {
                     settings.setupProgress.completed = true
+                    settings.onboarding.finish(.completed)
                     dismiss()
                 } else {
                     go(to: step.next)

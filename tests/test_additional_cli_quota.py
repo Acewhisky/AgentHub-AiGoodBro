@@ -14,6 +14,9 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
     def test_synthetic_swift_fixture(self) -> None:
         sources = [
             ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift",
+            ROOT / "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/AdditionalCLIQuotaReader.swift",
             ROOT / "tests/AdditionalCLIQuotaFixture.swift",
@@ -23,13 +26,14 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="additional-cli-quota-") as directory:
             executable = pathlib.Path(directory) / "fixture"
-            compat_sdk = pathlib.Path("/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk")
-            if compat_sdk.is_dir():
-                sdk = str(compat_sdk)
-            else:
-                sdk = subprocess.check_output(
-                    ["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True
-                ).strip()
+            sdk = subprocess.check_output(
+                ["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True
+            ).strip()
+            guard = subprocess.run(
+                ["python3", str(ROOT / "scripts/check-build-target-idle.py"), str(executable)],
+                cwd=ROOT, text=True, capture_output=True, timeout=30, check=False,
+            )
+            self.assertEqual(guard.returncode, 0, guard.stdout + guard.stderr)
             compile_result = subprocess.run(
                 [
                     "xcrun",

@@ -1263,9 +1263,12 @@ final class CodexProfileStore {
         expectedEmail: String? = nil,
         expectedAccountID: String? = nil
     ) throws -> CodexProfile {
+        CodexCredentialAccessGate.lock.lock()
+        defer { CodexCredentialAccessGate.lock.unlock() }
         let id = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)).lowercased()
         let home = managedRootURL.appendingPathComponent(id, isDirectory: true)
         var createdHome = false
+        var preservationSource: (home: URL, data: Data)?
         var preservedProfile: CodexProfile?
         do {
             try mutateState {
@@ -1312,7 +1315,7 @@ final class CodexProfileStore {
                         && $0.recordedAccountKey == system.recordedAccountKey
                         && $0.lastSnapshot?.accountID == boundAccountID
                 }) {
-                    try self.writeAuth(authData, to: existing.codexHomeURL)
+                    try self.writeAuth(authData, from: system.codexHomeURL, to: existing.codexHomeURL)
                     preservedProfile = existing
                     return false
                 }
@@ -1345,13 +1348,24 @@ final class CodexProfileStore {
                     executionPreference: system.executionPreference,
                     dispatchParticipationWindow: system.dispatchParticipationWindow
                 )
-                try self.writeAuth(authData, to: home)
+                preservationSource = (system.codexHomeURL, authData)
+                try self.writeAuth(authData, from: system.codexHomeURL, to: home)
                 self.state.profiles.insert(preserved, at: systemIndex + 1)
                 preservedProfile = preserved
                 return true
             }
         } catch {
-            if createdHome { discardNewHomeAfterFailedMutation(home, error: error) }
+            if createdHome, let source = preservationSource {
+                // A failed profile-state commit must not delete credentials another writer advanced.
+                CodexCredentialTransaction.withGates([source.home, home]) {
+                    guard let sourceNow = try? CodexCredentialTransaction.read(source.home.appendingPathComponent("auth.json")),
+                        let targetNow = try? CodexCredentialTransaction.read(home.appendingPathComponent("auth.json")),
+                        sourceNow == source.data, targetNow == source.data,
+                        (try? fileManager.contentsOfDirectory(atPath: home.path)) == ["auth.json"]
+                    else { return }
+                    discardNewHomeAfterFailedMutation(home, error: error)
+                }
+            }
             throw error
         }
         guard let preservedProfile else { throw CocoaError(.fileWriteUnknown) }
@@ -1618,6 +1632,23 @@ final class CodexProfileStore {
         return system.codexHomeURL
     }
 
+    /// Commit one complete order only while the caller's observed order is current.
+    /// The caller supplies hidden slots; profile fields and dispatch preferences stay intact.
+    func reorderProfiles(_ orderedIDs: [String], expectedCurrentOrder: [String]) throws {
+        try mutateState {
+            let currentIDs = self.state.profiles.map(\.id)
+            guard currentIDs == expectedCurrentOrder else { throw DispatchParticipationError.concurrentChange }
+            guard orderedIDs.count == currentIDs.count,
+                Set(orderedIDs).count == orderedIDs.count,
+                Set(orderedIDs) == Set(currentIDs)
+            else { throw DispatchParticipationError.invalidSnapshot }
+            guard orderedIDs != currentIDs else { return false }
+            let byID = Dictionary(uniqueKeysWithValues: self.state.profiles.map { ($0.id, $0) })
+            self.state.profiles = orderedIDs.compactMap { byID[$0] }
+            return true
+        }
+    }
+
     func moveProfile(_ id: String, relativeTo targetID: String, before: Bool) throws {
         try mutateState {
             guard id != targetID,
@@ -1861,35 +1892,24 @@ final class CodexProfileStore {
         state.resetCounters?[accountKey] ?? CodexAccountResetCounter()
     }
 
-    /// 系统登录与某管理卡是同一账号时，把系统家更新的登录凭据同步给该卡。
-    /// 管理卡家目录没有进程续期 token，不同步会在 token 过期后额度抓取失效。
+    /// Managed homes may have CLI refresh writers. Copy only an evidenced newer session bundle.
     func syncSystemAuthToMatchingManagedProfiles() throws {
-        guard let system = state.profiles.first(where: \.isSystemProfile) else { return }
-        let systemAuthURL = system.codexHomeURL.appendingPathComponent("auth.json")
-        guard fileManager.fileExists(atPath: systemAuthURL.path),
-            let systemAttributes = try? fileManager.attributesOfItem(atPath: systemAuthURL.path),
-            let systemModified = systemAttributes[.modificationDate] as? Date
-        else { return }
-        let authData = try Data(contentsOf: systemAuthURL)
-        guard let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: authData),
+        CodexCredentialAccessGate.lock.lock()
+        defer { CodexCredentialAccessGate.lock.unlock() }
+        guard let system = state.profiles.first(where: \.isSystemProfile),
+            let authData = try CodexCredentialTransaction.read(system.codexHomeURL.appendingPathComponent("auth.json")),
+            let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: authData),
             identity.email == system.recordedAccountKey,
             system.lastSnapshot?.accountID == identity.accountID
         else { return }
-        let matching = state.profiles.filter {
-            !$0.isSystemProfile
-                && $0.recordedAccountKey == system.recordedAccountKey
-                && $0.lastSnapshot?.accountID == identity.accountID
-        }
-        guard !matching.isEmpty else { return }
-        for profile in matching {
-            let managedAuthURL = profile.codexHomeURL.appendingPathComponent("auth.json")
-            if let managedAttributes = try? fileManager.attributesOfItem(atPath: managedAuthURL.path),
-                let managedModified = managedAttributes[.modificationDate] as? Date,
-                managedModified >= systemModified
-            {
-                continue
-            }
-            try writeAuth(authData, to: profile.codexHomeURL)
+        var visited = Set<String>()
+        for profile in state.profiles
+        where !profile.isSystemProfile
+            && profile.recordedAccountKey == system.recordedAccountKey
+            && profile.lastSnapshot?.accountID == identity.accountID
+        {
+            guard visited.insert(CodexCredentialTransaction.canonical(profile.codexHomeURL).path).inserted else { continue }
+            try writeAuth(authData, from: system.codexHomeURL, to: profile.codexHomeURL)
         }
     }
 
@@ -2147,15 +2167,15 @@ final class CodexProfileStore {
         )
     }
 
-    private func writeAuth(_ data: Data, to home: URL) throws {
-        try fileManager.createDirectory(
-            at: home,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
+    private func writeAuth(_ data: Data, from source: URL, to home: URL) throws {
+        guard let system = state.profiles.first(where: \.isSystemProfile),
+            CodexCredentialTransaction.canonical(source) == CodexCredentialTransaction.canonical(system.codexHomeURL),
+            let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: data)
+        else { throw CodexCredentialTransaction.Failure.invalidIdentity }
+        try CodexCredentialTransaction.copy(
+            from: source, to: home, managedRoot: managedRootURL,
+            expectedSource: data, identity: identity
         )
-        let authURL = home.appendingPathComponent("auth.json")
-        try data.write(to: authURL, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path)
     }
 
     private static func isValid(_ state: State, systemPath: String, managedRoot: URL) -> Bool {
@@ -2212,6 +2232,7 @@ enum CodexProfileStoreSelfTest {
             guard try testQuotaObservationOrdering(root: root, fileManager: fileManager) else { return false }
             guard try testSystemSwitchObservationOrdering(root: root, fileManager: fileManager) else { return false }
             guard try testCrossInstanceStateTransactions(root: root, fileManager: fileManager) else { return false }
+            guard try testProfileOrderTransactions(root: root, fileManager: fileManager) else { return false }
             guard try testStateTransactionFailures(root: root, fileManager: fileManager) else { return false }
             guard try testIndependentMonitorSelection(root: root, fileManager: fileManager) else { return false }
             let home = root.appendingPathComponent("home", isDirectory: true)
@@ -2930,7 +2951,8 @@ enum CodexProfileStoreSelfTest {
                 .replacingOccurrences(of: "+", with: "-")
                 .replacingOccurrences(of: "/", with: "_")
                 .replacingOccurrences(of: "=", with: "")
-            let systemAuth = Data(#"{"tokens":{"access_token":"test-only","account_id":"acct-first","id_token":"e30.\#(systemAuthPayload).sig"}}"#.utf8)
+            let systemAuth = Data(
+                #"{"tokens":{"access_token":"test-only","refresh_token":"synthetic-refresh","account_id":"acct-first","id_token":"e30.\#(systemAuthPayload).sig"}}"#.utf8)
             try systemAuth.write(to: systemHome.appendingPathComponent("auth.json"))
             let preserved = try reordered.preserveSystemLogin()
             let preservedAuth = try Data(contentsOf: preserved.codexHomeURL.appendingPathComponent("auth.json"))
@@ -3657,7 +3679,7 @@ enum CodexProfileStoreSelfTest {
             try syncStore.record(syncSnapshot, for: syncManaged.id)
             try syncStore.record(syncSnapshot, for: "system", allowSystemAccountChange: true)
             try syncStore.syncSystemAuthToMatchingManagedProfiles()
-            guard try Data(contentsOf: managedAuthURL) == freshSystemAuth else {
+            guard try Data(contentsOf: managedAuthURL) == oldManagedAuth else {
                 print("Codex profile store self-test failed: matching system auth sync")
                 return false
             }
@@ -3668,7 +3690,7 @@ enum CodexProfileStoreSelfTest {
                 ofItemAtPath: systemAuthURL.path
             )
             try syncStore.syncSystemAuthToMatchingManagedProfiles()
-            guard try Data(contentsOf: managedAuthURL) == freshSystemAuth else {
+            guard try Data(contentsOf: managedAuthURL) == oldManagedAuth else {
                 print("Codex profile store self-test failed: mismatched system auth must not sync")
                 return false
             }
@@ -3742,6 +3764,58 @@ enum CodexProfileStoreSelfTest {
     /// Recreates the real dual-window sequence: both instances start with the
     /// same cache, then one writes a setting while the other finishes a refresh.
     /// Each later writer must retain the setting committed by the earlier one.
+    private static func testProfileOrderTransactions(root: URL, fileManager: FileManager) throws -> Bool {
+        let home = root.appendingPathComponent("order-home", isDirectory: true)
+        let support = root.appendingPathComponent("order-support", isDirectory: true)
+        func reload() -> CodexProfileStore {
+            CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        }
+        func expect(_ condition: Bool, _ label: String) -> Bool {
+            if !condition { print("Codex profile ordering self-test failed: \(label)") }
+            return condition
+        }
+        let seed = reload()
+        let first = try seed.addManagedProfile()
+        let hidden = try seed.addManagedProfile()
+        let last = try seed.addManagedProfile()
+        try seed.setExecutionPreference(
+            CodexExecutionPreference(model: .sol, reasoningEffort: .high, serviceTier: .standard), for: hidden.id
+        )
+        let original = seed.profiles.map(\.id)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let originalFields = try Dictionary(uniqueKeysWithValues: seed.profiles.map { ($0.id, try encoder.encode($0)) })
+        let stale = reload()
+        let desired = [original[0], last.id, hidden.id, first.id]
+        try seed.reorderProfiles(desired, expectedCurrentOrder: original)
+        let committed = reload().profiles
+        guard expect(committed.map(\.id) == desired, "complete order and hidden slot"),
+            expect(committed[2].id == hidden.id, "hidden slot moved"),
+            expect(
+                try Dictionary(uniqueKeysWithValues: committed.map { ($0.id, try encoder.encode($0)) }) == originalFields,
+                "profile or dispatch preferences changed")
+        else { return false }
+        do {
+            try stale.reorderProfiles(original, expectedCurrentOrder: original)
+            return expect(false, "stale order did not report conflict")
+        } catch DispatchParticipationError.concurrentChange {
+        }
+        guard expect(reload().profiles.map(\.id) == desired, "stale order overwrote newer order") else { return false }
+        for invalid in [
+            Array(desired.dropLast()), [desired[0], desired[1], desired[2], desired[2]],
+            [desired[0], desired[1], desired[2], "unrecognized-profile"],
+        ] {
+            do {
+                try seed.reorderProfiles(invalid, expectedCurrentOrder: desired)
+                return expect(false, "invalid complete order accepted")
+            } catch DispatchParticipationError.invalidSnapshot {
+            }
+            guard expect(reload().profiles.map(\.id) == desired, "invalid order changed persisted profiles") else { return false }
+        }
+        try seed.reorderProfiles(desired, expectedCurrentOrder: desired)
+        return expect(reload().profiles.map(\.id) == desired, "identical order changed profiles")
+    }
+
     private static func testCrossInstanceStateTransactions(root: URL, fileManager: FileManager) throws -> Bool {
         let home = root.appendingPathComponent("cross-instance-home", isDirectory: true)
         let support = root.appendingPathComponent("cross-instance-support", isDirectory: true)
@@ -4517,6 +4591,7 @@ enum CodexProfileStoreSelfTest {
         return try JSONSerialization.data(withJSONObject: [
             "tokens": [
                 "access_token": accessToken,
+                "refresh_token": "synthetic-refresh",
                 "id_token": "x.\(encoded).y",
                 "account_id": accountID,
             ]
