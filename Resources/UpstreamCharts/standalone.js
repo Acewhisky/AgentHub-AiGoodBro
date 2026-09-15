@@ -116,18 +116,58 @@
   }
   function omitted(count, limit) { return count > limit ? t(`；另有 ${count-limit} 项未显示`, `; ${count-limit} more entries omitted`) : ''; }
   const fields = [['inputTokens','输入 Token','Input tokens'],['outputTokens','输出 Token','Output tokens'],['cacheReadTokens','缓存读取 Token','Cache read tokens'],['cacheWriteTokens','缓存写入 Token','Cache write tokens'],['reasoningTokens','推理 Token','Reasoning tokens'],['unclassifiedTokens','未分类 Token','Unclassified tokens'],['messageCount','消息数','Message count']];
+  function reportSize() {
+    if (!root.requestAnimationFrame || !root.webkit?.messageHandlers?.chartSize) return;
+    root.requestAnimationFrame(() => {
+      if (!state?.snapshotID) return;
+      root.webkit.messageHandlers.chartSize.postMessage({snapshotID:state.snapshotID,
+        width:root.innerWidth ?? document.documentElement.clientWidth, height:document.body.getBoundingClientRect().height + 4});
+    });
+  }
+  function breakdown(parent, title, entries, total, component = false) {
+    const panel = document.createElement('section'); panel.className = 'breakdown';
+    const heading = document.createElement('h3'); heading.textContent = title; panel.appendChild(heading);
+    const values = (entries || []).map(([key,v]) => [key,amount(typeof v === 'number' ? v : v?.totalTokens ?? v?.tokens)]);
+    const known = values.filter(([,v]) => v !== null).sort((a,b) => b[1]-a[1]);
+    const complete = !component && total > 0 && values.length === known.length && known.reduce((sum,[,v]) => sum+v,0) === total;
+    const max = Math.max(1,...known.map(([,v]) => v));
+    for (const [key,value] of known.slice(0,8)) {
+      const row = document.createElement('div'); row.className = 'tool-row';
+      const label = document.createElement('span'); label.textContent = publicText(key);
+      const count = document.createElement('span'); count.textContent = number(value) + (complete ? ` · ${(100*value/total).toFixed(1)}%` : '');
+      const bar = document.createElement('progress'); bar.max = complete ? total : max; bar.value = value;
+      bar.setAttribute('aria-label', `${publicText(key)}: ${number(value)} Token`);
+      row.append(label,count,bar); panel.appendChild(row);
+    }
+    const note = document.createElement('p'); note.className = 'muted';
+    note.textContent = !known.length ? t('未提供此维度','This dimension is unavailable') : component
+      ? t('分项按原记录显示；推理与缓存可能包含在其他项中，不重复加总。','Components follow source records; reasoning and cache may overlap other fields and are not added again.')
+      : complete ? t('占所选期间总量','Share of the selected period') : t('显示已记录值，维度覆盖未确认','Recorded values; dimension coverage unconfirmed');
+    const unknown = values.filter(([,v]) => v === null).map(([key]) => publicText(key));
+    if (unknown.length) note.textContent += ` · ${t('未提供','Unavailable')}: ${unknown.join('、')}`;
+    if (known.length > 8) note.textContent += omitted(known.length,8);
+    panel.appendChild(note); parent.appendChild(panel);
+  }
   function details() {
     const period = $('period').value || 'day';
     const data = period === 'day' ? state.byDate.get(state.selected) : (state.canonical.periods ? state.canonical.periods[period] : state.canonical[period]);
     const box = $('dimensions'); box.textContent = '';
     const add = (tag, text, parent = box) => { const el = document.createElement(tag); el.textContent = text; parent.appendChild(el); return el; };
-    add('p', period === 'day' ? describe(state.selected) : `${t(...labels[period])} · ${t('已提供 Token 值','Supplied token value')}: ${number(data?.totalTokens)} · ${t('期间完整性未确认','Period completeness unconfirmed')}\n${cost(data?.costUsd ?? data?.cost, data, costContext(period, state.selected))}`);
-    add('p', fields.map(([key,zh,en]) => `${t(zh,en)}: ${number(data?.[key])}`).join(' · '));
+    const total = amount(period === 'day' ? data?.tokens : data?.totalTokens);
+    add('p', period === 'day' ? describe(state.selected).split('\n')[0] : `${t(...labels[period])} · ${number(total)} Token · ${t('期间完整性未确认','Period completeness unconfirmed')}`);
+    const costLine = add('p',cost(data?.costUsd ?? data?.cost, data, costContext(period, state.selected))); costLine.className = 'muted';
+    const charts = add('div',''); charts.className = 'detail-charts';
+    breakdown(charts,t('工具用量','Usage by tool'),dimension(data,period === 'day' ? 'perClient' : 'clients'),total);
+    breakdown(charts,t('模型用量','Usage by model'),dimension(data,period === 'day' ? 'perModel' : 'models'),total);
+    breakdown(charts,t('Token 分项','Token components'),fields.filter(([key]) => key !== 'messageCount').map(([key,zh,en]) => [t(zh,en),data?.[key]]),total,true);
+    add('p', `${t('消息数','Message count')}: ${number(data?.messageCount)}`).className = 'muted';
     for (const [key,zh,en,daily,prefix] of [['clients','工具','Tools','perClient','client'],['models','模型','Models','perModel','model'],['sessions','会话','Sessions','sessions'],['projects','项目','Projects','projects'],['accounts','账号','Accounts','perAccount']]) {
-      add('h3', t(zh,en));
       const entries = dimension(data, period === 'day' ? daily : key);
-      if (!entries) { add('p',missing()); continue; }
-      const table = add('table','');
+      if (!entries) continue;
+      const disclosure = add('details','');
+      add('summary', `${t(zh,en)} · ${entries.length} ${t('项原始明细','recorded entries')}`, disclosure);
+      disclosure.addEventListener('toggle', reportSize);
+      const table = add('table','',disclosure);
       const head = add('tr','',table);
       for (const title of [t('名称 / 标识','Name / ID'),'Token',t('费用及属性','Cost and properties')]) add('th',title,head);
       for (const [id,value] of entries.slice(0,40)) {
@@ -151,8 +191,9 @@
         }
         add('td',attrs.join(' · '),row);
       }
-      add('p',omitted(entries.length,40));
+      add('p',omitted(entries.length,40),disclosure);
     }
+    reportSize();
   }
   function select(key) {
     if (!day(key) || key > state.end) { $('selection').textContent = t('日期无效或晚于统计日期','Invalid date or after statistics date'); return; }
@@ -229,6 +270,7 @@
     for (const key of ['overview','trends','details']) $(key).hidden = key !== name;
     document.querySelectorAll('[data-mode]').forEach(el => el.setAttribute('aria-pressed',String(el.getAttribute('data-mode') === name)));
     if (name === 'trends') bars();
+    reportSize();
   }
   root.__renderTrend = function (input, options = {}) {
     language = options.language === 'en' ? 'en' : 'zh'; localize();
@@ -259,11 +301,12 @@
     const previous = state;
     const previousFrom = $('from').value, previousTo = $('to').value;
     state = normalize(input,options.resetAnnotations);
+    state.snapshotID = snapshotID;
     state.width = Number.isFinite(options.width) ? Math.max(320,Math.min(2000,options.width)) : 650;
     $('context').textContent = `${t('每日 Token','Daily tokens')} · ${publicText(input.timezone)} · ${t('仅汇总已记录用量','Recorded usage only')}`;
     const rows = [...state.byDate.values()].filter(r => amount(r.tokens) !== null);
     const intensities = api.computeHeatmapIntensities(rows).map(r => ({...r,intensity:r.tokenIntensity}));
-    state.calendar = api.rollingYearHeatmap(intensities,{endDate:state.end,cell:8,gap:3});
+    state.calendar = api.rollingYearHeatmap(intensities,{endDate:state.end,cell:10,gap:3});
     const svg = api.heatmapSvg(state.calendar,{titleOf:c => shortDescription(c.date)});
     $('calendar').innerHTML = svg;
     calendarLabels();
@@ -282,7 +325,7 @@
     return svg;
   };
   document.querySelectorAll('[data-mode]').forEach(el => el.addEventListener('click', () => mode(el.getAttribute('data-mode'))));
-  for (const id of ['group','from','to']) $(id).addEventListener('change',bars);
+  for (const id of ['group','from','to']) $(id).addEventListener('change',() => { bars(); reportSize(); });
   $('period').addEventListener('change',details);
   $('date').addEventListener('change', () => select($('date').value));
 })(window);

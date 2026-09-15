@@ -27,7 +27,7 @@ enum NextSetupStep: Int, CaseIterable, Identifiable {
     case runtime
 
     // Keep persisted 0...3 values from earlier versions while inserting the new first page.
-    static let allCases: [Self] = [.runtime, .accounts, .features, .notifications, .ready]
+    static let allCases: [Self] = [.accounts, .runtime, .features, .notifications, .ready]
     var index: Int { Self.allCases.firstIndex(of: self) ?? 0 }
     var previous: Self { Self.allCases[max(0, index - 1)] }
     var next: Self { Self.allCases[min(Self.allCases.count - 1, index + 1)] }
@@ -37,7 +37,7 @@ enum NextSetupStep: Int, CaseIterable, Identifiable {
     func title(_ language: WidgetLanguage) -> String {
         switch self {
         case .runtime: return language.text("准备运行环境", "Prepare your tools")
-        case .accounts: return language.text("认识工作台", "Your workspace")
+        case .accounts: return language.text("连接工具与账号", "Connect tools & accounts")
         case .features: return language.text("默认功能", "Your features")
         case .notifications: return language.text("连接通知", "Connect alerts")
         case .ready: return language.text("开始使用", "Ready to go")
@@ -56,7 +56,7 @@ enum NextSetupStep: Int, CaseIterable, Identifiable {
 }
 
 struct NextSetupProgress: Equatable {
-    var step: NextSetupStep = .runtime
+    var step: NextSetupStep = .accounts
     var dismissed = false
     var completed = false
 
@@ -68,7 +68,7 @@ struct NextSetupProgress: Equatable {
 
     static func load(from defaults: UserDefaults) -> Self {
         Self(
-            step: defaults.object(forKey: stepKey) == nil ? .runtime : (NextSetupStep(rawValue: defaults.integer(forKey: stepKey)) ?? .runtime),
+            step: defaults.object(forKey: stepKey) == nil ? .accounts : (NextSetupStep(rawValue: defaults.integer(forKey: stepKey)) ?? .runtime),
             dismissed: defaults.bool(forKey: dismissedKey),
             completed: defaults.bool(forKey: completedKey)
         )
@@ -84,8 +84,8 @@ struct NextSetupProgress: Equatable {
         let suite = "CodexManagerNext.setup-test.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suite) else { return false }
         defer { defaults.removePersistentDomain(forName: suite) }
-        guard load(from: defaults).shouldPresentAutomatically, load(from: defaults).step == .runtime,
-            NextSetupStep.runtime.next == .accounts, NextSetupStep.accounts.previous == .runtime
+        guard load(from: defaults).shouldPresentAutomatically, load(from: defaults).step == .accounts,
+            NextSetupStep.accounts.next == .runtime, NextSetupStep.runtime.previous == .accounts
         else { return false }
         defaults.set(0, forKey: stepKey)
         guard load(from: defaults).step == .accounts else { return false }

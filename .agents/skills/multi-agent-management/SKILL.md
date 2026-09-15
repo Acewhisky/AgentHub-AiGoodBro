@@ -3,9 +3,13 @@ name: multi-agent-management
 description: 本机 CLI 与多账号派单中枢。用户说“调用 CLI / 交给 CLI / 蹬 Grok / grokcli / 蹬 Codex / 让某账号做 / 多 agent / 账号池 / 查额度 / Next 派单 / agenthub 调用”时使用；按指定服务商分流，核对能力、身份、额度、占用、执行参数和真实产物。单纯 UI 改稿或只咨询品牌时不触发派单。
 ---
 
-# 多agent管理（中枢编排技能）
+# AiGoodBro 工具连接与任务调度
 
 版本：0911v1。相对 0910v4：增加所有点数、余额及付费回退账号的订阅耗尽停用和官方窗口恢复规则，保留每批 CLI 最小真实返回校验、服务商分流与占用流程。文档规则和运行时自动保护分别验证；本次文档更新不替换执行脚本或在途参数。
+
+## 首次连接与恢复引导（0915v3）
+
+用户要求配置或登录工具时，先读 [连接清单](references/onboarding-login.md)，使用 AiGoodBro「使用引导 → 连接工具与账号」。首次弹窗与手动按钮共用这一流程；复用已连接的账号，不创建额外“中枢账号”。ZCode 是桌面应用，OpenCode 是 CLI。安装、官方授权、身份、额度与真实调用分别验收；不得用打开窗口或退出码代替完成登录。仅配置登录不启动模型测试或任务。
 
 ## 先按服务商分流
 
@@ -214,6 +218,6 @@ curl -s 127.0.0.1:8787/api/overview
 - 新版 Next 原生终端使用 `terminal` 路由及私有启动回执；退出成功只是会话结束。旧入口不自动接入。Next 重启只恢复已停止原所有者、有效回执和匹配租约的本应用终端，不接管其他执行端。
 
 <!-- next-runtime-setup:start -->
-## 运行环境引导（0910v2）
-配套应用检测已有 Codex 与 Python，缺少时引导官方安装。优先使用 `bin/next-dispatch`；先 `plan`，中断后用 `status` / `result` 收取原任务。安装、诊断、参数与验收边界见 [运行环境说明](references/runtime-setup.md)。三个可自定义执行档位及配置与实测证据的区别见 [执行档位](references/luna-presets.md)。
+## 运行环境引导（0915v3）
+配套应用检测已有 Codex 与 Python，缺少时引导官方安装。优先使用 `bin/next-dispatch`；先 `plan`，中断后用 `status` / `result` 收取原任务。安装、诊断、参数与验收边界见 [运行环境说明](references/runtime-setup.md)。首次连接多个工具见 [连接清单](references/onboarding-login.md)：ZCode 走桌面登录，OpenCode 走 CLI；本人确认与账号、额度证据分别显示。三个可自定义执行档位及配置与实测证据的区别见 [执行档位](references/luna-presets.md)。
 <!-- next-runtime-setup:end -->

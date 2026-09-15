@@ -66,10 +66,12 @@ enum LocalCLIKind: String, Codable, CaseIterable, Identifiable {
 
     var supportsTerminalSignIn: Bool {
         switch self {
-        case .claudeCode, .grok, .openCode, .workBuddy, .zcode, .kimi, .gemini: true
-        case .trae, .mimo: false
+        case .claudeCode, .grok, .openCode, .workBuddy, .kimi, .gemini: true
+        case .zcode, .trae, .mimo: false
         }
     }
+
+    var isDesktopApplication: Bool { self == .zcode || self == .trae }
 
     var supportsNativeOpen: Bool {
         switch self {

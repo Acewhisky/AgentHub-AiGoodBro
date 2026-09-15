@@ -11,6 +11,7 @@ struct LocalCLIWorkspaceView: View {
     var embeddedLayout: AccountWorkspaceLayout? = nil
     var onOpenDetails: (() -> Void)? = nil
     var onOpenSetup: (() -> Void)? = nil
+    @Environment(\.accountCardDensity) private var cardDensity
     @State private var preparationProfile: LocalCLIProfile?
     @State private var editing: LocalCLIProfile?
     @State private var nameDraft = ""
@@ -28,6 +29,7 @@ struct LocalCLIWorkspaceView: View {
                         Text(language.text("账号与额度", "Accounts and limits")).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    AccountCardDensityPicker()
                     if kind == .grok {
                         Button {
                             newAccountName = language.text("Grok 账号 \(model.profiles(for: kind).count + 1)", "Grok account \(model.profiles(for: kind).count + 1)")
@@ -325,8 +327,8 @@ struct LocalCLIWorkspaceView: View {
             .frame(width: layout == .rows ? 290 : nil)
             .frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .leading)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, cardDensity.padding)
+        .padding(.vertical, cardDensity.padding)
         .cardBackground(cornerRadius: layout == .cards ? 14 : 12)
         .overlay {
             if expiring {
@@ -411,7 +413,7 @@ struct LocalCLIWorkspaceView: View {
                         Button {
                             openNative(profile)
                         } label: {
-                            Label(openTitle, systemImage: profile.kind == .trae ? "macwindow" : "terminal")
+                            Label(openTitle, systemImage: profile.kind.isDesktopApplication ? "macwindow" : "terminal")
                         }.buttonStyle(.bordered).disabled(model.signingIn.contains(profile.id))
                     }
                     if model.signingIn.contains(profile.id) { ProgressView().controlSize(.small) }
@@ -520,7 +522,7 @@ struct LocalCLIWorkspaceView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(18)
+        .padding(cardDensity.padding)
         .sectionBackground()
         .overlay(
             expiringSoon
@@ -540,7 +542,9 @@ struct LocalCLIWorkspaceView: View {
     @ViewBuilder private func primaryAction(_ profile: LocalCLIProfile) -> some View {
         let state = readiness(profile)
         Button {
-            if state.isFailure || state == .notInstalled {
+            if profile.kind.isDesktopApplication, model.canOpen(profile) {
+                openNative(profile)
+            } else if state.isFailure || state == .notInstalled {
                 preparationProfile = profile
             } else if state == .needsLogin {
                 if model.canSignIn(profile) { model.signIn(profile) } else { preparationProfile = profile }
@@ -551,13 +555,17 @@ struct LocalCLIWorkspaceView: View {
             }
         } label: {
             Label(
-                state.isFailure
-                    ? language.text("查看原因", "Review cause")
-                    : state == .needsLogin
-                        ? language.text("登录", "Sign in")
-                        : state == .notInstalled
-                            ? language.text("准备", "Prepare") : state == .available && model.canOpen(profile) ? language.text("打开终端", "Terminal") : language.text("刷新", "Refresh"),
-                systemImage: state.isFailure ? "exclamationmark.circle" : state == .needsLogin ? "person.crop.circle" : state == .available ? "terminal" : "arrow.clockwise"
+                profile.kind.isDesktopApplication && model.canOpen(profile)
+                    ? language.text("打开桌面版", "Open desktop app")
+                    : state.isFailure
+                        ? language.text("查看原因", "Review cause")
+                        : state == .needsLogin
+                            ? language.text("登录", "Sign in")
+                            : state == .notInstalled
+                                ? language.text("准备", "Prepare")
+                                : state == .available && model.canOpen(profile) ? language.text("打开终端", "Terminal") : language.text("刷新", "Refresh"),
+                systemImage: profile.kind.isDesktopApplication && model.canOpen(profile)
+                    ? "macwindow" : state.isFailure ? "exclamationmark.circle" : state == .needsLogin ? "person.crop.circle" : state == .available ? "terminal" : "arrow.clockwise"
             ).frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
@@ -631,7 +639,7 @@ struct LocalCLIWorkspaceView: View {
     }
 
     private func openNative(_ profile: LocalCLIProfile) {
-        if profile.kind == .trae {
+        if profile.kind.isDesktopApplication {
             model.openCLI(
                 profile,
                 workingDirectory: FileManager.default.homeDirectoryForCurrentUser)
@@ -665,8 +673,8 @@ struct LocalCLIWorkspaceView: View {
                 "Uses WorkBuddy's bundled CLI. Choose an available model after opening it.")
         case .zcode:
             language.text(
-                "默认环境可打开官方 ZCode 登录与 TUI。链接环境仅展示额度；CLI 与桌面模型配置彼此独立，登录成功不等于指定模型可用。",
-                "The default environment can open official ZCode sign-in and TUI. Linked environments are quota-only. CLI and desktop model settings are separate, and sign-in does not prove a requested model is available."
+                "ZCode 使用桌面版，在官方应用内登录。Coding Plan 配置的额度与桌面订阅分别显示，不据此判断桌面登录成功。",
+                "ZCode opens its desktop app for sign-in. Coding Plan configuration quotas are separate from desktop subscription and sign-in status."
             )
         case .trae:
             language.text(
@@ -700,8 +708,8 @@ struct LocalCLIWorkspaceView: View {
     }
 
     private var openTitle: String {
-        kind == .trae
-            ? language.text("打开 TRAE SOLO", "Open TRAE SOLO")
+        kind.isDesktopApplication
+            ? language.text("打开 \(kind.displayName) 桌面版", "Open \(kind.displayName) desktop")
             : language.text("打开 \(kind.displayName) CLI", "Open \(kind.displayName) CLI")
     }
 }

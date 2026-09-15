@@ -204,7 +204,7 @@ struct ResetUpdatesBanner: View {
     }
 
     private var resetCalendar: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             PublicResetCalendarView(announcements: calendarAnnouncements, language: language, hasMore: nil, selectedDay: $selectedCalendarDay)
             Divider()
             PublicResetRecentView(

@@ -130,7 +130,8 @@ struct UpstreamTrendView: View {
 
             stateView
         }
-        .frame(maxWidth: .infinity, minHeight: max(1, safeHeight))
+        .frame(maxWidth: .infinity)
+        .frame(height: safeHeight)
         .onAppear {
             updateRenderer()
         }
@@ -188,6 +189,7 @@ struct UpstreamTrendView: View {
     }
 
     private var safeHeight: CGFloat {
+        if dashboardJSON != nil { return renderer.state == .ready ? renderer.contentHeight : 120 }
         guard height.isFinite else { return 40 }
         return min(600, max(24, height))
     }
@@ -348,6 +350,7 @@ struct UpstreamTrendView: View {
         @Published private(set) var state: RenderState = .loading
         @Published private(set) var points: [Point] = []
         @Published private(set) var height: CGFloat = 40
+        @Published private(set) var contentHeight: CGFloat = 220
 
         private weak var webView: WKWebView?
         private var lifecycle = Lifecycle()
@@ -411,6 +414,18 @@ struct UpstreamTrendView: View {
         func attach(_ web: WKWebView) {
             if web !== webView { resetTransferredSnapshot() }
             webView = web
+        }
+
+        func receiveContentSize(body: Any, from web: WKWebView, isMainFrame: Bool, url: URL?) {
+            guard dashboardJSON != nil, web === webView,
+                isMainFrame, permitsNavigation(url),
+                let body = body as? [String: Any],
+                body["snapshotID"] as? String == "\(lifecycle.currentLoadID):\(dashboardSnapshotRevision)",
+                let width = body["width"] as? Double, width.isFinite, abs(width - web.bounds.width) < 2,
+                let value = body["height"] as? Double, value.isFinite, value > 0
+            else { return }
+            let measured = min(2_400, max(96, ceil(value)))
+            if abs(contentHeight - measured) >= 1 { contentHeight = measured }
         }
 
         func isAttached(to web: WKWebView) -> Bool {
@@ -701,11 +716,16 @@ private extension UpstreamTrendView.RenderFailure {
 private struct TrendWebView: NSViewRepresentable {
     let renderer: UpstreamTrendView.Renderer
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let renderer: UpstreamTrendView.Renderer
 
         init(renderer: UpstreamTrendView.Renderer) {
             self.renderer = renderer
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard let web = message.webView else { return }
+            renderer.receiveContentSize(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
         }
 
         func webView(
@@ -747,7 +767,9 @@ private struct TrendWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> ResizeAwareTrendWebView {
-        let web = ResizeAwareTrendWebView(frame: .zero)
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController.add(context.coordinator, name: "chartSize")
+        let web = ResizeAwareTrendWebView(frame: .zero, configuration: configuration)
         web.renderer = renderer
         web.navigationDelegate = context.coordinator
         web.setValue(false, forKey: "drawsBackground")
@@ -759,6 +781,12 @@ private struct TrendWebView: NSViewRepresentable {
         }
         renderer.loadIfNeeded(in: web)
         return web
+    }
+
+    static func dismantleNSView(_ web: ResizeAwareTrendWebView, coordinator: Coordinator) {
+        web.configuration.userContentController.removeScriptMessageHandler(forName: "chartSize")
+        web.onSizeChange = nil
+        web.navigationDelegate = nil
     }
 
     func updateNSView(_ web: ResizeAwareTrendWebView, context: Context) {
@@ -774,7 +802,7 @@ private final class ResizeAwareTrendWebView: WKWebView {
     private var previousSize: CGSize = .zero
 
     override func setFrameSize(_ newSize: NSSize) {
-        let changed = previousSize != newSize
+        let changed = previousSize.width != newSize.width
         previousSize = newSize
         super.setFrameSize(newSize)
         if changed {

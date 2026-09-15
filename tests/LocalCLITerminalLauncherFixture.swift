@@ -222,23 +222,13 @@ private func testZCodeDefaultBundleCommands() throws {
         displayName: "Local",
         configDirectory: profileDirectory.path,
         isDefault: true)
-    let signIn = try LocalCLITerminalLauncher.command(
-        profile: profile,
-        executable: cli.path,
-        action: .signIn,
-        workingDirectory: workingDirectory)
-    let settings = profileDirectory.appendingPathComponent("cli/config.json").path
-    try expect(signIn.contains("'login'"), "ZCode login command")
-    try expect(signIn.contains("'--settings' \(TerminalAppLauncher.shellQuote(settings))"), "ZCode CLI settings path")
-    try expect(signIn.contains("ELECTRON_RUN_AS_NODE='1'"), "ZCode uses Electron as Node")
+    for action: LocalCLITerminalLauncher.Action in [.signIn, .open] {
+        do {
+            _ = try LocalCLITerminalLauncher.command(profile: profile, executable: cli.path, action: action, workingDirectory: workingDirectory)
+            throw FixtureFailure.failed("ZCode private CLI must not be launched")
+        } catch LocalCLITerminalLauncher.Failure.unsupported {}
+    }
 
-    let open = try LocalCLITerminalLauncher.command(
-        profile: profile,
-        executable: cli.path,
-        action: .open,
-        workingDirectory: workingDirectory)
-    try expect(open.contains("'tui'"), "ZCode TUI command")
-    try expect(!open.contains("--prompt"), "ZCode open does not send a model prompt")
 }
 
 private func testRejectsSymlinkAndLinkedZCode() throws {

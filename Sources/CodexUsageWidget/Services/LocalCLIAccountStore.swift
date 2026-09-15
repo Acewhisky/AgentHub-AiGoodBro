@@ -110,10 +110,8 @@ final class LocalCLIAccountStore: ObservableObject {
             if kind == .zcode {
                 for applicationRoot in applicationRoots {
                     let app = applicationRoot.appendingPathComponent("ZCode.app", isDirectory: true)
-                    let cli = app.appendingPathComponent("Contents/Resources/glm/zcode.cjs")
-                    let electron = app.appendingPathComponent("Contents/MacOS/ZCode")
-                    if regularFile(cli, executable: false), regularFile(electron, executable: true) {
-                        found[kind] = cli.path
+                    if isOfficialZCode(app) {
+                        found[kind] = app.path
                         break
                     }
                 }
@@ -216,8 +214,8 @@ final class LocalCLIAccountStore: ObservableObject {
                     "Enter /login in WorkBuddy's bundled CLI, then choose a model available to your account.")
             case .zcode:
                 language.text(
-                    "请完成 Z.AI OAuth。登录退出码不代表指定模型已可用，请在 ZCode CLI 中另行确认。",
-                    "Complete Z.AI OAuth. A successful sign-in exit does not prove a requested model is available; confirm it separately in ZCode CLI.")
+                    "请在 ZCode 桌面应用中完成登录。",
+                    "Complete sign-in in the ZCode desktop app.")
             case .gemini:
                 language.text(
                     "在 Gemini CLI 中选择“Login with Google”；已进入对话时输入 /auth。完成浏览器授权后回到这里刷新额度。",
@@ -261,17 +259,17 @@ final class LocalCLIAccountStore: ObservableObject {
         guard canOpen(profile), !signingIn.contains(profile.id),
             let executable = executable(for: profile)
         else { return }
-        if profile.kind == .trae {
+        if profile.kind.isDesktopApplication {
             let app = URL(fileURLWithPath: executable, isDirectory: true)
-            guard isOfficialTRAESOLO(app) else { return }
+            guard profile.kind == .zcode ? isOfficialZCode(app) : isOfficialTRAESOLO(app) else { return }
             Task { [weak self] in
                 do {
                     _ = try await NSWorkspace.shared.openApplication(
                         at: app, configuration: NSWorkspace.OpenConfiguration())
                 } catch {
                     self?.message = self?.language.text(
-                        "未能打开 TRAE SOLO，请确认官方个人版仍安装在“应用程序”中。",
-                        "TRAE SOLO could not open. Confirm that the official personal edition is still installed in Applications.")
+                        "未能打开桌面应用，请确认官方应用仍安装在“应用程序”中。",
+                        "The desktop app could not open. Confirm that the official app is still installed in Applications.")
                 }
             }
             return
@@ -296,6 +294,16 @@ final class LocalCLIAccountStore: ObservableObject {
                 self?.message = self?.language.text("未能打开 CLI，请检查终端与工作目录。", "The CLI could not open. Check Terminal and the working directory.")
             }
         }
+    }
+
+    /// The user has finished authorization inside an interactive TUI. Stop only
+    /// waiting for its exit; leave the user's terminal and its receipt intact.
+    func checkInteractiveSignIn(_ profile: LocalCLIProfile) {
+        guard profiles.contains(profile) else { return }
+        loginTasks.removeValue(forKey: profile.id)?.cancel()
+        signingIn.remove(profile.id)
+        loginVerification.insert(profile.id)
+        refresh(profile)
     }
 
     func canSignIn(_ profile: LocalCLIProfile) -> Bool {
@@ -503,6 +511,16 @@ final class LocalCLIAccountStore: ObservableObject {
             info.st_uid == 0 || info.st_uid == geteuid()
         else { return false }
         return !executable || info.st_mode & 0o111 != 0
+    }
+
+    private func isOfficialZCode(_ app: URL) -> Bool {
+        let plist = app.appendingPathComponent("Contents/Info.plist")
+        guard app.lastPathComponent == "ZCode.app", validDirectory(app.path),
+            regularFile(app.appendingPathComponent("Contents/MacOS/ZCode"), executable: true),
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(plist, maximumBytes: 256 * 1024, allowMissing: false),
+            let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return false }
+        return info["CFBundleIdentifier"] as? String == "dev.zcode.app" && info["CFBundleExecutable"] as? String == "ZCode"
     }
 
     private func isOfficialTRAESOLO(_ app: URL) -> Bool {

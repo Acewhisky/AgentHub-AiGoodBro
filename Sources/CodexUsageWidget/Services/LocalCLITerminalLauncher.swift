@@ -26,11 +26,6 @@ enum LocalCLITerminalLauncher {
         let edition: WorkBuddyEdition
     }
 
-    private struct ZCodeBundle {
-        let cli: URL
-        let electron: URL
-    }
-
     /// Build the exact command that will be written to the private Terminal
     /// wrapper. This method is intentionally side-effect free and is the seam
     /// used by offline launcher tests.
@@ -164,28 +159,8 @@ enum LocalCLITerminalLauncher {
                 ])
 
         case .zcode:
-            // ZCode's CLI and desktop model/auth stores do not have a proven
-            // complete profile override. A linked folder may be displayed for
-            // quota inspection, but must never be presented as launchable.
-            guard profile.isDefault,
-                profile.id == "local-" + LocalCLIKind.zcode.rawValue,
-                profileDirectory.lastPathComponent == ".zcode"
-            else { throw Failure.unsupported }
-            let bundle = try zcodeBundle(for: executable)
-            let settings = profileDirectory.appendingPathComponent("cli/config.json", isDirectory: false)
-            guard validPath(settings, mustExist: false) else { throw Failure.invalidDirectory }
-            let arguments = action == .signIn ? ["login"] : ["tui"]
-            return shellCommand(
-                workingDirectory: workingDirectory,
-                executableParts: [bundle.electron.path, bundle.cli.path] + arguments + ["--settings", settings.path],
-                unsetEnvironment: [
-                    // These variables can redirect ZCode's desktop credential
-                    // or runtime stores to an unrelated account. The default
-                    // CLI uses ~/.zcode/cli/config.json and is left to resolve
-                    // that path normally.
-                    "ZCODE_DATA_BASE_DIR", "ZCODE_STORAGE_DIR", "ZCODE_HOME", "ELECTRON_RUN_AS_NODE",
-                ],
-                environment: ["ELECTRON_RUN_AS_NODE": "1"])
+            // ZCode is a desktop product; never run its private bundled script.
+            throw Failure.unsupported
 
         case .trae, .mimo:
             throw Failure.unsupported
@@ -312,23 +287,6 @@ enum LocalCLITerminalLauncher {
             : profileDirectory.appendingPathComponent(edition.directoryName, isDirectory: true)
         guard validPath(configDirectory, mustExist: false) else { throw Failure.invalidDirectory }
         return WorkBuddyBundle(cli: cli, electron: electron, productConfig: product, configDirectory: configDirectory, edition: edition)
-    }
-
-    private static func zcodeBundle(for executable: String) throws -> ZCodeBundle {
-        guard lexicallyValidInput(executable) else { throw Failure.invalidDirectory }
-        let cli = URL(fileURLWithPath: executable)
-        let marker = "/ZCode.app/Contents/Resources/glm/zcode.cjs"
-        guard cli.path.hasSuffix(marker) else { throw Failure.unsupported }
-        let applicationPath = String(cli.path.dropLast(marker.count)) + "/ZCode.app"
-        let application = URL(fileURLWithPath: applicationPath, isDirectory: true)
-        let expectedCLI = application.appendingPathComponent("Contents/Resources/glm/zcode.cjs")
-        let electron = application.appendingPathComponent("Contents/MacOS/ZCode")
-        guard cli.path == expectedCLI.path,
-            validDirectory(application),
-            validRegularFile(cli),
-            validExecutable(electron)
-        else { throw Failure.invalidDirectory }
-        return ZCodeBundle(cli: cli, electron: electron)
     }
 
     private static func executableFailure(for path: String) -> Failure {

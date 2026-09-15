@@ -63,11 +63,9 @@ private func makeRoot(_ label: String) throws -> (root: URL, home: URL, support:
                                             attributes: [.posixPermissions: 0o700])
     let applications = home.appendingPathComponent("Applications", isDirectory: true)
     let zcode = applications.appendingPathComponent("ZCode.app", isDirectory: true)
-    let zcodeCLI = zcode.appendingPathComponent("Contents/Resources/glm/zcode.cjs")
     let zcodeElectron = zcode.appendingPathComponent("Contents/MacOS/ZCode")
-    try FileManager.default.createDirectory(at: zcodeCLI.deletingLastPathComponent(), withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: zcodeElectron.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try Data("synthetic zcode entry".utf8).write(to: zcodeCLI)
+    try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "dev.zcode.app", "CFBundleExecutable": "ZCode"], format: .xml, options: 0).write(to: zcode.appendingPathComponent("Contents/Info.plist"))
     try Data("synthetic electron".utf8).write(to: zcodeElectron)
     guard chmod(zcodeElectron.path, 0o700) == 0 else { throw FixtureFailure.failed("chmod ZCode runner") }
 
@@ -120,7 +118,7 @@ private func testDiscoveryLinkRenameUnlinkAndPermissions() async throws {
     let applications = paths.home.appendingPathComponent("Applications", isDirectory: true)
     try expect(
         store.installed[.zcode] == applications.appendingPathComponent(
-            "ZCode.app/Contents/Resources/glm/zcode.cjs").path,
+            "ZCode.app").path,
         "bundled ZCode discovery")
     try expect(
         store.installed[.workBuddy] == applications.appendingPathComponent(
@@ -157,8 +155,8 @@ private func testDiscoveryLinkRenameUnlinkAndPermissions() async throws {
     guard let linked = store.profiles(for: .zcode).first(where: { !$0.isDefault }) else {
         throw FixtureFailure.failed("linked profile")
     }
-    try expect(store.canSignIn(defaults[0]) && store.canOpen(defaults[0]),
-               "default ZCode exposes official login and TUI")
+    try expect(!store.canSignIn(defaults[0]) && store.canOpen(defaults[0]),
+               "default ZCode opens desktop only without any bundled CLI")
     try expect(!store.canSignIn(linked) && !store.canOpen(linked),
                "linked ZCode remains quota-only")
 

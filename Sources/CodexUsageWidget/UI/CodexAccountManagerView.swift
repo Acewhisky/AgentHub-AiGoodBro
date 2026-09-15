@@ -355,6 +355,8 @@ struct CodexAccountManagerView: View {
 
     @StateObject private var localCLIAccounts: LocalCLIAccountStore
     @State private var selectedLocalCLI: LocalCLIKind?
+    @AppStorage("AiGoodBro.accountCardDensity") private var savedCardDensity = AccountCardDensity.compact.rawValue
+    private var cardDensity: AccountCardDensity { AccountCardDensity(rawValue: savedCardDensity) ?? .compact }
     @State private var accountSearch = ""
     @State private var accountScope = HomeAccountScope.all
     @State private var showingHome = true
@@ -457,6 +459,7 @@ struct CodexAccountManagerView: View {
         .onReceive(guideRequests) { openPrimaryGuide() }
         .environment(\.accountAvatarEdit, { avatarEditor = $0 })
         .environment(\.accountAvatarSettings, settings)
+        .environment(\.accountCardDensity, cardDensity)
         .onAppear {
             if !store.isPreview {
                 localCLIAccounts.discover()
@@ -464,7 +467,11 @@ struct CodexAccountManagerView: View {
                 hubTaskStatusModel.startPolling()
             }
             refreshQuotaProviderRows()
-            if settings.onboarding.shouldPresent { isOnboardingPresented = true }
+            if settings.onboarding.shouldPresent {
+                settings.onboarding.begin()
+                settings.setupProgress.step = .accounts
+                isSetupGuidePresented = true
+            }
         }
         .onDisappear {
             hubTaskStatusModel.stopPolling()
@@ -502,7 +509,7 @@ struct CodexAccountManagerView: View {
                 }
             }
         ) {
-            NextSetupGuideView(store: store, settings: settings) {
+            NextSetupGuideView(store: store, settings: settings, localAccounts: localCLIAccounts) {
                 openAutomationAfterGuide = true
                 isSetupGuidePresented = false
             }
@@ -1337,6 +1344,7 @@ struct CodexAccountManagerView: View {
                 Label(language.text("已登录账号", "Signed-in accounts"), systemImage: "person.2").font(.headline)
                 savedAccountsMenu(title: language.text("管理账号", "Manage accounts"))
                 Spacer()
+                AccountCardDensityPicker()
                 reloginAccountsMenu
                 if !usesHomeAccountCards {
                     Picker(language.text("账号显示方式", "Account layout"), selection: $settings.accountWorkspaceLayout) {
@@ -1689,11 +1697,8 @@ struct CodexAccountManagerView: View {
     }
 
     private func openPrimaryGuide() {
-        if settings.onboarding.status == .completed || settings.onboarding.status == .skipped {
-            isSetupGuidePresented = true
-        } else {
-            isOnboardingPresented = true
-        }
+        settings.setupProgress.step = .accounts
+        isSetupGuidePresented = true
     }
 
     private func refreshQuotaProviderRows() {
@@ -1747,6 +1752,7 @@ struct CodexAccountManagerView: View {
         .transaction { $0.disablesAnimations = true }
         .preferredColorScheme(settings.themeMode.preferredColorScheme)
         .environment(\.widgetLanguage, language)
+        .environment(\.accountCardDensity, cardDensity)
         .environment(\.locale, language.locale)
         .disclosureGroupStyle(FullRowDisclosureGroupStyle())
     }
@@ -2207,7 +2213,7 @@ struct CodexAccountManagerView: View {
 
     private var presentedProfiles: [CodexProfile] {
         store.profiles.filter { profile in
-            linkedManagedProfile(for: profile) == nil || profile.remark?.isEmpty == false
+            !profile.isSystemProfile
         }
     }
 
@@ -2224,7 +2230,7 @@ struct CodexAccountManagerView: View {
 
     private var profilesLayout: AnyLayout {
         displayedAccountLayout == .cards
-            ? AnyLayout(AccountCardGridLayout())
+            ? AnyLayout(AccountCardGridLayout(minimumWidth: cardDensity.minimumWidth))
             : AnyLayout(VStackLayout(spacing: 8))
     }
 
@@ -2270,7 +2276,8 @@ struct CodexAccountManagerView: View {
                 }
                 .help(language.text("查看工作状态，空闲后再派单；刷新不触发暖号", "Check task status before starting work. Refresh only reads usage; it does not warm up an account."))
                 Spacer()
-                Text(language.text("\(presentation.accountCount) 个账号", "\(presentation.accountCount) accounts"))
+                AccountCardDensityPicker()
+                Text(language.text("\(presentedProfiles.count) 个账号", "\(presentedProfiles.count) accounts"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Picker(language.text("账号显示方式", "Account layout"), selection: $settings.accountWorkspaceLayout) {
@@ -2379,12 +2386,12 @@ struct CodexAccountManagerView: View {
                 Button(store.isLoggingIn ? language.text("取消登录", "Cancel sign-in") : language.text("重新登录所选账号", "Sign in again")) {
                     if store.isLoggingIn {
                         store.cancelLogin()
-                    } else {
+                    } else if store.selectedMonitorProfile?.isSystemProfile == false {
                         store.loginSelectedMonitorProfile()
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(!store.isLoggingIn && selectedMonitorHubTaskStatus.blocksLocalCLI)
+                .disabled(!store.isLoggingIn && (selectedMonitorHubTaskStatus.blocksLocalCLI || store.selectedMonitorProfile?.isSystemProfile != false))
                 .help(
                     store.isLoggingIn
                         ? language.text("取消正在进行的登录", "Cancel the current sign-in")
@@ -2403,7 +2410,7 @@ struct CodexAccountManagerView: View {
         let visibleIDs = Set(orderedProfiles.map(\.id))
         let source =
             accountScope == .all
-            ? orderedProfiles + store.profiles.filter { !visibleIDs.contains($0.id) }
+            ? orderedProfiles + store.profiles.filter { !$0.isSystemProfile && !visibleIDs.contains($0.id) }
             : orderedProfiles
         return source.filter { profile in
             let eligibility = homeEligibility(profile)
@@ -5109,6 +5116,7 @@ private struct ProfileRow: View {
     let onSetChromeProfile: (ChromeProfileBinding?) -> Void
     let onDelete: () -> Void
     let onAdjustResetCount: (Int) -> Void
+    @Environment(\.accountCardDensity) private var cardDensity
     @State private var isEditingRemark = false
     @State private var isConfirmingDelete = false
     @State private var remarkDraft = ""
@@ -5140,8 +5148,8 @@ private struct ProfileRow: View {
                 ScrollView(.horizontal, showsIndicators: true) { editControls }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, cardDensity.padding)
+        .padding(.vertical, cardDensity.padding)
         .cardBackground(cornerRadius: layout == .cards ? 14 : 12, elevated: isMonitoring)
         .overlay(
             RoundedRectangle(cornerRadius: layout == .cards ? 14 : 12, style: .continuous)
@@ -5624,10 +5632,9 @@ private struct ProfileRow: View {
             Button {
                 onOpenTerminal(nil)
             } label: {
-                Label(language.text("终端", "CLI"), systemImage: "terminal")
+                Image(systemName: "terminal")
                     .font(.system(size: 11, weight: .semibold))
-                    .padding(.horizontal, 9)
-                    .frame(minHeight: 26)
+                    .frame(width: 30, height: 20)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -5643,7 +5650,7 @@ private struct ProfileRow: View {
 
             Rectangle()
                 .fill(Color.white.opacity(0.28))
-                .frame(width: 1, height: 16)
+                .frame(width: 1, height: 12)
                 .accessibilityHidden(true)
 
             Menu {
@@ -5653,7 +5660,7 @@ private struct ProfileRow: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .bold))
-                    .frame(width: 25, height: 26)
+                    .frame(width: 20, height: 20)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)

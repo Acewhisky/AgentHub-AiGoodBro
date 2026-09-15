@@ -88,7 +88,7 @@ struct PublicResetCalendarView: View {
                 }
                 let days = PublicResetCalendarModel.days(in: month)
                 ForEach(days.indices, id: \.self) { index in
-                    if let day = days[index] { dayButton(day) } else { Color.clear.frame(height: 31).accessibilityHidden(true) }
+                    if let day = days[index] { dayButton(day) } else { Color.clear.frame(height: 25).accessibilityHidden(true) }
                 }
             }
             HStack(spacing: 10) {
@@ -150,7 +150,7 @@ struct PublicResetCalendarView: View {
                     if events.contains(where: { $0.resetType == .banked }) { Circle().fill(Color.purple).frame(width: 4, height: 4) }
                 }.frame(height: 4)
             }
-            .frame(maxWidth: .infinity, minHeight: 31)
+            .frame(maxWidth: .infinity, minHeight: 25)
             .background(selected ? Color.accentColor.opacity(0.2) : today ? Color.secondary.opacity(0.1) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }
@@ -201,7 +201,7 @@ struct PublicResetRecentView: View {
                         ? language.text("暂无已载入的公告。", "No announcements loaded yet.") : language.text("这一天没有已记录的公告。", "No recorded announcements on this date.")
                 )
                 .font(.callout).foregroundStyle(.secondary)
-                .padding(.vertical, 16)
+                .padding(.vertical, 2)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), alignment: .topLeading)], alignment: .leading, spacing: 10) {
                     ForEach(visibleEvents.prefix(5)) { event in
