@@ -110,7 +110,8 @@ fn main() {
                 eprintln!("Failed to resolve app data dir: {}", e);
                 e
             })?;
-            info!("App data dir: {}", app_data_dir.display());
+            // Keep user-specific storage locations out of runtime logs.
+            info!("Next app data directory initialized");
 
             let state = Arc::new(AppState::new(app_data_dir));
             let initial_language = state

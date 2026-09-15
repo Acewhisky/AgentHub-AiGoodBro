@@ -36,7 +36,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     invoke('sync_runtime_language', { language }).catch((error) => {
       console.error('[I18n] Failed to sync runtime language:', error);
     });
-  }, [language]);
+  // Include the preference so manual -> Auto still synchronizes the browser's
+  // resolved language when the resolved value itself happens to be unchanged.
+  }, [language, preference]);
 
   const setPreference = useCallback(
     async (nextPreference: InterfaceLanguage) => {

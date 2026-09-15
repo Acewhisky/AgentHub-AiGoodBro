@@ -350,15 +350,18 @@ impl AppState {
     {
         let mut config = self.config.write().await;
         let previous_source = DashboardSourceKey::from_config(&config);
-        f(&mut config);
-        let current_source = DashboardSourceKey::from_config(&config);
+        // Apply the patch to a candidate first. Persisting the candidate
+        // before replacing the in-memory config keeps a failed write from
+        // silently changing the active source or refresh generation.
+        let mut candidate = config.clone();
+        f(&mut candidate);
+        let current_source = DashboardSourceKey::from_config(&candidate);
+        candidate.save(&self.app_data_dir)?;
         if current_source != previous_source {
             self.source_generation.fetch_add(1, Ordering::SeqCst);
         }
-        let cloned = config.clone();
-        drop(config);
-        cloned.save(&self.app_data_dir)?;
-        Ok(cloned)
+        *config = candidate.clone();
+        Ok(candidate)
     }
 }
 
@@ -373,7 +376,8 @@ pub async fn clear_cache(state: &Arc<AppState>) {
     for path in [codex_cache, claude_cache] {
         if let Err(e) = tokio::fs::remove_file(&path).await {
             if e.kind() != std::io::ErrorKind::NotFound {
-                error!("Failed to remove cache file {}: {}", path.display(), e);
+                // Do not put the user-selected cache path into logs.
+                error!(error = %e, "Failed to remove a Next cache file");
             }
         }
     }
@@ -439,6 +443,24 @@ mod tests {
         let config = AppConfig::load(&app_data_dir);
         assert_eq!(config.language, InterfaceLanguage::Auto);
         assert_eq!(config.palette_id, "codexu.default");
+    }
+
+    #[tokio::test]
+    async fn update_config_keeps_memory_unchanged_when_persistence_fails() {
+        let app_data_path = unique_temp_path("codexu-tauri-settings-file");
+        std::fs::write(&app_data_path, b"not-a-directory").unwrap();
+        let state = Arc::new(AppState::new(app_data_path));
+
+        let result = state
+            .update_config(|config| {
+                config.theme = ThemeMode::Dark;
+                config.codex_root = unique_temp_path("codexu-tauri-unsaved-root");
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(state.config.read().await.theme, ThemeMode::System);
+        assert_eq!(state.source_generation.load(Ordering::SeqCst), 0);
     }
 
     fn create_snapshot(now: DateTime<Utc>) -> CodexDashboardSnapshot {

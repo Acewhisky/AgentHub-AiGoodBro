@@ -9,6 +9,7 @@ Changes since the earlier branch workflow: use `main` as the integration entry, 
 - Use focused pull requests into `main` and preserve their commit history with merge commits. Delete completed development branches only after their commits are reachable from `main`.
 - If a superseded branch was replaced rather than merged, preserve its exact head under an archive tag before retiring the branch. `archive/app-backups` contains historical built applications and stays outside the source integration flow.
 - Keep unfinished Windows migration work separate until its changed execution paths, Tauri/Web builds and required native behavior are verified. A macOS pass, a pure policy test or a configured CLI is not proof of Windows behavior or a successful model request.
+- CI runs on pull requests and pushes to `main` or `codex/**`. Windows changes, including CI-selection changes, automatically run the Rust and Web jobs. `CI required` succeeds only when the selected checks passed; unavailable diff history cannot silently skip Windows. Superseded runs remain cancelled instead of producing a synthetic gate failure. Branch protection requires both the summary and platform check contexts, so cancelled platform checks cannot satisfy it. Unchanged Windows code may be skipped, and manual runs retain the explicit Windows option.
 
 ## Local verification
 

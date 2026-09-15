@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "codex/**"]
   workflow_dispatch:
     inputs:
       windows:
@@ -12,7 +12,29 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      windows: ${{ steps.scope.outputs.windows }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test CI change selection
+        run: python3 -m unittest tests.test_ci_windows_changed
+      - id: scope
+        name: Select platform checks from changed files
+        run: python3 scripts/ci_windows_changed.py
+
   macos:
     runs-on: macos-14
     timeout-minutes: 20
@@ -56,7 +78,8 @@ jobs:
           python3 -m unittest tests.test_local_cli_quota tests.test_additional_cli_quota tests.test_zcode_cli_quota
 
   windows-rust-format:
-    if: github.event_name == 'workflow_dispatch' && inputs.windows == true
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -72,7 +95,8 @@ jobs:
         run: cargo test --workspace --locked
 
   windows-web:
-    if: github.event_name == 'workflow_dispatch' && inputs.windows == true
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:
@@ -91,3 +115,29 @@ jobs:
         run: npm test
       - name: Build Windows web frontend
         run: npm run build
+
+  required:
+    name: CI required
+    if: ${{ always() && !cancelled() }}
+    needs: [changes, macos, windows-rust-format, windows-web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful checks for the selected platforms
+        env:
+          SCOPE_RESULT: ${{ needs.changes.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_REQUIRED: ${{ needs.changes.outputs.windows }}
+          RUST_RESULT: ${{ needs.windows-rust-format.result }}
+          WEB_RESULT: ${{ needs.windows-web.result }}
+        run: |
+          test "$SCOPE_RESULT" = success
+          test "$MACOS_RESULT" = success
+          if [ "$WINDOWS_REQUIRED" = true ]; then
+            test "$RUST_RESULT" = success
+            test "$WEB_RESULT" = success
+          else
+            test "$WINDOWS_REQUIRED" = false
+            test "$RUST_RESULT" = skipped
+            test "$WEB_RESULT" = skipped
+          fi

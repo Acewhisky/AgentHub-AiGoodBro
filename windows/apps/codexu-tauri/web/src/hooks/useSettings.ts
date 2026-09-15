@@ -14,15 +14,17 @@ export function useSettings() {
 
   const normalizeSettings = (payload: SettingsResponse): SettingsDto => ({
     config: {
-      codex_root: payload.codex_root,
-      cache_dir: payload.cache_dir,
+      // The backend deliberately returns only presence flags for local paths.
+      // Keep display values non-sensitive; path selections are write-only
+      // patches from the directory picker.
+      codex_root: payload.codex_root_configured ? 'configured' : '',
+      cache_dir: payload.cache_dir_configured ? 'configured' : '',
       theme: payload.theme,
       refresh_interval_secs: payload.refresh_interval_secs,
       tray_density: payload.tray_density,
       language: payload.language ?? 'auto',
       palette_id: payload.palette_id ?? 'codexu.default',
     },
-    app_data_dir: payload.app_data_dir,
   });
 
   const load = useCallback(async () => {
@@ -43,9 +45,10 @@ export function useSettings() {
     setError(null);
     try {
       requireTauriRuntime();
-      const updated = await invoke<AppConfig>('set_settings', { req: patch });
-      setSettings((prev) => (prev ? { ...prev, config: updated } : null));
-      return updated;
+      const updated = await invoke<SettingsResponse>('set_settings', { req: patch });
+      const normalized = normalizeSettings(updated);
+      setSettings(normalized);
+      return normalized.config;
     } catch (e) {
       setError(String(e));
       throw e;

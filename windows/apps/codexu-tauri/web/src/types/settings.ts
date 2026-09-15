@@ -16,17 +16,15 @@ export interface AppConfig {
 }
 
 export interface SettingsResponse {
-  codex_root: string;
-  cache_dir: string;
+  codex_root_configured: boolean;
+  cache_dir_configured: boolean;
   theme: ThemeMode;
   refresh_interval_secs: number;
   tray_density: TrayDensity;
   language: InterfaceLanguage;
   palette_id: PaletteId;
-  app_data_dir: string;
 }
 
 export interface SettingsDto {
   config: AppConfig;
-  app_data_dir: string;
 }

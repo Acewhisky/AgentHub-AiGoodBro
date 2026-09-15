@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::models::*;
@@ -120,6 +120,14 @@ pub async fn fingerprint_for(path: &Path) -> Option<FileFingerprint> {
 
 /// Aggregates a collection of session summaries into `LocalUsage`.
 pub fn make_local_usage(summaries: Vec<SessionSummary>, now: DateTime<Utc>) -> Option<LocalUsage> {
+    make_local_usage_in_timezone(summaries, now, &Local)
+}
+
+fn make_local_usage_in_timezone<Tz: TimeZone>(
+    summaries: Vec<SessionSummary>,
+    now: DateTime<Utc>,
+    timezone: &Tz,
+) -> Option<LocalUsage> {
     let mut unique_deltas: Vec<UsageDelta> = Vec::new();
     let mut seen_message_ids = HashSet::new();
     for delta in summaries.iter().flat_map(|s| s.deltas.iter()) {
@@ -138,14 +146,22 @@ pub fn make_local_usage(summaries: Vec<SessionSummary>, now: DateTime<Utc>) -> O
 
     unique_deltas.sort_by_key(|a| a.date);
 
-    let day_start = Utc
-        .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
-        .unwrap();
-    let seven_day_start = day_start - chrono::Duration::days(6);
-    let previous_seven_day_start = day_start - chrono::Duration::days(13);
-    let month_start = Utc
-        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
-        .unwrap();
+    // Usage periods are user-facing calendar periods.  Build their boundaries
+    // in the machine's local timezone and convert them to UTC for comparison
+    // with the transcript timestamps.  Using UTC midnight here makes a session
+    // near local midnight appear in the wrong day (and can also cross a month
+    // boundary for users west/east of UTC).
+    let local_now = now.with_timezone(timezone);
+    let local_date = local_now.date_naive();
+    let day_start = local_date_start(local_date, timezone)?;
+    let seven_day_start = local_date_start(local_date - chrono::Duration::days(6), timezone)?;
+    let previous_seven_day_start =
+        local_date_start(local_date - chrono::Duration::days(13), timezone)?;
+    let month_start = local_date_start(
+        NaiveDate::from_ymd_opt(local_now.year(), local_now.month(), 1)
+            .expect("a local calendar month always has a first day"),
+        timezone,
+    )?;
 
     let mut today = PricedTokenUsage::ZERO;
     let mut seven_day = PricedTokenUsage::ZERO;
@@ -171,17 +187,9 @@ pub fn make_local_usage(summaries: Vec<SessionSummary>, now: DateTime<Utc>) -> O
             today.add_tokens(&delta.tokens, cost);
         }
 
-        let bucket_date = Utc
-            .with_ymd_and_hms(
-                delta.date.year(),
-                delta.date.month(),
-                delta.date.day(),
-                0,
-                0,
-                0,
-            )
-            .unwrap();
-        let key = bucket_date.format("%Y-%m-%d").to_string();
+        let bucket_local_date = delta.date.with_timezone(timezone).date_naive();
+        let bucket_date = local_date_start(bucket_local_date, timezone)?;
+        let key = bucket_local_date.format("%Y-%m-%d").to_string();
         let entry = daily_usage
             .entry(key)
             .or_insert_with(|| (bucket_date, PricedTokenUsage::ZERO));
@@ -201,8 +209,15 @@ pub fn make_local_usage(summaries: Vec<SessionSummary>, now: DateTime<Utc>) -> O
         acc.add(delta, cost);
     }
 
-    let daily_buckets = make_seven_day_buckets(&daily_usage, now);
-    let usage_trend = make_usage_trend(&daily_usage, &seven_day, &previous_seven_day, &month, now);
+    let daily_buckets = make_seven_day_buckets(&daily_usage, now, timezone);
+    let usage_trend = make_usage_trend(
+        &daily_usage,
+        &seven_day,
+        &previous_seven_day,
+        &month,
+        now,
+        timezone,
+    )?;
 
     let detailed = DetailedUsage {
         today: today.clone(),
@@ -271,21 +286,20 @@ pub fn make_local_usage(summaries: Vec<SessionSummary>, now: DateTime<Utc>) -> O
     Some(usage)
 }
 
-fn make_seven_day_buckets(
+fn make_seven_day_buckets<Tz: TimeZone>(
     daily_usage: &HashMap<String, (DateTime<Utc>, PricedTokenUsage)>,
     now: DateTime<Utc>,
+    timezone: &Tz,
 ) -> Vec<DailyTokenBucket> {
-    let start = now - chrono::Duration::days(6);
+    let local_date = now.with_timezone(timezone).date_naive();
+    let start = local_date - chrono::Duration::days(6);
     (0..7)
         .map(|offset| {
-            let date = start + chrono::Duration::days(offset);
-            let date = Utc
-                .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
-                .unwrap();
-            let key = date.format("%Y-%m-%d").to_string();
+            let local_date = start + chrono::Duration::days(offset);
+            let key = local_date.format("%Y-%m-%d").to_string();
             DailyTokenBucket {
                 id: key.clone(),
-                label: date.format("%a").to_string(),
+                label: local_date.format("%a").to_string(),
                 tokens: daily_usage
                     .get(&key)
                     .map(|(_, u)| u.tokens.visible_total_tokens())
@@ -295,35 +309,34 @@ fn make_seven_day_buckets(
         .collect()
 }
 
-fn make_usage_trend(
+fn make_usage_trend<Tz: TimeZone>(
     daily_usage: &HashMap<String, (DateTime<Utc>, PricedTokenUsage)>,
     seven_day: &PricedTokenUsage,
     previous_seven_day: &PricedTokenUsage,
     month: &PricedTokenUsage,
     now: DateTime<Utc>,
-) -> UsageTrend {
-    let start = now - chrono::Duration::days(179);
+    timezone: &Tz,
+) -> Option<UsageTrend> {
+    let start = now.with_timezone(timezone).date_naive() - chrono::Duration::days(179);
     let mut buckets = Vec::new();
     let mut heatmap_days = Vec::new();
 
     for offset in 0..180 {
-        let date = start + chrono::Duration::days(offset);
-        let date = Utc
-            .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
-            .unwrap();
-        let key = date.format("%Y-%m-%d").to_string();
+        let local_date = start + chrono::Duration::days(offset);
+        let date = local_date_start(local_date, timezone)?;
+        let key = local_date.format("%Y-%m-%d").to_string();
         let usage = daily_usage
             .get(&key)
             .map(|(_, u)| u.clone())
             .unwrap_or_default();
         buckets.push(UsageDayBucket {
-            id: key,
+            id: key.clone(),
             date,
             usage: usage.clone(),
             source_quality: UsageSourceQuality::Detailed,
         });
         heatmap_days.push(UsageHeatmapDay {
-            id: date.format("%Y-%m-%d").to_string(),
+            id: key.clone(),
             date,
             usage: if usage.tokens.visible_total_tokens() > 0 {
                 Some(usage)
@@ -362,17 +375,17 @@ fn make_usage_trend(
 
     let heatmap_weeks: Vec<Vec<_>> = heatmap_days.chunks(7).map(|c| c.to_vec()).collect();
 
-    UsageTrend {
+    Some(UsageTrend {
         day_buckets: buckets,
         heatmap_weeks,
         heatmap_thresholds: thresholds,
         summary,
         model_trends: None,
         month: month.clone(),
-        projected_month_cost_usd: projected_month_cost(month.estimated_cost_usd, now),
+        projected_month_cost_usd: projected_month_cost(month.estimated_cost_usd, now, timezone),
         active_day_count,
         source_quality: UsageSourceQuality::Detailed,
-    }
+    })
 }
 
 fn make_heatmap_thresholds(tokens: Vec<i64>) -> Vec<i64> {
@@ -390,23 +403,40 @@ fn make_heatmap_thresholds(tokens: Vec<i64>) -> Vec<i64> {
     ]
 }
 
-fn projected_month_cost(month_cost: f64, now: DateTime<Utc>) -> Option<f64> {
-    let day = now.day();
-    let days_in_month = match now.month() {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        2 => {
-            if now.year() % 4 == 0 {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 30,
+fn projected_month_cost<Tz: TimeZone>(
+    month_cost: f64,
+    now: DateTime<Utc>,
+    timezone: &Tz,
+) -> Option<f64> {
+    let local_now = now.with_timezone(timezone);
+    let day = local_now.day();
+    let first_day = NaiveDate::from_ymd_opt(local_now.year(), local_now.month(), 1)?;
+    let (next_year, next_month) = if local_now.month() == 12 {
+        (local_now.year() + 1, 1)
+    } else {
+        (local_now.year(), local_now.month() + 1)
     };
-    if day == 0 || day > days_in_month as u32 {
+    let first_day_next_month = NaiveDate::from_ymd_opt(next_year, next_month, 1)?;
+    let days_in_month = (first_day_next_month - first_day).num_days();
+    if day == 0 || day as i64 > days_in_month {
         return None;
     }
     Some(month_cost / day as f64 * days_in_month as f64)
+}
+
+/// Resolve the first valid local instant on or after a calendar date.
+/// Ambiguous midnight uses its earlier occurrence. A gap may skip midnight or
+/// an entire civil date, so walk forward rather than substituting UTC midnight.
+/// The two-day bound covers a skipped date; unresolved timezone data is unknown.
+fn local_date_start<Tz: TimeZone>(date: NaiveDate, timezone: &Tz) -> Option<DateTime<Utc>> {
+    let midnight = date.and_hms_opt(0, 0, 0)?;
+    for seconds in 0..=172_800 {
+        let candidate = midnight.checked_add_signed(chrono::Duration::seconds(seconds))?;
+        if let Some(value) = timezone.from_local_datetime(&candidate).earliest() {
+            return Some(value.with_timezone(&Utc));
+        }
+    }
+    None
 }
 
 fn make_tool_usages(summaries: &[SessionSummary], lifetime: &PricedTokenUsage) -> Vec<ToolUsage> {
@@ -587,5 +617,162 @@ impl ProjectAccumulator {
 impl UsageDayBucket {
     fn tokens(&self) -> i64 {
         self.usage.tokens.visible_total_tokens()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary_for(date: DateTime<Utc>, session_id: &str) -> SessionSummary {
+        SessionSummary {
+            file_path: format!("{session_id}.jsonl"),
+            session_id: session_id.to_string(),
+            project_path: "C:\\synthetic\\workspace".to_string(),
+            model: Some("gpt-5.4".to_string()),
+            last_active_at: Some(date),
+            created_at: Some(date),
+            deltas: vec![UsageDelta {
+                message_id: Some(session_id.to_string()),
+                date,
+                tokens: TokenBreakdown {
+                    total_tokens: 1,
+                    ..TokenBreakdown::ZERO
+                },
+                model: Some("gpt-5.4".to_string()),
+                project_path: "C:\\synthetic\\workspace".to_string(),
+                session_id: session_id.to_string(),
+            }],
+            tool_calls: HashMap::new(),
+            title: None,
+            archived: false,
+            git_branch: None,
+            git_origin_url: None,
+            thread_source: Some("main".to_string()),
+            parent_thread_id: None,
+            task_intervals: Vec::new(),
+        }
+    }
+
+    fn instant(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn assert_boundary(timezone: chrono_tz::Tz, date: &str, boundary: &str, month_tokens: i64) {
+        let expected = instant(boundary);
+        let before = expected - chrono::Duration::minutes(1);
+        let after = expected + chrono::Duration::minutes(1);
+        let usage = make_local_usage_in_timezone(
+            vec![summary_for(before, "before"), summary_for(after, "after")],
+            after,
+            &timezone,
+        )
+        .unwrap();
+        assert_eq!(usage.today_tokens, 1);
+        assert_eq!(usage.seven_day_tokens, 2);
+        assert_eq!(
+            usage
+                .detailed_usage
+                .as_ref()
+                .unwrap()
+                .month
+                .tokens
+                .visible_total_tokens(),
+            month_tokens
+        );
+        let daily = usage.daily_buckets.last().unwrap();
+        assert_eq!(daily.id, date);
+        assert_eq!(daily.tokens, 1);
+        let trend = usage.usage_trend.as_ref().unwrap();
+        let last = trend.day_buckets.last().unwrap();
+        assert_eq!(last.id, date);
+        assert_eq!(last.date, expected);
+        assert_eq!(last.usage.tokens.visible_total_tokens(), 1);
+        let heatmap = trend.heatmap_weeks.last().unwrap().last().unwrap();
+        assert_eq!(heatmap.id, date);
+        assert_eq!(heatmap.date, expected);
+    }
+
+    #[test]
+    fn local_periods_cross_utc_and_month_boundaries() {
+        assert_boundary(
+            chrono_tz::Asia::Shanghai,
+            "2026-03-01",
+            "2026-02-28T16:00:00Z",
+            1,
+        );
+        assert_boundary(
+            chrono_tz::America::New_York,
+            "2026-03-01",
+            "2026-03-01T05:00:00Z",
+            1,
+        );
+        assert_boundary(
+            chrono_tz::Asia::Shanghai,
+            "2024-02-29",
+            "2024-02-28T16:00:00Z",
+            2,
+        );
+    }
+
+    #[test]
+    fn skipped_midnight_uses_first_valid_local_instant() {
+        assert_boundary(
+            chrono_tz::America::Santiago,
+            "2026-09-06",
+            "2026-09-06T04:00:00Z",
+            2,
+        );
+    }
+
+    #[test]
+    fn ambiguous_midnight_uses_earlier_occurrence() {
+        let date = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        assert_eq!(
+            local_date_start(date, &chrono_tz::America::Havana),
+            Some(instant("2026-11-01T04:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn skipped_civil_date_advances_to_next_valid_date() {
+        let date = NaiveDate::from_ymd_opt(2011, 12, 30).unwrap();
+        assert_eq!(
+            local_date_start(date, &chrono_tz::Pacific::Apia),
+            Some(instant("2011-12-30T10:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn seven_day_period_follows_calendar_dates_across_dst() {
+        let usage = make_local_usage_in_timezone(
+            vec![
+                summary_for(instant("2026-03-02T04:59:00Z"), "outside"),
+                summary_for(instant("2026-03-02T05:01:00Z"), "inside"),
+            ],
+            instant("2026-03-08T16:00:00Z"),
+            &chrono_tz::America::New_York,
+        )
+        .unwrap();
+        assert_eq!(usage.seven_day_tokens, 1);
+        assert_eq!(usage.today_tokens, 0);
+        assert_eq!(usage.daily_buckets.first().unwrap().id, "2026-03-02");
+        assert_eq!(usage.daily_buckets.first().unwrap().tokens, 1);
+    }
+
+    #[test]
+    fn month_projection_uses_local_day_and_gregorian_leap_years() {
+        for (timestamp, expected) in [
+            ("2024-03-01T00:30:00Z", 29.0 / 29.0),
+            ("2100-02-28T12:00:00Z", 28.0 / 28.0),
+            ("2026-03-01T00:30:00Z", 28.0 / 28.0),
+        ] {
+            let value =
+                projected_month_cost(1.0, instant(timestamp), &chrono_tz::America::New_York)
+                    .unwrap();
+            assert!((value - expected).abs() < f64::EPSILON);
+        }
     }
 }
