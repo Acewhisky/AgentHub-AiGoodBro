@@ -118,7 +118,7 @@ jobs:
 
   required:
     name: CI required
-    if: always()
+    if: ${{ always() && !cancelled() }}
     needs: [changes, macos, windows-rust-format, windows-web]
     runs-on: ubuntu-latest
     timeout-minutes: 5
