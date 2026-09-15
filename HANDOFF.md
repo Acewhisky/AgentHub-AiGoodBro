@@ -1,4 +1,16 @@
-# Codex Account Manager Next 0828v2 — Handoff
+# AiGoodBro — Source handoff
+
+## Current entry · 0915v1
+
+Changes since the historical 0828v2 handoff: the accepted macOS implementation is the rebuilt **V1.0 / 0915v5 / 9.6.1 (50)** at `517f2daeccca54fe9c388660c52889aef48f54dd`. Use the current `main` source and [version notes](docs/release-notes-v9.6.1.md), together with [branch and verification guidance](CONTRIBUTING.md) and [current security boundaries](SECURITY.md).
+
+Later repository maintenance may add documentation, CI and separately reviewed Windows fixes. Preserve the V1.0 macOS implementation unless a new task explicitly changes it; an older branch or the historical instructions below are not a reason to restore the pre-rebuild application. The V1.0 tag is immutable and does not publish a binary Release.
+
+Configuration detection, quota reads and a successful model response remain separate evidence. Remaining provider/native Windows acceptance must be requested and recorded separately. No historical handoff grants fresh permission to switch accounts, log in, send notifications or overwrite an installed application.
+
+## Historical record — Codex Account Manager Next 0828v2
+
+The following sections preserve earlier decisions and results. Their references to “current”, “next step” or “next conversation” describe that historical task, not the active work item.
 
 ## 当前对话交接摘要（下一对话先读）
 
