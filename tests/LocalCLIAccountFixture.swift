@@ -12,10 +12,14 @@ private enum FixtureFailure: Error { case failed(String) }
 // These persistence tests never open Terminal or perform authentication.
 enum LocalCLITerminalLauncher {
     @MainActor static var permitsSyntheticSession = false
+    @MainActor static var launchCount = 0
     enum Action { case signIn, open }
     struct Session {}
     @MainActor static func launch(profile: LocalCLIProfile, executable: String, action: Action, workingDirectory: URL) async throws -> Session {
-        if permitsSyntheticSession { return Session() }
+        if permitsSyntheticSession {
+            launchCount += 1
+            return Session()
+        }
         throw FixtureFailure.failed("interactive launcher must not run in the persistence fixture")
     }
     @MainActor static func waitForExit(_ session: Session) async throws -> Int32 {
@@ -430,6 +434,41 @@ private func testAuthenticationWithoutQuotaOrTerminalExit() async throws {
     try expect(!LocalCLIAuthenticationReader.hasEnvironmentValue("GEMINI_API_KEY=''\n# GEMINI_API_KEY=x", names: ["GEMINI_API_KEY"]), "empty or commented API keys stay unknown")
 }
 
+@MainActor
+private func testOpenCodeReusesSavedProviderUnlessUpdateRequested() async throws {
+    let paths = try makeRoot("opencode-reuse")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let directory = LocalCLIKind.openCode.defaultConfigDirectory(home: paths.home)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let executable = paths.home.appendingPathComponent(".local/bin/opencode")
+    try Data("synthetic executable".utf8).write(to: executable)
+    _ = chmod(executable.path, 0o700)
+    let auth = directory.appendingPathComponent("auth.json")
+    let credentials = Data(#"{"provider":{"type":"api","key":"synthetic-saved-provider"}}"#.utf8)
+    try credentials.write(to: auth)
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    guard let profile = store.profiles(for: .openCode).first else { throw FixtureFailure.failed("OpenCode profile") }
+    try expect(store.authentication[profile.id] == .providers(1), "saved provider is recognized without OpenCode Go quota")
+    LocalCLITerminalLauncher.permitsSyntheticSession = true
+    LocalCLITerminalLauncher.launchCount = 0
+    defer { LocalCLITerminalLauncher.permitsSyntheticSession = false }
+    store.signIn(profile)
+    for _ in 0..<8 { await Task.yield() }
+    try expect(LocalCLITerminalLauncher.launchCount == 0 && store.signingIn.isEmpty,
+               "default sign-in reuses saved providers without reopening authentication")
+    try expect(store.canOpen(profile) && store.loginMessages[profile.id]?.contains("已复用") == true,
+               "reused provider remains openable even when quota is unavailable")
+    store.signIn(profile, updateProvider: true)
+    for _ in 0..<100 where LocalCLITerminalLauncher.launchCount == 0 { try await Task.sleep(nanoseconds: 5_000_000) }
+    try expect(LocalCLITerminalLauncher.launchCount == 1,
+               "an explicit provider update still opens the official authentication entry")
+    store.checkLocalSignIns()
+    try expect(store.signingIn.isEmpty, "an existing credential never leaves the checklist waiting for terminal exit")
+    let after = try Data(contentsOf: auth)
+    try expect(after == credentials, "reuse and provider-update launch never rewrite stored credentials")
+}
+
 @main enum Main {
     @MainActor static func main() async throws {
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
@@ -441,6 +480,7 @@ private func testAuthenticationWithoutQuotaOrTerminalExit() async throws {
         try testManagedGrokIsolationAndStaleWriter()
         try await testTransientFailureAndConfirmedSignOut()
         try await testAuthenticationWithoutQuotaOrTerminalExit()
+        try await testOpenCodeReusesSavedProviderUnlessUpdateRequested()
         print("local-cli-account-fixture: ok")
     }
 }

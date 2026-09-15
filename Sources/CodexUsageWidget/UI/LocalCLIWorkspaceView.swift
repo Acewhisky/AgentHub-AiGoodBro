@@ -184,7 +184,8 @@ struct LocalCLIWorkspaceView: View {
             AnchoredMenuAction(id: "rename", title: language.text("重命名", "Rename")),
         ]
         if model.canSignIn(profile) {
-            actions.insert(AnchoredMenuAction(id: "signin", title: language.text("登录", "Sign in")), at: 1)
+            actions.insert(
+                AnchoredMenuAction(id: "signin", title: profile.kind == .openCode ? language.text("添加或更新服务商", "Add or update provider") : language.text("登录", "Sign in")), at: 1)
         }
         if includeUnlink {
             actions.append(AnchoredMenuAction(id: "unlink", title: language.text("取消关联", "Unlink"), destructive: true))
@@ -195,7 +196,7 @@ struct LocalCLIWorkspaceView: View {
     private func handleMoreMenu(_ actionID: String, profile: LocalCLIProfile) {
         switch actionID {
         case "refresh": model.refresh(profile)
-        case "signin": model.signIn(profile)
+        case "signin": model.signIn(profile, updateProvider: profile.kind == .openCode)
         case "prepare": preparationProfile = profile
         case "pin":
             let key = ResetCardPresentation.localKey(kind: kind.rawValue, profileID: profile.id)
@@ -410,7 +411,7 @@ struct LocalCLIWorkspaceView: View {
                 HStack(spacing: 12) {
                     if model.canSignIn(profile) {
                         Button {
-                            model.signIn(profile)
+                            model.signIn(profile, updateProvider: profile.kind == .openCode)
                         } label: {
                             Label(signInTitle(result), systemImage: "person.crop.circle.badge.checkmark")
                         }
@@ -709,6 +710,7 @@ struct LocalCLIWorkspaceView: View {
     }
 
     private func signInTitle(_ result: LocalCLIQuotaResult?) -> String {
+        if kind == .openCode { return language.text("添加或更新服务商", "Add or update provider") }
         if result?.state == .available {
             return language.text("重新登录", "Sign in again")
         }

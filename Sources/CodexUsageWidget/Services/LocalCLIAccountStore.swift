@@ -182,10 +182,19 @@ final class LocalCLIAccountStore: ObservableObject {
         }
     }
 
-    func signIn(_ profile: LocalCLIProfile) {
+    func signIn(_ profile: LocalCLIProfile, updateProvider: Bool = false) {
         guard canSignIn(profile), signingIn.isEmpty,
             let executable = executable(for: profile)
         else { return }
+        if profile.kind == .openCode, !updateProvider {
+            checkLocalSignIn(profile)
+            if hasConfiguredAuthentication(profile) {
+                loginMessages[profile.id] = language.text(
+                    "已复用保存的服务商配置，可直接打开 OpenCode。需要新增或更换 API 时选择“添加或更新服务商”。",
+                    "Saved provider configuration is ready to reuse. Open OpenCode directly; choose Add or update provider only to change credentials.")
+                return
+            }
+        }
         let directory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
         do {
             if profile.isDefault {

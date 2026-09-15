@@ -137,7 +137,11 @@ struct SetupAccountsView: View {
                 HStack {
                     Text(profile.kind == .workBuddy ? profile.displayName : profile.kind.displayName).font(.caption)
                     Spacer()
-                    Button(profile.kind.isDesktopApplication ? language.text("打开桌面版登录", "Open desktop sign-in") : language.text("打开官方登录", "Open official sign-in")) {
+                    Button(
+                        profile.kind == .openCode && localAccounts.hasConfiguredAuthentication(profile)
+                            ? language.text("使用已保存的 API 打开 OpenCode", "Open OpenCode with saved API configuration")
+                            : profile.kind.isDesktopApplication ? language.text("打开桌面版登录", "Open desktop sign-in") : language.text("打开官方登录", "Open official sign-in")
+                    ) {
                         launch(profile)
                     }.disabled(
                         store.isPreview || store.isLoggingIn || !localAccounts.signingIn.isEmpty || launchedTool != nil
@@ -190,7 +194,8 @@ struct SetupAccountsView: View {
 
     private func launch(_ profile: LocalCLIProfile) {
         launchedTool = profile.kind.rawValue
-        if profile.kind.isDesktopApplication {
+        if profile.kind.isDesktopApplication || (profile.kind == .openCode && localAccounts.hasConfiguredAuthentication(profile)) {
+            if profile.kind == .openCode { launchedTool = nil }
             localAccounts.openCLI(profile, workingDirectory: FileManager.default.homeDirectoryForCurrentUser)
         } else {
             localAccounts.signIn(profile)
@@ -214,6 +219,12 @@ struct SetupAccountsView: View {
                 "在 ZCode 桌面应用中登录，然后返回确认。这里不启动 ZCode CLI，也不将 Coding Plan 额度当成桌面登录凭据。",
                 "Sign in inside the ZCode desktop app, then return. No ZCode CLI is launched; Coding Plan quota does not verify desktop sign-in.")
         case "openCode":
+            if verified(id) {
+                return language.text(
+                    "已检测到保存的服务商 API 配置，直接打开 OpenCode 即可，不需要重新输入。添加其他服务商请用账号菜单的“添加或更新服务商”。",
+                    "Saved provider API configuration was detected. Open OpenCode without entering it again. Use Add or update provider in the account menu to connect another provider."
+                )
+            }
             return language.text(
                 "在 opencode auth login 中选择服务商并授权。多个服务商可在同一终端依次添加；完成后返回。",
                 "Choose and authorize providers in opencode auth login. Add further providers in the same terminal, then return.")
