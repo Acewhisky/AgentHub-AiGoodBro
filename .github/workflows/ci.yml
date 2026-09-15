@@ -18,6 +18,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare companion build toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: Companion/Hub/go.mod
+          cache: false
       - name: Lint Swift sources
         run: make lint
       - name: Build, verify runtime resources, and run self-tests
